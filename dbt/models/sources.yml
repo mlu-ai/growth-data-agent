@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: synthetic
+    schema: public
+    tables:
+      - name: paid_enablements
+        description: Immutable Paid Enablement events for synthetic Product Users.
+        columns:
+          - name: paid_enablement_id
+            tests: [not_null, unique]
+          - name: product_user_id
+            tests: [not_null]
+          - name: product
+            tests:
+              - accepted_values:
+                  arguments:
+                    values: [Jira, Confluence]

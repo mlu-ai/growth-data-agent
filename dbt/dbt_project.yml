@@ -1,0 +1,16 @@
+name: growth_data_agent
+version: "1.0"
+config-version: 2
+profile: growth_data_agent
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+models:
+  growth_data_agent:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

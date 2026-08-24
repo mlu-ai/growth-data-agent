@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+data/*.csv
+!data/.gitkeep
+dbt/target/
+dbt/logs/
+dbt/.user.yml
