@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class ResultClassification(StrEnum):
     CANONICAL_DEFINITION = "canonical_definition"
+    CATALOG_OWNERSHIP = "catalog_ownership"
     DRIVER_DECOMPOSITION = "driver_decomposition"
     HYPOTHESIS = "hypothesis"
     INCONCLUSIVE = "inconclusive"
@@ -176,6 +177,30 @@ class GraphPathCitation(BaseModel):
     node_labels: list[str]
 
 
+class CatalogFreshness(BaseModel):
+    """Availability disclosure for catalog-dependent answers."""
+
+    available: bool
+    degraded: bool
+    detail: str | None = None
+
+
+class CatalogMetadata(BaseModel):
+    """Safe ownership, classification, and discovery metadata from DataHub."""
+
+    entity_name: str
+    entity_type: Literal["metric", "model", "dataset"]
+    urn: str
+    product: str
+    owners: list[str]
+    classification: str
+    discovery_tags: list[str]
+    description: str
+    semantic_version: str
+    source_artifact_sha256: str
+    published_at: datetime
+
+
 class SensitiveIdentifier(BaseModel):
     """A direct identifier returned only after explicit entitlement checks."""
 
@@ -210,6 +235,8 @@ class GovernedAnalyticalResponse(BaseModel):
     driver_decomposition: DriverDecomposition | None = None
     evidence: EvidenceAnswer | None = None
     graph_paths: list[GraphPathCitation] | None = None
+    catalog_metadata: CatalogMetadata | None = None
+    catalog_freshness: CatalogFreshness | None = None
     direct_identifier_answer: DirectIdentifierAnswer | None = None
     direct_identifier_audit: DirectIdentifierAudit | None = None
     metric_definition_gap: MetricDefinitionGap | None = None

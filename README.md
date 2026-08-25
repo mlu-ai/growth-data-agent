@@ -38,6 +38,8 @@ docker compose up -d postgres
 make load-data
 make dbt-build
 make semantic-artifact
+DATAHUB_GMS_URL=http://127.0.0.1:8080 make publish-datahub
+APACHE_AGE_DATABASE_URL=postgresql://growth_data:growth_data@127.0.0.1:5432/growth_data make materialize-age
 make evaluate
 make serve
 ```
@@ -74,3 +76,19 @@ cd dbt && uv run --group warehouse dbt build --profiles-dir .
 
 See [docs/evaluation.md](docs/evaluation.md) for the deterministic fixture
 evaluation, local-model baseline, and redacted MLflow trace configuration.
+
+`make publish-datahub` publishes ownership, classification, and discovery metadata for
+the current successfully validated dbt artifact. DataHub is catalog context only; the
+last validated dbt/MetricFlow artifact remains the semantic authority, so canonical
+metric answers remain available when DataHub is unavailable and catalog-dependent
+answers disclose degraded availability. It targets the dbt-created Postgres Dataset
+entities by default; metric ownership requests resolve to the corresponding `fct_*` model,
+which is represented as the DataHub `Model` subtype. This keeps one physical DataHub
+identity per validated dbt model. Override
+`DATAHUB_TARGET_PLATFORM` or `DATAHUB_DATASET_PREFIX` when
+the deployed DataHub dbt recipe uses another identity.
+
+`make materialize-age` replaces the namespaced Apache AGE evidence index with bounded
+metric-to-segment-to-Tenant-to-incident-or-team chains derived from that validated
+artifact and the approved document-ingestion corpus. Configure `APACHE_AGE_DATABASE_URL`
+and optionally `APACHE_AGE_GRAPH_NAME` before running it.
