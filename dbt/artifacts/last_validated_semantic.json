@@ -1,0 +1,21 @@
+{
+  "artifact_type": "dbt_metricflow_semantic_artifact",
+  "semantic_version": "1.0.0",
+  "semantic_manifest_sha256": "e5f5746de4c27e688185e35065bd71ee80a77025bc03f3ed388266c8bb6ea946",
+  "validation": {
+    "status": "success",
+    "validated_at": "2026-08-25T01:11:16.197693+00:00",
+    "maximum_age_seconds": 86400
+  },
+  "metrics": [
+    {
+      "name": "jira_new_peu",
+      "definition": "Jira New PEU is a Product User's first-ever Paid Enablement for Jira.",
+      "formula": "count_distinct(product_user_id)",
+      "grain": "Product User in a Tenant and Jira product",
+      "time_rule": "Attribute to the first-ever Jira Paid Enablement; later restorations do not qualify again.",
+      "model_name": "fct_jira_new_peu",
+      "citation_path": "dbt/models/marts/jira_new_peu.yml#jira_new_peu"
+    }
+  ]
+}

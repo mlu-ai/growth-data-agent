@@ -21,8 +21,8 @@ The workspace that owns a paid subscription and contains Product Users.
 _Avoid_: Customer, account, workspace
 
 **New Paid Enabled User**:
-A Product User granted paid access to that product for the first time in the
-measurement period. Regaining access does not make the Product User new again.
+A Product User granted paid access to that product for the first time ever.
+Regaining access does not make the Product User new again.
 _Avoid_: Reactivated user, newly active user
 
 **New Monthly Active User**:

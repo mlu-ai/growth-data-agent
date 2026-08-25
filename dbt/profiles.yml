@@ -1,0 +1,12 @@
+growth_data_agent:
+  target: local
+  outputs:
+    local:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5432') | int }}"
+      user: "{{ env_var('POSTGRES_USER', 'growth_data') }}"
+      pass: "{{ env_var('POSTGRES_PASSWORD', 'growth_data') }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'growth_data') }}"
+      schema: analytics
+      threads: 4
