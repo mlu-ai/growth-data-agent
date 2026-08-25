@@ -28,7 +28,8 @@ from .metric_definition_gaps import (
     ProvisionalMetricInputGateway,
     ProvisionalMetricInputRequest,
 )
-from .policy import resolve_access_profile
+from .observability import NoOpTraceSink, TraceRecord, TraceSink, policy_fingerprint
+from .policy import AccessDeniedError, UnknownAgentUserError, resolve_access_profile
 from .semantic import ValidatedMetricFlowGateway
 from .synthetic import evidence_corpus, graph_corpus
 
@@ -47,6 +48,7 @@ class AnswerQuestionService:
         evidence_store: VectorEvidenceStore | None = None,
         graph_store: EvidenceGraphStore | None = None,
         direct_identifier_audit_recorder: DirectIdentifierAuditRecorder | None = None,
+        trace_sink: TraceSink | None = None,
     ):
         self.semantic_gateway = semantic_gateway
         self.provisional_metric_calculator = (
@@ -63,8 +65,18 @@ class AnswerQuestionService:
         self.direct_identifier_audit_recorder = (
             direct_identifier_audit_recorder or InMemoryDirectIdentifierAuditRecorder()
         )
+        self.trace_sink = trace_sink or NoOpTraceSink()
 
     def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
+        try:
+            response = self._answer_question(request)
+        except (AccessDeniedError, UnknownAgentUserError) as error:
+            error.trace_id = self._record_authorization_denial(request)
+            raise
+        self._record_trace(request, response)
+        return response
+
+    def _answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
         access_profile = resolve_access_profile(request.agent_user_id)
         scope = access_profile.as_effective_scope()
         trace_id = str(uuid4())
@@ -170,6 +182,108 @@ class AnswerQuestionService:
             ],
             trace_id=trace_id,
         )
+
+    def _record_trace(
+        self,
+        request: AnswerQuestionRequest,
+        response: GovernedAnalyticalResponse,
+    ) -> None:
+        access_profile = resolve_access_profile(request.agent_user_id)
+        source_versions: dict[str, str] = {}
+        try:
+            artifact = self.semantic_gateway.artifact_store.load()
+            source_versions.update(
+                semantic_version=artifact.semantic_version,
+                semantic_manifest_sha256=artifact.semantic_manifest_sha256,
+            )
+        except (OSError, ValueError):
+            source_versions["semantic_artifact"] = "unavailable"
+        if response.canonical_definition is not None:
+            source_versions.setdefault(
+                "semantic_version", response.canonical_definition.semantic_version
+            )
+        if response.semantic_query_evidence is not None:
+            source_versions.setdefault(
+                "semantic_manifest_sha256",
+                response.semantic_query_evidence.artifact_sha256,
+            )
+        if response.evidence is not None or response.graph_paths is not None:
+            source_versions["evidence_corpus"] = "synthetic-v1"
+
+        retrieval_used = (
+            response.evidence is not None or response.direct_identifier_answer is not None
+        )
+        tool_outcomes = {
+            "semantic_query": (
+                "success" if response.semantic_query_evidence is not None else "not_used"
+            ),
+            "retrieval": "success" if retrieval_used else "not_used",
+            "graph": "success" if response.graph_paths is not None else "not_used",
+            "direct_identifier_audit": (
+                "success" if response.direct_identifier_audit is not None else "not_used"
+            ),
+        }
+        retrieval_scores = (
+            tuple(float(score) for score in getattr(self.evidence_store, "last_scores", ()))
+            if retrieval_used
+            else ()
+        )
+        trace = TraceRecord(
+            trace_id=response.trace_id,
+            request_route="answer_question",
+            response_classification=response.result_classification.value,
+            policy_fingerprint=policy_fingerprint(access_profile),
+            source_versions=source_versions,
+            tool_outcomes=tool_outcomes,
+            retrieval_scores=retrieval_scores,
+            evaluation_outcome="not_evaluated",
+            response=response.model_dump(mode="json"),
+        )
+        try:
+            self.trace_sink.record(trace)
+        except Exception:
+            # Observability must not turn a governed response into an outage.
+            return
+
+    def _record_authorization_denial(self, request: AnswerQuestionRequest) -> str:
+        try:
+            access_profile = resolve_access_profile(request.agent_user_id)
+            fingerprint = policy_fingerprint(access_profile)
+        except UnknownAgentUserError:
+            fingerprint = "unknown-agent"
+        source_versions: dict[str, str] = {}
+        try:
+            artifact = self.semantic_gateway.artifact_store.load()
+            source_versions = {
+                "semantic_version": artifact.semantic_version,
+                "semantic_manifest_sha256": artifact.semantic_manifest_sha256,
+            }
+        except (OSError, ValueError):
+            source_versions["semantic_artifact"] = "unavailable"
+        trace = TraceRecord(
+            trace_id=str(uuid4()),
+            request_route="answer_question",
+            response_classification="safe_refusal",
+            policy_fingerprint=fingerprint,
+            source_versions=source_versions,
+            tool_outcomes={
+                "semantic_query": "not_used",
+                "retrieval": "not_used",
+                "graph": "not_used",
+                "direct_identifier_audit": "not_used",
+            },
+            retrieval_scores=(),
+            evaluation_outcome="not_evaluated",
+            response={
+                "result_classification": "safe_refusal",
+                "error_code": "access_denied",
+            },
+        )
+        try:
+            self.trace_sink.record(trace)
+        except Exception:
+            pass
+        return trace.trace_id
 
     def _answer_may_to_june_driver_decomposition(self, *, scope, access_profile, trace_id: str):
         definition, decomposition, query_evidence, freshness = (
@@ -631,6 +745,8 @@ class AnswerQuestionService:
             return _metric_identifier(request.requested_metric_name)
 
         normalized = " ".join(request.question.casefold().split())
+        if _requests_outside_analytical_scope(normalized):
+            return None
         if "jira" in normalized and ("new peu" in normalized or "new paid enabled" in normalized):
             return "jira_new_peu"
         if "jira" in normalized and "new mau" in normalized:
@@ -661,3 +777,19 @@ def _named_metric_question(question: str) -> str | None:
     if name.casefold() in {"this", "that", "it"}:
         return None
     return name
+
+
+def _requests_outside_analytical_scope(normalized_question: str) -> bool:
+    return any(
+        term in normalized_question
+        for term in (
+            "weather",
+            "recipe",
+            "joke",
+            "sports score",
+            "stock price",
+            "news",
+            "translate",
+            "hello",
+        )
+    )

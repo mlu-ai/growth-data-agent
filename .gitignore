@@ -4,6 +4,8 @@ __pycache__/
 .ruff_cache/
 *.py[cod]
 data/*.csv
+data/mlruns/
+evaluations/comparisons/
 !data/.gitkeep
 dbt/target/
 dbt/logs/

@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-25T18:32:58+10:00",
+  "model_name": "llama3.1:8b",
+  "provider": "ollama",
+  "evaluation_mode": "deterministic-governed-response-fixtures",
+  "passed": true,
+  "generation": {
+    "fixture_count": 8,
+    "fixture_pass_rate": 1.0
+  },
+  "retrieval": {
+    "fixture_count": 1,
+    "recall_at_k": 1.0,
+    "precision_at_k": 0.3333333333333333,
+    "reciprocal_rank": 1.0
+  },
+  "local_model": {
+    "status": "recorded",
+    "fixture_count": 8,
+    "results": [
+      {
+        "fixture_id": "definition",
+        "status": "recorded",
+        "output_sha256": "406e0130ef13539b678efd64e0db8c2c95a78fc31d2676144340c8d779081dc4",
+        "output_length": 53
+      },
+      {
+        "fixture_id": "driver-decomposition",
+        "status": "recorded",
+        "output_sha256": "f7bea358f09a9d3191509376754263af0a2d1768c0122d22b5f8502ae433b8e31",
+        "output_length": 165
+      },
+      {
+        "fixture_id": "evidence-hypothesis",
+        "status": "recorded",
+        "output_sha256": "73db69be87c0a1a3ad715a771b15cf44a76aa8d3ad29f24c1d28fcd41a480f60",
+        "output_length": 121
+      },
+      {
+        "fixture_id": "authorization-scope",
+        "status": "recorded",
+        "output_sha256": "6c108aee1673bf705f9a5245d5925c8a792d167b87e54024c4ce5eb6ca8a4943",
+        "output_length": 193
+      },
+      {
+        "fixture_id": "identifier-safety",
+        "status": "recorded",
+        "output_sha256": "ee2b3c305ced4011ad28ce088079a8a8dfad1451de2d26c00478bfe834d0b570",
+        "output_length": 78
+      },
+      {
+        "fixture_id": "stale-semantics",
+        "status": "recorded",
+        "output_sha256": "28cbed40cf301bd19eb0fefb5b6f9a9fe520811f0be75ffdde71d5db1000fa26",
+        "output_length": 127
+      },
+      {
+        "fixture_id": "unsupported-request",
+        "status": "recorded",
+        "output_sha256": "d595ccf3f6a351dd58de5aae8c0fae765e9fdc1b607cb8099c04d4bb6a1eb575",
+        "output_length": 47
+      },
+      {
+        "fixture_id": "cross-product-authorization",
+        "status": "recorded",
+        "output_sha256": "418882af1e30e9c8de253f9ecf611567963d3d64170c4d8670f4dc05a208f141",
+        "output_length": 44
+      }
+    ]
+  }
+}

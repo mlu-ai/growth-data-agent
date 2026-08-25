@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "generation": [
+    {
+      "id": "definition",
+      "category": "definition",
+      "request": {
+        "agent_user_id": "data_analyst",
+        "question": "What is Jira New PEU?"
+      },
+      "expected": {
+        "status_code": 200,
+        "result_classification": "canonical_definition",
+        "fields": {
+          "canonical_definition.semantic_version": "1.0.0",
+          "source_freshness.is_current": true
+        },
+        "contains": ["first-ever Paid Enablement", "dbt/MetricFlow"],
+        "not_contains": ["Causal Estimate"]
+      }
+    },
+    {
+      "id": "driver-decomposition",
+      "category": "driver_decomposition",
+      "request": {
+        "agent_user_id": "data_analyst",
+        "question": "Why did Jira New PEU fall from May to June?"
+      },
+      "expected": {
+        "status_code": 200,
+        "result_classification": "driver_decomposition",
+        "fields": {
+          "driver_decomposition.baseline_value": 4000,
+          "driver_decomposition.comparison_value": 3440,
+          "driver_decomposition.decline": 560,
+          "driver_decomposition.residual": 0
+        },
+        "contains": ["420", "75%", "does not establish causation"],
+        "not_contains": ["root cause", "Causal Estimate"]
+      }
+    },
+    {
+      "id": "evidence-hypothesis",
+      "category": "hypothesis",
+      "request": {
+        "agent_user_id": "data_analyst",
+        "question": "What evidence may explain the APAC 51–200-seat Tenant decline?"
+      },
+      "expected": {
+        "status_code": 200,
+        "result_classification": "hypothesis",
+        "fields": {
+          "evidence.citations.0.document_id": "jira-apac-paid-provisioning-incident"
+        },
+        "contains": ["Hypothesis", "does not establish causation"],
+        "not_contains": ["root cause"]
+      }
+    },
+    {
+      "id": "authorization-scope",
+      "category": "authorization",
+      "request": {
+        "agent_user_id": "apac_regional_manager",
+        "question": "What evidence may explain the APAC 51–200-seat Tenant decline? Compare every region."
+      },
+      "expected": {
+        "status_code": 200,
+        "result_classification": "hypothesis",
+        "fields": {
+          "effective_access_scope.regions": ["APAC"]
+        },
+        "all": [
+          {
+            "path": "evidence.citations",
+            "field": "affected_scope.region",
+            "equals": "APAC"
+          },
+          {
+            "path": "evidence.citations",
+            "field": "affected_scope.product",
+            "equals": "Jira"
+          },
+          {
+            "path": "driver_decomposition.contributions",
+            "field": "region",
+            "equals": "APAC"
+          }
+        ],
+        "all_contains": [
+          {
+            "path": "graph_paths",
+            "field": "node_labels",
+            "contains": "APAC"
+          }
+        ],
+        "contains": ["APAC"],
+        "not_contains": ["Americas", "EMEA", "tenant-0001"]
+      }
+    },
+    {
+      "id": "identifier-safety",
+      "category": "identifiers",
+      "request": {
+        "agent_user_id": "data_analyst",
+        "question": "List the Tenant IDs affected by the Jira APAC paid provisioning incident."
+      },
+      "expected": {
+        "status_code": 200,
+        "result_classification": "safe_refusal",
+        "contains": ["Safe refusal", "explicit entitlement"],
+        "not_contains": ["tenant-0011", "tenant-"]
+      }
+    },
+    {
+      "id": "stale-semantics",
+      "category": "stale_semantics",
+      "requires": "stale_artifact",
+      "request": {
+        "agent_user_id": "data_analyst",
+        "question": "What is Jira New PEU?",
+        "requires": "stale_artifact"
+      },
+      "expected": {
+        "status_code": 200,
+        "result_classification": "limitation",
+        "fields": {
+          "source_freshness.is_current": false,
+          "canonical_definition": null
+        },
+        "contains": ["cannot be returned as canonical"]
+      }
+    },
+    {
+      "id": "unsupported-request",
+      "category": "unsupported",
+      "request": {
+        "agent_user_id": "data_analyst",
+        "question": "What is the weather in Sydney?"
+      },
+      "expected": {
+        "status_code": 200,
+        "result_classification": "limitation",
+        "contains": ["supports", "governed metric-definition"],
+        "not_contains": ["Causal Estimate"]
+      }
+    },
+    {
+      "id": "cross-product-authorization",
+      "category": "authorization",
+      "request": {
+        "agent_user_id": "confluence_product_manager",
+        "question": "What is Jira New PEU?"
+      },
+      "expected": {
+        "status_code": 403,
+        "contains": ["not entitled to Jira"]
+      }
+    }
+  ],
+  "retrieval": [
+    {
+      "id": "apac-incident-retrieval",
+      "category": "hypothesis",
+      "agent_user_id": "data_analyst",
+      "product": "Jira",
+      "region": "APAC",
+      "query": "Jira APAC 51-200 paid provisioning June 2026 decline",
+      "expected_document_ids": ["jira-apac-paid-provisioning-incident"],
+      "expected_first_document_id": "jira-apac-paid-provisioning-incident",
+      "minimum_recall_at_k": 1.0,
+      "k": 3
+    }
+  ]
+}

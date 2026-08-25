@@ -205,13 +205,21 @@ _PROFILES = {
 class UnknownAgentUserError(ValueError):
     """Raised when no Access Profile exists for an Agent User."""
 
+    def __init__(self, message: str = "Unknown Agent User.", *, trace_id: str | None = None):
+        super().__init__(message)
+        self.trace_id = trace_id
+
 
 class AccessDeniedError(ValueError):
     """Raised when an Access Profile is outside a metric's product scope."""
+
+    def __init__(self, message: str, *, trace_id: str | None = None) -> None:
+        super().__init__(message)
+        self.trace_id = trace_id
 
 
 def resolve_access_profile(agent_user_id: str) -> AccessProfile:
     try:
         return _PROFILES[agent_user_id]
     except KeyError as error:
-        raise UnknownAgentUserError(f"Unknown Agent User: {agent_user_id}") from error
+        raise UnknownAgentUserError() from error
