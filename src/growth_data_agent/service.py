@@ -95,7 +95,8 @@ class AnswerQuestionService:
             return GovernedAnalyticalResponse(
                 answer=(
                     "This first delivery supports governed metric-definition questions, starting "
-                    "with Jira New PEU. Name a metric to check its semantic status."
+                    "with Jira and Confluence New PEU. Name a metric to check its semantic "
+                    "status."
                 ),
                 result_classification=ResultClassification.LIMITATION,
                 source_freshness=self.semantic_gateway.freshness(artifact),
@@ -104,9 +105,8 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        if (
-            metric_name == "jira_new_peu"
-            and self._requests_apac_decline_evidence(request.question)
+        if metric_name == "jira_new_peu" and self._requests_apac_decline_evidence(
+            request.question
         ):
             return self._answer_apac_decline_evidence(
                 scope=scope,
@@ -114,11 +114,20 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        if (
-            metric_name == "jira_new_peu"
-            and self._requests_may_to_june_driver_decomposition(request.question)
+        if metric_name == "confluence_new_peu" and self._requests_confluence_campaign_evidence(
+            request.question
         ):
-            return self._answer_may_to_june_driver_decomposition(
+            return self._answer_confluence_campaign_evidence(
+                scope=scope,
+                access_profile=access_profile,
+                trace_id=trace_id,
+            )
+
+        if metric_name in {"jira_new_peu", "confluence_new_peu"} and (
+            self._requests_may_to_june_driver_decomposition(request.question)
+        ):
+            return self._answer_metric_driver_decomposition(
+                metric_name=metric_name,
                 scope=scope,
                 access_profile=access_profile,
                 trace_id=trace_id,
@@ -156,7 +165,7 @@ class AnswerQuestionService:
         if query_evidence is None:
             return GovernedAnalyticalResponse(
                 answer=(
-                    "Jira New PEU cannot be returned as canonical because "
+                    f"{metric_product} New PEU cannot be returned as canonical because "
                     "validation is not current."
                 ),
                 result_classification=ResultClassification.LIMITATION,
@@ -168,7 +177,8 @@ class AnswerQuestionService:
 
         return GovernedAnalyticalResponse(
             answer=(
-                "Jira New PEU is a Product User's first-ever Paid Enablement for Jira. "
+                f"{metric_product} New PEU is a Product User's first-ever Paid Enablement for "
+                f"{metric_product}. "
                 "Later restorations of paid access do not create another New PEU."
             ),
             result_classification=ResultClassification.CANONICAL_DEFINITION,
@@ -285,20 +295,23 @@ class AnswerQuestionService:
             pass
         return trace.trace_id
 
-    def _answer_may_to_june_driver_decomposition(self, *, scope, access_profile, trace_id: str):
+    def _answer_metric_driver_decomposition(
+        self, *, metric_name: str, scope, access_profile, trace_id: str
+    ):
         definition, decomposition, query_evidence, freshness = (
             self.semantic_gateway.driver_decomposition(
-                "jira_new_peu",
+                metric_name,
                 access_profile,
                 baseline_period="2026-05",
                 comparison_period="2026-06",
             )
         )
         if definition is None or decomposition is None or query_evidence is None:
+            metric_product = self._metric_product(metric_name)
             return GovernedAnalyticalResponse(
                 answer=(
-                    "Jira New PEU cannot be decomposed as canonical because semantic validation "
-                    "is not current."
+                    f"{metric_product} New PEU cannot be decomposed as canonical because "
+                    "semantic validation is not current."
                 ),
                 result_classification=ResultClassification.LIMITATION,
                 source_freshness=freshness,
@@ -310,15 +323,23 @@ class AnswerQuestionService:
         leading = decomposition.contributions[0] if decomposition.contributions else None
         leading_text = "No segment movement was returned."
         if leading is not None:
-            leading_text = (
-                f"{leading.region} / {leading.seat_tier} Seat Tier Tenants are the leading "
-                "observed driver, contributing "
-                f"{leading.contribution_to_decline:,} of the {decomposition.decline:,} decline "
-                f"({leading.percentage_of_decline:g}%)."
-            )
+            if decomposition.net_change > 0:
+                leading_text = (
+                    f"{leading.region} / {leading.seat_tier} Seat Tier Tenants are the leading "
+                    "observed movement, contributing "
+                    f"{leading.change:+,} of the {decomposition.net_change:+,} net movement."
+                )
+            else:
+                leading_text = (
+                    f"{leading.region} / {leading.seat_tier} Seat Tier Tenants are the leading "
+                    "observed driver, contributing "
+                    f"{leading.contribution_to_decline:,} of the {decomposition.decline:,} decline "
+                    f"({leading.percentage_of_decline:g}%)."
+                )
+        metric_product = self._metric_product(metric_name)
         return GovernedAnalyticalResponse(
             answer=(
-                "Driver Decomposition (observed, non-causal): Jira New PEU moved from "
+                f"Driver Decomposition (observed, non-causal): {metric_product} New PEU moved from "
                 f"{decomposition.baseline_value:,} in May 2026 to "
                 f"{decomposition.comparison_value:,} in June 2026 "
                 f"({decomposition.net_change:+,}). Semantic definition v"
@@ -344,9 +365,68 @@ class AnswerQuestionService:
         )
 
     def _answer_apac_decline_evidence(self, *, scope, access_profile, trace_id: str):
+        return self._answer_segment_evidence(
+            metric_name="jira_new_peu",
+            region="APAC",
+            seat_tier="51-200",
+            scope=scope,
+            access_profile=access_profile,
+            trace_id=trace_id,
+            evidence_query="Jira APAC 51-200 paid provisioning June 2026 decline",
+            supported_answer=(
+                "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
+                "part of the observed APAC 51-200 Seat Tier Tenant decline. "
+                "The evidence supports this Hypothesis but does not establish causation."
+            ),
+            inconclusive_answer=(
+                "Inconclusive: the permitted evidence does not support a reliable explanation "
+                "for the observed APAC 51-200 Seat Tier Tenant decline."
+            ),
+        )
+
+    def _answer_confluence_campaign_evidence(self, *, scope, access_profile, trace_id: str):
+        return self._answer_segment_evidence(
+            metric_name="confluence_new_peu",
+            region="Americas",
+            seat_tier="11-50",
+            scope=scope,
+            access_profile=access_profile,
+            trace_id=trace_id,
+            evidence_query=(
+                "Confluence Americas 11-50 acquisition campaign June 2026 New PEU movement"
+            ),
+            scope_evidence_to_seat_tier=True,
+            supported_answer=(
+                "Hypothesis: the permitted Confluence Americas acquisition campaign may help "
+                "explain the observed Americas 11-50 Seat Tier Tenant movement. "
+                "The evidence supports this Hypothesis but does not establish causation."
+            ),
+            inconclusive_answer=(
+                "Inconclusive: the permitted evidence does not support a reliable explanation "
+                "for the observed Americas 11-50 Seat Tier Tenant movement."
+            ),
+        )
+
+    def _answer_segment_evidence(
+        self,
+        *,
+        metric_name: str,
+        region: str,
+        seat_tier: str,
+        scope,
+        access_profile,
+        trace_id: str,
+        evidence_query: str,
+        supported_answer: str,
+        inconclusive_answer: str,
+        scope_evidence_to_seat_tier: bool = False,
+    ):
+        metric_product = self._metric_product(metric_name)
+        access_profile.authorize_product(metric_product)
+        access_profile.authorize_region(region)
         definition, decomposition, query_evidence, freshness = (
             self.semantic_gateway.driver_decomposition(
-                "jira_new_peu",
+                metric_name,
                 access_profile,
                 baseline_period="2026-05",
                 comparison_period="2026-06",
@@ -355,8 +435,8 @@ class AnswerQuestionService:
         if definition is None or decomposition is None or query_evidence is None:
             return GovernedAnalyticalResponse(
                 answer=(
-                    "Evidence for the APAC decline cannot be assessed because semantic "
-                    "validation is not current."
+                    f"Evidence for the {metric_product} {region} {seat_tier} movement cannot "
+                    "be assessed because semantic validation is not current."
                 ),
                 result_classification=ResultClassification.LIMITATION,
                 source_freshness=freshness,
@@ -368,21 +448,30 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        graph_filter = access_profile.graph_filter("Jira", "APAC")
+        segment_filter = seat_tier if scope_evidence_to_seat_tier else None
+        graph_filter = access_profile.graph_filter(
+            metric_product,
+            region,
+            seat_tier=segment_filter,
+        )
         graph_paths = [
             path
             for path in self.graph_store.traverse(
-                "Jira APAC 51-200 paid provisioning June 2026 decline",
+                evidence_query,
                 graph_filter,
                 limit=3,
             )
             if graph_filter.allows(path)
         ][:3]
-        access_filter = access_profile.evidence_filter("Jira", "APAC")
+        access_filter = access_profile.evidence_filter(
+            metric_product,
+            region,
+            seat_tier=seat_tier if scope_evidence_to_seat_tier else None,
+        )
         documents = [
             document
             for document in self.evidence_store.retrieve(
-                "Jira APAC 51-200 paid provisioning June 2026 decline",
+                evidence_query,
                 access_filter,
                 limit=3,
             )
@@ -391,18 +480,10 @@ class AnswerQuestionService:
         evidence = build_evidence_answer(documents)
         if evidence.support_status == EvidenceSupportStatus.SUPPORTS:
             classification = ResultClassification.HYPOTHESIS
-            answer = (
-                "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
-                "part of the observed APAC 51-200 Seat Tier Tenant decline. "
-                "The evidence supports this Hypothesis but does not establish causation."
-            )
+            answer = supported_answer
         else:
             classification = ResultClassification.INCONCLUSIVE
-            answer = (
-                "Inconclusive: the permitted evidence does not support a reliable explanation "
-                "for the observed APAC 51-200 Seat Tier Tenant decline. "
-                f"{evidence.support_explanation}"
-            )
+            answer = f"{inconclusive_answer} {evidence.support_explanation}"
         return GovernedAnalyticalResponse(
             answer=answer,
             result_classification=classification,
@@ -415,8 +496,9 @@ class AnswerQuestionService:
             effective_access_scope=scope,
             caveats=[
                 (
-                    "The APAC 51-200 Seat Tier result is an observed Driver Decomposition; "
-                    "the retrieved incident is a Hypothesis, not a causal conclusion."
+                    f"The {region} {seat_tier} Seat Tier result is an observed Driver "
+                    "Decomposition; the retrieved material is a Hypothesis, not a causal "
+                    "conclusion."
                 ),
                 "Only evidence permitted by product, Region, Tenant, classification, and "
                 "identifier entitlements was retrieved.",
@@ -608,6 +690,17 @@ class AnswerQuestionService:
             and "apac" in normalized
             and "decline" in normalized
             and ("51–200" in question or "51-200" in normalized)
+        )
+
+    @staticmethod
+    def _requests_confluence_campaign_evidence(question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        return (
+            "evidence" in normalized
+            and "confluence" in normalized
+            and "americas" in normalized
+            and ("11–50" in question or "11-50" in normalized)
+            and any(term in normalized for term in ("campaign", "movement", "lift", "increase"))
         )
 
     @staticmethod

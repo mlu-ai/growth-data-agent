@@ -10,7 +10,7 @@ from pathlib import Path
 from .contracts import EvidenceSupportStatus
 from .evidence import EvidenceDocument
 from .graph import GraphNode, GraphPath
-from .policy import tenant_ids_for_region
+from .policy import tenant_ids_for_segment
 
 _START_DATE = date(2025, 1, 1)
 _END_DATE = date(2026, 6, 30)
@@ -23,6 +23,11 @@ _JIRA_MAY_JUNE_SCENARIO = {
     ("APAC", "1-10"): (600, 580),
     ("EMEA", "51-200"): (500, 480),
     ("Americas", "51-200"): (400, 380),
+}
+_CONFLUENCE_MAY_JUNE_SCENARIO = {
+    ("Americas", "11-50"): (1200, 1620),
+    ("APAC", "1-10"): (600, 600),
+    ("EMEA", "51-200"): (600, 600),
 }
 
 
@@ -122,12 +127,96 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             ),
             sensitive_identifiers=["tenant-0011"],
         ),
+        EvidenceDocument(
+            document_id="confluence-americas-acquisition-campaign",
+            title="Confluence Americas targeted acquisition campaign",
+            text=(
+                "A targeted acquisition campaign ran for Confluence Americas 11-50 Seat Tier "
+                "Tenants from 2026-06-10 through 2026-06-15, overlapping the June New PEU increase."
+            ),
+            product="Confluence",
+            region="Americas",
+            tenant_ids=_tenant_ids_for_segment("Americas", "11-50"),
+            tenant_scope="Americas 11-50 Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 6, 15),
+            freshness=datetime(2026, 6, 16, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.SUPPORTS,
+            support_explanation=(
+                "The campaign overlaps the Americas 11-50 Seat Tier Tenant scope and the June "
+                "2026 New PEU increase period."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="confluence-americas-enterprise-campaign",
+            title="Confluence Americas enterprise campaign summary",
+            text=(
+                "A Confluence campaign summary was published in June 2026, but it covered "
+                "201+ Seat Tier Tenants and not the affected 11-50 segment."
+            ),
+            product="Confluence",
+            region="Americas",
+            tenant_ids=_tenant_ids_for_segment("Americas", "201+"),
+            tenant_scope="Americas 201+ Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 6, 9),
+            freshness=datetime(2026, 6, 10, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.INCONCLUSIVE,
+            support_explanation=(
+                "The campaign concerns a different Seat Tier from the affected segment."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="confluence-americas-provisioning-maintenance",
+            title="Confluence Americas provisioning maintenance notice",
+            text=(
+                "A Confluence provisioning maintenance window affected Americas 1-10 Seat Tier "
+                "Tenants in May 2026, outside the affected 11-50 Seat Tier scope."
+            ),
+            product="Confluence",
+            region="Americas",
+            tenant_ids=_tenant_ids_for_segment("Americas", "1-10"),
+            tenant_scope="Americas 1-10 Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 5, 18),
+            freshness=datetime(2026, 5, 19, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.INCONCLUSIVE,
+            support_explanation=(
+                "The notice concerns a different Seat Tier from the affected segment."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="confluence-americas-acquisition-campaign-restricted",
+            title="Restricted Confluence Americas acquisition campaign appendix",
+            text=(
+                "Restricted appendix with direct Tenant identifiers for the Confluence Americas "
+                "acquisition campaign: tenant-0002."
+            ),
+            product="Confluence",
+            region="Americas",
+            tenant_ids=["tenant-0002"],
+            tenant_scope="Americas 11-50 Seat Tier Tenants",
+            classification="restricted",
+            identifier_entitlement="direct",
+            relevant_date=date(2026, 6, 15),
+            freshness=datetime(2026, 6, 16, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.SUPPORTS,
+            support_explanation=(
+                "This restricted appendix cannot be used without classification and direct "
+                "identifier entitlement."
+            ),
+            sensitive_identifiers=["tenant-0002"],
+        ),
     )
 
 
 def graph_corpus() -> tuple[GraphPath, ...]:
     """Return deterministic public and direct-identifier evidence paths."""
     apac_enterprise_tenants = _tenant_ids_for_segment("APAC", "51-200")
+    americas_campaign_tenants = _tenant_ids_for_segment("Americas", "11-50")
     return (
         GraphPath(
             path_id="jira-apac-new-peu-incident-chain",
@@ -189,18 +278,71 @@ def graph_corpus() -> tuple[GraphPath, ...]:
                 ),
             ],
         ),
+        GraphPath(
+            path_id="confluence-americas-acquisition-campaign-chain",
+            nodes=[
+                GraphNode(
+                    node_id="metric-confluence-new-peu",
+                    node_type="metric",
+                    label="Confluence New PEU",
+                    product="Confluence",
+                    region="Americas",
+                    tenant_ids=americas_campaign_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+                GraphNode(
+                    node_id="segment-americas-11-50",
+                    node_type="segment",
+                    label="Americas 11-50 Seat Tier Tenants",
+                    product="Confluence",
+                    region="Americas",
+                    tenant_ids=americas_campaign_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+                GraphNode(
+                    node_id="campaign-confluence-americas-acquisition",
+                    node_type="campaign",
+                    label="Confluence Americas targeted acquisition campaign",
+                    product="Confluence",
+                    region="Americas",
+                    tenant_ids=americas_campaign_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+            ],
+        ),
+        GraphPath(
+            path_id="confluence-americas-campaign-identifier-chain",
+            nodes=[
+                GraphNode(
+                    node_id="campaign-confluence-americas-acquisition-restricted",
+                    node_type="campaign",
+                    label="Restricted Confluence Americas campaign appendix",
+                    product="Confluence",
+                    region="Americas",
+                    tenant_ids=["tenant-0002"],
+                    classification="restricted",
+                    identifier_entitlement="direct",
+                ),
+                GraphNode(
+                    node_id="tenant-0002",
+                    node_type="tenant",
+                    label="tenant-0002",
+                    product="Confluence",
+                    region="Americas",
+                    tenant_ids=["tenant-0002"],
+                    classification="restricted",
+                    identifier_entitlement="direct",
+                ),
+            ],
+        ),
     )
 
 
 def _tenant_ids_for_segment(region: str, seat_tier: str) -> list[str]:
-    return [
-        tenant_id
-        for tenant_id in tenant_ids_for_region(region)
-        if (
-            (int(tenant_id.rsplit("-", 1)[1]) - 1) % len(_SEAT_TIERS)
-            == _SEAT_TIERS.index(seat_tier)
-        )
-    ]
+    return list(tenant_ids_for_segment(region, seat_tier))
 
 
 def generate(output_directory: Path) -> DatasetCounts:
@@ -242,12 +384,24 @@ def _tenants() -> list[dict[str, str]]:
 
 def _product_users(tenants: list[dict[str, str]]) -> list[dict[str, str]]:
     product_users: list[dict[str, str]] = []
-    scenario_tenant_ids = iter(_scenario_tenant_ids(tenants))
+    jira_scenario_tenant_ids = iter(
+        _scenario_tenant_ids(tenants, _JIRA_MAY_JUNE_SCENARIO)
+    )
+    confluence_scenario_tenant_ids = iter(
+        _scenario_tenant_ids(tenants, _CONFLUENCE_MAY_JUNE_SCENARIO)
+    )
     sequence = 1
     # Each of these Persons has separate Product User relationships in both products.
     for person_number in range(1, 6_001):
-        tenant_id = next(scenario_tenant_ids)
-        for product in ("Jira", "Confluence"):
+        jira_tenant_id = next(jira_scenario_tenant_ids)
+        confluence_tenant_id = _next_or_fallback(
+            confluence_scenario_tenant_ids,
+            jira_tenant_id,
+        )
+        for product, tenant_id in (
+            ("Jira", jira_tenant_id),
+            ("Confluence", confluence_tenant_id),
+        ):
             product_users.append(
                 {
                     "product_user_id": f"product-user-{sequence:05d}",
@@ -260,7 +414,7 @@ def _product_users(tenants: list[dict[str, str]]) -> list[dict[str, str]]:
     for person_number in range(6_001, 10_001):
         product = "Jira" if person_number % 2 else "Confluence"
         tenant_id = (
-            next(scenario_tenant_ids)
+            next(jira_scenario_tenant_ids)
             if product == "Jira" and person_number < 8_881
             else f"tenant-{((person_number * 29 - 1) % 1_000) + 1:04d}"
         )
@@ -276,14 +430,16 @@ def _product_users(tenants: list[dict[str, str]]) -> list[dict[str, str]]:
     return product_users
 
 
-def _scenario_tenant_ids(tenants: list[dict[str, str]]) -> list[str]:
+def _scenario_tenant_ids(
+    tenants: list[dict[str, str]], scenario: dict[tuple[str, str], tuple[int, int]]
+) -> list[str]:
     tenant_ids_by_segment: dict[tuple[str, str], list[str]] = {}
     for tenant in tenants:
         segment = (tenant["billing_region"], tenant["seat_tier"])
         tenant_ids_by_segment.setdefault(segment, []).append(tenant["tenant_id"])
 
     assigned: list[str] = []
-    for segment, (may_count, june_count) in _JIRA_MAY_JUNE_SCENARIO.items():
+    for segment, (may_count, june_count) in scenario.items():
         tenant_ids = tenant_ids_by_segment[segment]
         assigned.extend(
             tenant_ids[index % len(tenant_ids)] for index in range(may_count + june_count)
@@ -299,7 +455,7 @@ def _paid_enablements(
         tenant["tenant_id"]: (tenant["billing_region"], tenant["seat_tier"])
         for tenant in tenants
     }
-    scenario_seen: dict[tuple[str, str], int] = {}
+    scenario_seen: dict[tuple[str, tuple[str, str]], int] = {}
     sequence = 1
     for index, product_user in enumerate(product_users, start=1):
         first_enabled = _first_enablement_date(
@@ -322,13 +478,18 @@ def _first_enablement_date(
     index: int,
     product_user: dict[str, str],
     tenant_segments: dict[str, tuple[str, str]],
-    scenario_seen: dict[tuple[str, str], int],
+    scenario_seen: dict[tuple[str, tuple[str, str]], int],
 ) -> date:
     segment = tenant_segments[product_user["tenant_id"]]
-    if product_user["product"] == "Jira" and segment in _JIRA_MAY_JUNE_SCENARIO:
-        scenario_position = scenario_seen.get(segment, 0)
-        scenario_seen[segment] = scenario_position + 1
-        may_count, june_count = _JIRA_MAY_JUNE_SCENARIO[segment]
+    scenario = {
+        "Jira": _JIRA_MAY_JUNE_SCENARIO,
+        "Confluence": _CONFLUENCE_MAY_JUNE_SCENARIO,
+    }.get(product_user["product"], {})
+    if segment in scenario:
+        scenario_key = (product_user["product"], segment)
+        scenario_position = scenario_seen.get(scenario_key, 0)
+        scenario_seen[scenario_key] = scenario_position + 1
+        may_count, june_count = scenario[segment]
         if scenario_position < may_count:
             return date(2026, 5, scenario_position % 31 + 1)
         if scenario_position < may_count + june_count:
@@ -373,3 +534,10 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _next_or_fallback(iterator, fallback: str) -> str:
+    try:
+        return next(iterator)
+    except StopIteration:
+        return fallback

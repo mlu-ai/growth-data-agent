@@ -7,13 +7,23 @@ def test_dbt_model_selects_only_first_jira_paid_enablement() -> None:
     intermediate = intermediate_path.read_text()
     fact_model = (repository / "dbt/models/marts/fct_jira_new_peu.sql").read_text()
     semantic_yaml = (repository / "dbt/models/marts/jira_new_peu.yml").read_text()
+    confluence_fact_model = (
+        repository / "dbt/models/marts/fct_confluence_new_peu.sql"
+    ).read_text()
+    confluence_semantic_yaml = (
+        repository / "dbt/models/marts/confluence_new_peu.yml"
+    ).read_text()
     time_spine_yaml = (repository / "dbt/models/marts/metricflow_time_spine.yml").read_text()
 
     assert "partition by product_user_id, product" in intermediate
     assert "row_number()" in intermediate
     assert "product = 'Jira'" in fact_model
     assert "paid_enablement_ordinal = 1" in fact_model
+    assert "product = 'Confluence'" in confluence_fact_model
+    assert "paid_enablement_ordinal = 1" in confluence_fact_model
     assert "count_distinct" in semantic_yaml
+    assert "confluence_new_peu" in confluence_semantic_yaml
+    assert "count_distinct" in confluence_semantic_yaml
     assert "seat_tier" in semantic_yaml
     assert "paid_tenant_tenure_days" in semantic_yaml
     tenant_staging = (repository / "dbt/models/staging/stg_tenants.sql").read_text()

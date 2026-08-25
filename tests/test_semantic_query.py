@@ -107,6 +107,7 @@ def test_driver_decomposition_uses_only_approved_dimensions_and_apac_row_scope(
     )
     assert planner.requests[0].group_by_names == (
         "metric_time__month",
+        "product_user__product",
         "product_user__region",
         "product_user__seat_tier",
     )
@@ -137,6 +138,35 @@ def test_metricflow_planner_compiles_the_validated_semantic_manifest() -> None:
     assert plan.sql.lstrip().casefold().startswith(("select", "with"))
     assert "fct_jira_new_peu" in plan.sql
     assert "APAC" in plan.sql
+
+
+def test_metricflow_planner_compiles_the_confluence_semantic_manifest() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    target_manifest = repository / "dbt/target/semantic_manifest.json"
+    if not target_manifest.exists():
+        pytest.skip("dbt semantic manifest is not available; run dbt parse first")
+
+    plan = MetricFlowPlanner(target_manifest).plan(
+        MetricFlowQueryRequest(
+            metric_name="confluence_new_peu",
+            where_constraints=(
+                "confluence_product_user__product = 'Confluence'",
+                "confluence_product_user__region IN ('Americas')",
+            ),
+            group_by_names=(
+                "metric_time__month",
+                "confluence_product_user__product",
+                "confluence_product_user__region",
+                "confluence_product_user__seat_tier",
+            ),
+            limit=None,
+        )
+    )
+
+    assert plan.metric_name == "confluence_new_peu"
+    assert plan.sql.lstrip().casefold().startswith(("select", "with"))
+    assert "fct_confluence_new_peu" in plan.sql
+    assert "Americas" in plan.sql
 
 
 def test_postgres_executor_refuses_non_select_sql() -> None:
@@ -173,3 +203,38 @@ def test_metricflow_generated_sql_executes_on_postgres() -> None:
     assert evidence is not None
     assert evidence.result_row_count == 1
     assert evidence.constrained_regions == ["APAC"]
+
+
+def test_confluence_metricflow_query_and_driver_reconcile_on_postgres() -> None:
+    database_url = os.environ.get("METRICFLOW_TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip(
+            "METRICFLOW_TEST_DATABASE_URL is required for the local Postgres integration test"
+        )
+
+    repository = Path(__file__).resolve().parents[1]
+    gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(repository / "dbt/artifacts/last_validated_semantic.json"),
+        metricflow_planner=MetricFlowPlanner(repository / "dbt/target/semantic_manifest.json"),
+        postgres_executor=PostgresMetricFlowExecutor(database_url),
+    )
+
+    definition, decomposition, evidence, freshness = gateway.driver_decomposition(
+        "confluence_new_peu",
+        resolve_access_profile("data_analyst"),
+        baseline_period="2026-05",
+        comparison_period="2026-06",
+    )
+
+    assert freshness.is_current is True
+    assert definition is not None
+    assert definition.name == "confluence_new_peu"
+    assert decomposition is not None
+    assert (decomposition.baseline_value, decomposition.comparison_value) == (2400, 2820)
+    assert decomposition.net_change == decomposition.reconciled_change == 420
+    assert decomposition.residual == 0
+    assert decomposition.contributions[0].region == "Americas"
+    assert decomposition.contributions[0].seat_tier == "11-50"
+    assert decomposition.contributions[0].change == 420
+    assert evidence is not None
+    assert evidence.constrained_products == ["Confluence"]

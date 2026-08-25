@@ -10,10 +10,14 @@ from .graph import GraphAccessFilter
 
 _ALL_TENANT_IDS = tuple(f"tenant-{number:04d}" for number in range(1, 1_001))
 _ALL_REGIONS = ("Americas", "APAC", "EMEA")
+_ALL_SEAT_TIERS = ("1-10", "11-50", "51-200", "201+")
 _QUERY_COLUMN_NAMES = {
     "product_user__product": "product",
     "product_user__region": "region",
     "product_user__seat_tier": "seat_tier",
+    "confluence_product_user__product": "product",
+    "confluence_product_user__region": "region",
+    "confluence_product_user__seat_tier": "seat_tier",
     "metric_time__month": "metric_month",
 }
 
@@ -28,6 +32,18 @@ def tenant_ids_for_region(region: str) -> tuple[str, ...]:
         tenant_id
         for number, tenant_id in enumerate(_ALL_TENANT_IDS, start=1)
         if (number - 1) % len(_ALL_REGIONS) == region_index
+    )
+
+
+def tenant_ids_for_segment(region: str, seat_tier: str) -> tuple[str, ...]:
+    """Resolve synthetic Tenant entitlements for a Region and Seat Tier."""
+    if seat_tier not in _ALL_SEAT_TIERS:
+        raise AccessDeniedError(f"Unknown Seat Tier entitlement: {seat_tier}.")
+    return tuple(
+        tenant_id
+        for tenant_id in tenant_ids_for_region(region)
+        if (int(tenant_id.rsplit("-", 1)[1]) - 1) % len(_ALL_SEAT_TIERS)
+        == _ALL_SEAT_TIERS.index(seat_tier)
     )
 
 
@@ -47,7 +63,9 @@ class AccessProfile:
         "metric_month",
     )
 
-    def metricflow_where_constraints(self, metric_product: str) -> tuple[str, ...]:
+    def metricflow_where_constraints(
+        self, metric_product: str, *, entity_name: str = "product_user"
+    ) -> tuple[str, ...]:
         """Return fixed, profile-derived MetricFlow filters for a canonical metric.
 
         The service never accepts filter text from an Agent User. Product is a
@@ -58,10 +76,10 @@ class AccessProfile:
         """
         self.authorize_product(metric_product)
 
-        constraints = [f"product_user__product = '{metric_product}'"]
+        constraints = [f"{entity_name}__product = '{metric_product}'"]
         if len(self.regions) != len(_ALL_REGIONS):
             regions = ", ".join(repr(region) for region in self.regions)
-            constraints.append(f"product_user__region IN ({regions})")
+            constraints.append(f"{entity_name}__region IN ({regions})")
         permitted_region_tenants = {
             tenant_id
             for region in self.regions
@@ -69,13 +87,18 @@ class AccessProfile:
         }
         if set(self.permitted_tenant_ids) != permitted_region_tenants:
             tenants = ", ".join(repr(tenant_id) for tenant_id in self.permitted_tenant_ids)
-            constraints.append(f"product_user__tenant_id IN ({tenants})")
+            constraints.append(f"{entity_name}__tenant_id IN ({tenants})")
         return tuple(constraints)
 
     def authorize_product(self, product: str) -> None:
         """Authorize a product before any product-owned source is read."""
         if product not in self.products:
             raise AccessDeniedError(f"Access Profile is not entitled to {product} data.")
+
+    def authorize_region(self, region: str) -> None:
+        """Authorize a Region before a scoped metric or evidence source is read."""
+        if region not in self.regions:
+            raise AccessDeniedError(f"Access Profile is not entitled to {region} data.")
 
     def as_effective_scope(self) -> EffectiveAccessScope:
         return EffectiveAccessScope(
@@ -85,15 +108,21 @@ class AccessProfile:
             permitted_columns=list(self.permitted_columns),
         )
 
-    def evidence_filter(self, product: str, region: str) -> EvidenceAccessFilter:
+    def evidence_filter(
+        self, product: str, region: str, *, seat_tier: str | None = None
+    ) -> EvidenceAccessFilter:
         """Derive every document filter before the vector store is queried."""
         if product not in self.products:
             raise AccessDeniedError(f"Access Profile is not entitled to {product} evidence.")
         if region not in self.regions:
             raise AccessDeniedError(f"Access Profile is not entitled to {region} evidence.")
+        region_tenants = (
+            tenant_ids_for_segment(region, seat_tier)
+            if seat_tier is not None
+            else tenant_ids_for_region(region)
+        )
         permitted_tenants = tuple(
-            tenant_id for tenant_id in tenant_ids_for_region(region)
-            if tenant_id in self.permitted_tenant_ids
+            tenant_id for tenant_id in region_tenants if tenant_id in self.permitted_tenant_ids
         )
         if not permitted_tenants:
             raise AccessDeniedError(f"Access Profile has no permitted {region} Tenants.")
@@ -107,17 +136,24 @@ class AccessProfile:
             excluded_tenant_ids=tuple(
                 tenant_id for tenant_id in _ALL_TENANT_IDS if tenant_id not in permitted_tenants
             ),
+            seat_tiers=(seat_tier,) if seat_tier is not None else (),
         )
 
-    def graph_filter(self, product: str, region: str) -> GraphAccessFilter:
+    def graph_filter(
+        self, product: str, region: str, *, seat_tier: str | None = None
+    ) -> GraphAccessFilter:
         """Derive graph traversal constraints before a path is requested."""
         if product not in self.products:
             raise AccessDeniedError(f"Access Profile is not entitled to {product} graph paths.")
         if region not in self.regions:
             raise AccessDeniedError(f"Access Profile is not entitled to {region} graph paths.")
+        region_tenants = (
+            tenant_ids_for_segment(region, seat_tier)
+            if seat_tier is not None
+            else tenant_ids_for_region(region)
+        )
         permitted_tenants = tuple(
-            tenant_id for tenant_id in tenant_ids_for_region(region)
-            if tenant_id in self.permitted_tenant_ids
+            tenant_id for tenant_id in region_tenants if tenant_id in self.permitted_tenant_ids
         )
         if not permitted_tenants:
             raise AccessDeniedError(f"Access Profile has no permitted {region} Tenants.")
@@ -128,6 +164,7 @@ class AccessProfile:
             tenant_ids=permitted_tenants,
             classifications=self.permitted_classifications,
             identifier_entitlements=identifier_entitlements,
+            seat_tiers=(seat_tier,) if seat_tier is not None else (),
         )
 
     def permits_provisional_inputs(self, inputs: list[ProvisionalMetricInput]) -> bool:

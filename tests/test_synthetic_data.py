@@ -61,6 +61,46 @@ def test_synthetic_dataset_is_reproducible_and_glossary_aligned(tmp_path) -> Non
     assert may_june_counts[("2026-06", "APAC", "51-200")] == 380
 
 
+def test_synthetic_confluence_campaign_movement_is_reproducible_and_reconciled(
+    tmp_path,
+) -> None:
+    generate(tmp_path / "campaign")
+    with (tmp_path / "campaign" / "tenants.csv").open() as handle:
+        tenants = {
+            row["tenant_id"]: (row["billing_region"], row["seat_tier"])
+            for row in csv.DictReader(handle)
+        }
+    with (tmp_path / "campaign" / "product_users.csv").open() as handle:
+        product_users = {
+            row["product_user_id"]: row for row in csv.DictReader(handle)
+        }
+
+    first_confluence_enablements = {}
+    with (tmp_path / "campaign" / "paid_enablements.csv").open() as handle:
+        for event in csv.DictReader(handle):
+            product_user = product_users[event["product_user_id"]]
+            if product_user["product"] != "Confluence":
+                continue
+            current = first_confluence_enablements.get(event["product_user_id"])
+            if current is None or event["paid_enabled_at"] < current:
+                first_confluence_enablements[event["product_user_id"]] = event[
+                    "paid_enabled_at"
+                ]
+
+    counts = {}
+    for product_user_id, enabled_at in first_confluence_enablements.items():
+        if enabled_at[:7] not in {"2026-05", "2026-06"}:
+            continue
+        product_user = product_users[product_user_id]
+        region, seat_tier = tenants[product_user["tenant_id"]]
+        key = (enabled_at[:7], region, seat_tier)
+        counts[key] = counts.get(key, 0) + 1
+
+    assert sum(value for (month, _, _), value in counts.items() if month == "2026-05") == 2400
+    assert sum(value for (month, _, _), value in counts.items() if month == "2026-06") == 2820
+    assert counts[("2026-05", "Americas", "11-50")] == 1200
+    assert counts[("2026-06", "Americas", "11-50")] == 1620
+
 def test_synthetic_evidence_corpus_has_incident_distractors_and_restricted_case() -> None:
     documents = evidence_corpus()
 
@@ -69,6 +109,10 @@ def test_synthetic_evidence_corpus_has_incident_distractors_and_restricted_case(
         "jira-apac-small-tenant-maintenance",
         "jira-apac-tenant-migration-notice",
         "jira-apac-paid-provisioning-incident-restricted",
+        "confluence-americas-acquisition-campaign",
+        "confluence-americas-enterprise-campaign",
+        "confluence-americas-provisioning-maintenance",
+        "confluence-americas-acquisition-campaign-restricted",
     ]
     assert documents[0].support_status.value == "supports"
     assert documents[0].tenant_scope == "APAC 51-200 Seat Tier Tenants"
@@ -76,3 +120,7 @@ def test_synthetic_evidence_corpus_has_incident_distractors_and_restricted_case(
     assert documents[2].support_status.value == "inconclusive"
     assert documents[3].classification == "restricted"
     assert documents[3].identifier_entitlement == "direct"
+    assert documents[4].support_status.value == "supports"
+    assert documents[4].tenant_scope == "Americas 11-50 Seat Tier Tenants"
+    assert documents[7].classification == "restricted"
+    assert documents[7].identifier_entitlement == "direct"
