@@ -6,9 +6,16 @@ from dataclasses import dataclass
 
 from .contracts import EffectiveAccessScope, ProvisionalMetricInput
 from .evidence import EvidenceAccessFilter
+from .graph import GraphAccessFilter
 
 _ALL_TENANT_IDS = tuple(f"tenant-{number:04d}" for number in range(1, 1_001))
 _ALL_REGIONS = ("Americas", "APAC", "EMEA")
+_QUERY_COLUMN_NAMES = {
+    "product_user__product": "product",
+    "product_user__region": "region",
+    "product_user__seat_tier": "seat_tier",
+    "metric_time__month": "metric_month",
+}
 
 
 def tenant_ids_for_region(region: str) -> tuple[str, ...]:
@@ -33,6 +40,12 @@ class AccessProfile:
     permitted_tenant_ids: tuple[str, ...]
     permitted_classifications: tuple[str, ...] = ("internal",)
     permitted_identifiers: tuple[str, ...] = ()
+    permitted_query_columns: tuple[str, ...] = (
+        "product",
+        "region",
+        "seat_tier",
+        "metric_month",
+    )
 
     def metricflow_where_constraints(self, metric_product: str) -> tuple[str, ...]:
         """Return fixed, profile-derived MetricFlow filters for a canonical metric.
@@ -43,8 +56,7 @@ class AccessProfile:
         for the APAC profile, its permitted Tenant set is represented by the
         APAC Region constraint.
         """
-        if metric_product not in self.products:
-            raise AccessDeniedError(f"Access Profile is not entitled to {metric_product} data.")
+        self.authorize_product(metric_product)
 
         constraints = [f"product_user__product = '{metric_product}'"]
         if len(self.regions) != len(_ALL_REGIONS):
@@ -59,6 +71,11 @@ class AccessProfile:
             tenants = ", ".join(repr(tenant_id) for tenant_id in self.permitted_tenant_ids)
             constraints.append(f"product_user__tenant_id IN ({tenants})")
         return tuple(constraints)
+
+    def authorize_product(self, product: str) -> None:
+        """Authorize a product before any product-owned source is read."""
+        if product not in self.products:
+            raise AccessDeniedError(f"Access Profile is not entitled to {product} data.")
 
     def as_effective_scope(self) -> EffectiveAccessScope:
         return EffectiveAccessScope(
@@ -87,11 +104,45 @@ class AccessProfile:
             tenant_ids=permitted_tenants,
             classifications=self.permitted_classifications,
             identifier_entitlements=identifier_entitlements,
+            excluded_tenant_ids=tuple(
+                tenant_id for tenant_id in _ALL_TENANT_IDS if tenant_id not in permitted_tenants
+            ),
+        )
+
+    def graph_filter(self, product: str, region: str) -> GraphAccessFilter:
+        """Derive graph traversal constraints before a path is requested."""
+        if product not in self.products:
+            raise AccessDeniedError(f"Access Profile is not entitled to {product} graph paths.")
+        if region not in self.regions:
+            raise AccessDeniedError(f"Access Profile is not entitled to {region} graph paths.")
+        permitted_tenants = tuple(
+            tenant_id for tenant_id in tenant_ids_for_region(region)
+            if tenant_id in self.permitted_tenant_ids
+        )
+        if not permitted_tenants:
+            raise AccessDeniedError(f"Access Profile has no permitted {region} Tenants.")
+        identifier_entitlements = ("none", "direct") if self.permitted_identifiers else ("none",)
+        return GraphAccessFilter(
+            products=(product,),
+            regions=(region,),
+            tenant_ids=permitted_tenants,
+            classifications=self.permitted_classifications,
+            identifier_entitlements=identifier_entitlements,
         )
 
     def permits_provisional_inputs(self, inputs: list[ProvisionalMetricInput]) -> bool:
         """Allow a provisional calculation only when every declared input is entitled."""
         return all(item.name in self.permitted_columns for item in inputs)
+
+    def authorize_query_columns(self, group_by_names: tuple[str, ...]) -> None:
+        """Reject MetricFlow plans that request columns outside this profile."""
+        requested = tuple(_QUERY_COLUMN_NAMES.get(name, name) for name in group_by_names)
+        unauthorized = tuple(
+            column for column in requested if column not in self.permitted_query_columns
+        )
+        if unauthorized:
+            columns = ", ".join(unauthorized)
+            raise AccessDeniedError(f"Access Profile is not entitled to query columns: {columns}.")
 
 
 _CANONICAL_DEFINITION_COLUMNS = (
@@ -119,6 +170,34 @@ _PROFILES = {
         tenant_scope="APAC Tenants only",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
         permitted_tenant_ids=tenant_ids_for_region("APAC"),
+    ),
+    "jira_product_manager": AccessProfile(
+        products=("Jira",),
+        regions=_ALL_REGIONS,
+        tenant_scope="All permitted Jira Tenants",
+        permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
+        permitted_tenant_ids=_ALL_TENANT_IDS,
+    ),
+    "confluence_product_manager": AccessProfile(
+        products=("Confluence",),
+        regions=_ALL_REGIONS,
+        tenant_scope="All permitted Confluence Tenants",
+        permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
+        permitted_tenant_ids=_ALL_TENANT_IDS,
+    ),
+    "customer_success_manager": AccessProfile(
+        products=("Jira", "Confluence"),
+        regions=("APAC",),
+        tenant_scope="APAC 51-200 Seat Tier Tenant portfolio",
+        permitted_columns=_CANONICAL_DEFINITION_COLUMNS + ("tenant_id",),
+        permitted_tenant_ids=tuple(
+            tenant_id
+            for tenant_id in tenant_ids_for_region("APAC")
+            if (int(tenant_id.rsplit("-", 1)[1]) - 1) % 4 == 2
+        ),
+        permitted_classifications=("internal", "restricted"),
+        permitted_identifiers=("tenant_id",),
+        permitted_query_columns=("product", "region"),
     ),
 }
 

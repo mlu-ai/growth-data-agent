@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .contracts import EvidenceSupportStatus
 from .evidence import EvidenceDocument
+from .graph import GraphNode, GraphPath
 from .policy import tenant_ids_for_region
 
 _START_DATE = date(2025, 1, 1)
@@ -104,11 +105,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             title="Restricted Jira APAC provisioning incident appendix",
             text=(
                 "Restricted appendix with direct Tenant identifiers for the Jira APAC paid "
-                "provisioning incident."
+                "provisioning incident: tenant-0011."
             ),
             product="Jira",
             region="APAC",
-            tenant_ids=apac_enterprise_tenants,
+            tenant_ids=["tenant-0011"],
             tenant_scope="APAC 51-200 Seat Tier Tenants",
             classification="restricted",
             identifier_entitlement="direct",
@@ -119,6 +120,74 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "This restricted appendix cannot be used without classification and direct "
                 "identifier entitlement."
             ),
+            sensitive_identifiers=["tenant-0011"],
+        ),
+    )
+
+
+def graph_corpus() -> tuple[GraphPath, ...]:
+    """Return deterministic public and direct-identifier evidence paths."""
+    apac_enterprise_tenants = _tenant_ids_for_segment("APAC", "51-200")
+    return (
+        GraphPath(
+            path_id="jira-apac-new-peu-incident-chain",
+            nodes=[
+                GraphNode(
+                    node_id="metric-jira-new-peu",
+                    node_type="metric",
+                    label="Jira New PEU",
+                    product="Jira",
+                    region="APAC",
+                    tenant_ids=apac_enterprise_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+                GraphNode(
+                    node_id="segment-apac-51-200",
+                    node_type="segment",
+                    label="APAC 51-200 Seat Tier Tenants",
+                    product="Jira",
+                    region="APAC",
+                    tenant_ids=apac_enterprise_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+                GraphNode(
+                    node_id="incident-jira-apac-paid-provisioning",
+                    node_type="incident",
+                    label="Jira APAC paid provisioning incident",
+                    product="Jira",
+                    region="APAC",
+                    tenant_ids=apac_enterprise_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+            ],
+        ),
+        GraphPath(
+            path_id="jira-apac-tenant-identifier-chain",
+            nodes=[
+                GraphNode(
+                    node_id="incident-jira-apac-paid-provisioning-restricted",
+                    node_type="incident",
+                    label="Restricted Jira APAC provisioning appendix",
+                    product="Jira",
+                    region="APAC",
+                    tenant_ids=["tenant-0011"],
+                    classification="restricted",
+                    identifier_entitlement="direct",
+                ),
+                GraphNode(
+                    node_id="tenant-0011",
+                    node_type="tenant",
+                    label="tenant-0011",
+                    product="Jira",
+                    region="APAC",
+                    tenant_ids=["tenant-0011"],
+                    classification="restricted",
+                    identifier_entitlement="direct",
+                ),
+            ],
         ),
     )
 
