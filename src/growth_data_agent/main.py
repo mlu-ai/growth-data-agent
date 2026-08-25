@@ -14,6 +14,7 @@ from .metricflow_query import (
     PostgresMetricFlowExecutor,
     SemanticQueryExecutionError,
 )
+from .observability import MlflowTraceSink
 from .policy import AccessDeniedError, UnknownAgentUserError
 from .semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from .service import AnswerQuestionService
@@ -39,7 +40,8 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
                     "postgresql://growth_data:growth_data@127.0.0.1:5432/growth_data",
                 )
             ),
-        )
+        ),
+        trace_sink=MlflowTraceSink.from_environment(),
     )
 
     @app.get("/health")
@@ -51,9 +53,17 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
         try:
             return app.state.answer_service.answer_question(request)
         except UnknownAgentUserError as error:
-            raise HTTPException(status_code=403, detail=str(error)) from error
+            trace_id = error.trace_id or "unavailable"
+            raise HTTPException(
+                status_code=403,
+                detail=f"{error} (trace_id={trace_id})",
+            ) from error
         except AccessDeniedError as error:
-            raise HTTPException(status_code=403, detail=str(error)) from error
+            trace_id = error.trace_id or "unavailable"
+            raise HTTPException(
+                status_code=403,
+                detail=f"{error} (trace_id={trace_id})",
+            ) from error
         except (OSError, ValidationError, SemanticQueryExecutionError) as error:
             raise HTTPException(
                 status_code=503, detail="Semantic artifact is unavailable."

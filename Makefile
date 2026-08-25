@@ -1,4 +1,4 @@
-.PHONY: generate-data load-data dbt-build semantic-artifact serve lint test
+.PHONY: generate-data load-data dbt-build semantic-artifact serve evaluate lint test
 
 generate-data:
 	uv run python scripts/generate_synthetic_data.py
@@ -14,6 +14,9 @@ semantic-artifact:
 
 serve:
 	uv run uvicorn --app-dir src growth_data_agent.main:app --reload
+
+evaluate:
+	uv run python scripts/run_evaluations.py
 
 lint:
 	uv run ruff check .

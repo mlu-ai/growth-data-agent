@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from hashlib import sha256
@@ -126,6 +127,9 @@ class QdrantEvidenceStore:
         self._client = client or QdrantClient(location=":memory:")
         self._collection_name = collection_name
         self.last_filter: EvidenceAccessFilter | None = None
+        self._last_scores: ContextVar[tuple[float, ...]] = ContextVar(
+            "growth_data_agent_last_retrieval_scores", default=()
+        )
         if not self._client.collection_exists(self._collection_name):
             self._client.create_collection(
                 collection_name=self._collection_name,
@@ -154,6 +158,7 @@ class QdrantEvidenceStore:
     ) -> list[EvidenceDocument]:
         """Return only filtered documents; ranking happens after Qdrant filtering."""
         self.last_filter = access_filter
+        self._last_scores.set(())
         if not self._documents:
             return []
         points = self._client.query_points(
@@ -164,14 +169,27 @@ class QdrantEvidenceStore:
             with_payload=True,
         ).points
         candidates = [
-            self._documents_by_id[str(point.payload["document_id"])]
+            (
+                self._documents_by_id[str(point.payload["document_id"])],
+                float(point.score),
+            )
             for point in points
             if point.payload is not None
         ]
-        return sorted(
+        ranked = sorted(
             candidates,
-            key=lambda document: (-_lexical_score(query, document), document.document_id),
+            key=lambda candidate: (
+                -_lexical_score(query, candidate[0]),
+                candidate[0].document_id,
+            ),
         )[:limit]
+        self._last_scores.set(tuple(score for _, score in ranked))
+        return [document for document, _ in ranked]
+
+    @property
+    def last_scores(self) -> tuple[float, ...]:
+        """Return scores for this execution context's final document ranking."""
+        return self._last_scores.get()
 
 
 def build_evidence_answer(

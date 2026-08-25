@@ -31,6 +31,7 @@ docker compose up -d postgres
 make load-data
 make dbt-build
 make semantic-artifact
+make evaluate
 make serve
 ```
 
@@ -63,3 +64,6 @@ uv run python scripts/generate_synthetic_data.py
 uv run --group warehouse python scripts/load_postgres.py
 cd dbt && uv run --group warehouse dbt build --profiles-dir .
 ```
+
+See [docs/evaluation.md](docs/evaluation.md) for the deterministic fixture
+evaluation, local-model baseline, and redacted MLflow trace configuration.
