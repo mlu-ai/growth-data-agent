@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from uuid import uuid4
 
+from .audit import DirectIdentifierAuditRecorder, InMemoryDirectIdentifierAuditRecorder
 from .contracts import (
     AnswerQuestionRequest,
+    DirectIdentifierAnswer,
     EvidenceSupportStatus,
     GovernedAnalyticalResponse,
     MetricDefinitionGap,
     ResultClassification,
+    SensitiveIdentifier,
+    SourceFreshness,
 )
 from .evidence import QdrantEvidenceStore, VectorEvidenceStore, build_evidence_answer
+from .graph import EvidenceGraphStore, InMemoryEvidenceGraphStore
 from .metric_definition_gaps import (
     DataTeamVerificationRequestRecorder,
     InMemoryDataTeamVerificationRequestRecorder,
@@ -24,7 +30,10 @@ from .metric_definition_gaps import (
 )
 from .policy import resolve_access_profile
 from .semantic import ValidatedMetricFlowGateway
-from .synthetic import evidence_corpus
+from .synthetic import evidence_corpus, graph_corpus
+
+_DIRECT_IDENTIFIER_RESULT_LIMIT = 3
+_IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
 
 
 class AnswerQuestionService:
@@ -36,6 +45,8 @@ class AnswerQuestionService:
         provisional_metric_input_gateway: ProvisionalMetricInputGateway | None = None,
         verification_request_recorder: DataTeamVerificationRequestRecorder | None = None,
         evidence_store: VectorEvidenceStore | None = None,
+        graph_store: EvidenceGraphStore | None = None,
+        direct_identifier_audit_recorder: DirectIdentifierAuditRecorder | None = None,
     ):
         self.semantic_gateway = semantic_gateway
         self.provisional_metric_calculator = (
@@ -48,11 +59,23 @@ class AnswerQuestionService:
             verification_request_recorder or InMemoryDataTeamVerificationRequestRecorder()
         )
         self.evidence_store = evidence_store or QdrantEvidenceStore(evidence_corpus())
+        self.graph_store = graph_store or InMemoryEvidenceGraphStore(graph_corpus())
+        self.direct_identifier_audit_recorder = (
+            direct_identifier_audit_recorder or InMemoryDirectIdentifierAuditRecorder()
+        )
 
     def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
         access_profile = resolve_access_profile(request.agent_user_id)
         scope = access_profile.as_effective_scope()
         trace_id = str(uuid4())
+
+        if self._requests_direct_identifier(request.question):
+            return self._answer_direct_identifier_request(
+                request=request,
+                scope=scope,
+                access_profile=access_profile,
+                trace_id=trace_id,
+            )
 
         metric_name = self._requested_metric_name(request)
         if metric_name is None:
@@ -89,6 +112,9 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
+        metric_product = self._metric_product(metric_name)
+        if metric_product is not None:
+            access_profile.authorize_product(metric_product)
         definition, freshness = self.semantic_gateway.canonical_definition(metric_name)
         if definition is None:
             if freshness.is_current:
@@ -228,6 +254,16 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
+        graph_filter = access_profile.graph_filter("Jira", "APAC")
+        graph_paths = [
+            path
+            for path in self.graph_store.traverse(
+                "Jira APAC 51-200 paid provisioning June 2026 decline",
+                graph_filter,
+                limit=3,
+            )
+            if graph_filter.allows(path)
+        ][:3]
         access_filter = access_profile.evidence_filter("Jira", "APAC")
         documents = [
             document
@@ -260,6 +296,7 @@ class AnswerQuestionService:
             semantic_query_evidence=query_evidence,
             driver_decomposition=decomposition,
             evidence=evidence,
+            graph_paths=self._graph_path_citations(graph_paths),
             source_freshness=freshness,
             effective_access_scope=scope,
             caveats=[
@@ -272,6 +309,166 @@ class AnswerQuestionService:
             ],
             trace_id=trace_id,
         )
+
+    def _answer_direct_identifier_request(
+        self,
+        *,
+        request: AnswerQuestionRequest,
+        scope,
+        access_profile,
+        trace_id: str,
+    ) -> GovernedAnalyticalResponse:
+        if not access_profile.permitted_identifiers:
+            freshness = SourceFreshness(
+                validated_at=datetime.now(UTC),
+                maximum_age_seconds=86_400,
+                is_current=False,
+            )
+            return GovernedAnalyticalResponse(
+                answer=(
+                    "Safe refusal: this Access Profile has no explicit entitlement to direct "
+                    "identifiers. The request was not sent to structured data, documents, or "
+                    "the evidence graph."
+                ),
+                result_classification=ResultClassification.SAFE_REFUSAL,
+                source_freshness=freshness,
+                effective_access_scope=scope,
+                caveats=[
+                    (
+                        "Direct identifiers require explicit entitlement and a bounded audited "
+                        "response."
+                    )
+                ],
+                trace_id=trace_id,
+            )
+
+        artifact = self.semantic_gateway.artifact_store.load()
+        freshness = self.semantic_gateway.freshness(artifact)
+        product = "Confluence" if "confluence" in request.question.casefold() else "Jira"
+        region = self._requested_region(request.question, access_profile)
+        graph_filter = access_profile.graph_filter(product, region)
+        graph_paths = [
+            path
+            for path in self.graph_store.traverse(
+                f"{product} {region} direct identifiers",
+                graph_filter,
+                limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
+            )
+            if graph_filter.allows(path)
+        ][:_DIRECT_IDENTIFIER_RESULT_LIMIT]
+        access_filter = access_profile.evidence_filter(product, region)
+        documents = [
+            document
+            for document in self.evidence_store.retrieve(
+                f"{product} {region} direct identifiers",
+                access_filter,
+                limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
+            )
+            if access_filter.allows(document)
+        ]
+        identifiers = self._permitted_identifiers(
+            graph_paths=graph_paths,
+            documents=documents,
+            access_profile=access_profile,
+        )[:_DIRECT_IDENTIFIER_RESULT_LIMIT]
+        audit = self.direct_identifier_audit_recorder.record(
+            trace_id=trace_id,
+            agent_user_id=request.agent_user_id,
+            returned_count=len(identifiers),
+            maximum_results=_DIRECT_IDENTIFIER_RESULT_LIMIT,
+        )
+        identifier_text = ", ".join(identifier.value for identifier in identifiers)
+        answer = (
+            "Bounded, audited direct-identifier response: "
+            f"{identifier_text}."
+            if identifier_text
+            else "No permitted direct identifiers were found in the requested scope."
+        )
+        return GovernedAnalyticalResponse(
+            answer=answer,
+            result_classification=ResultClassification.DIRECT_IDENTIFIER_RESPONSE,
+            source_freshness=freshness,
+            effective_access_scope=scope,
+            graph_paths=self._graph_path_citations(graph_paths),
+            direct_identifier_answer=DirectIdentifierAnswer(
+                identifiers=identifiers,
+                maximum_results=_DIRECT_IDENTIFIER_RESULT_LIMIT,
+                audit_event_id=audit.audit_event_id,
+            ),
+            direct_identifier_audit=audit,
+            caveats=[
+                "Only explicitly entitled Tenant identifiers are returned.",
+                "The response is bounded to three identifiers and its release is audited.",
+            ],
+            trace_id=trace_id,
+        )
+
+    @staticmethod
+    def _permitted_identifiers(*, graph_paths, documents, access_profile):
+        candidates: list[SensitiveIdentifier] = []
+        for path in graph_paths:
+            for node in path.nodes:
+                if node.identifier_entitlement != "direct":
+                    continue
+                candidates.extend(
+                    AnswerQuestionService._identifier_values(
+                        node.label, node.node_type, access_profile
+                    )
+                )
+        for document in documents:
+            if document.identifier_entitlement != "direct":
+                continue
+            for value in document.sensitive_identifiers:
+                candidates.extend(
+                    AnswerQuestionService._identifier_values(
+                        value, "tenant", access_profile
+                    )
+                )
+            for value in _IDENTIFIER_PATTERN.findall(document.text):
+                candidates.extend(
+                    AnswerQuestionService._identifier_values(
+                        value, "tenant", access_profile
+                    )
+                )
+        unique: dict[tuple[str, str], SensitiveIdentifier] = {}
+        for candidate in candidates:
+            unique[(candidate.identifier_type, candidate.value)] = candidate
+        return list(unique.values())
+
+    @staticmethod
+    def _identifier_values(value: str, node_type: str, access_profile):
+        identifier_type = {
+            "tenant": "tenant_id",
+            "person": "person_id",
+            "product_user": "product_user_id",
+        }.get(node_type)
+        if identifier_type not in access_profile.permitted_identifiers:
+            return []
+        if identifier_type == "tenant_id" and value not in access_profile.permitted_tenant_ids:
+            return []
+        if not _IDENTIFIER_PATTERN.fullmatch(value):
+            return []
+        return [SensitiveIdentifier(identifier_type=identifier_type, value=value)]
+
+    @staticmethod
+    def _graph_path_citations(paths, *, redact_identifiers: bool = True):
+        def safe(value: str) -> str:
+            return _IDENTIFIER_PATTERN.sub("[redacted identifier]", value)
+
+        return [
+            {
+                "path_id": safe(path.path_id) if redact_identifiers else path.path_id,
+                "node_labels": [
+                    (
+                        f"{safe(node.label)} [{node.region}]"
+                        if redact_identifiers
+                        else f"{node.label} [{node.region}]"
+                    )
+                    for node in path.nodes
+                ],
+            }
+            for path in paths
+        ]
 
     @staticmethod
     def _requests_jira_new_peu(question: str) -> bool:
@@ -298,6 +495,49 @@ class AnswerQuestionService:
             and "decline" in normalized
             and ("51–200" in question or "51-200" in normalized)
         )
+
+    @staticmethod
+    def _requests_direct_identifier(question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        return bool(
+            _IDENTIFIER_PATTERN.search(normalized)
+            or any(
+                phrase in normalized
+                for phrase in (
+                    "direct identifier",
+                    "tenant id",
+                    "tenant identifier",
+                    "person id",
+                    "product user id",
+                    "direct contact",
+                    "who should we contact",
+                    "which tenants",
+                    "list of tenants",
+                    "affected tenants",
+                    "contact details",
+                    "email address",
+                    "phone number",
+                )
+            )
+        )
+
+    @staticmethod
+    def _requested_region(question: str, access_profile) -> str:
+        normalized = question.casefold()
+        for region in access_profile.regions:
+            if region.casefold() in normalized:
+                return region
+        if len(access_profile.regions) == 1:
+            return access_profile.regions[0]
+        return "APAC"
+
+    @staticmethod
+    def _metric_product(metric_name: str) -> str | None:
+        if metric_name.startswith("jira_"):
+            return "Jira"
+        if metric_name.startswith("confluence_"):
+            return "Confluence"
+        return None
 
     def _metric_definition_gap_response(
         self,

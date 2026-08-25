@@ -10,7 +10,7 @@ from hashlib import sha256
 from math import sqrt
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
 
 from .contracts import (
@@ -22,6 +22,7 @@ from .contracts import (
 
 _VECTOR_SIZE = 32
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+_IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
 
 
 class EvidenceDocument(BaseModel):
@@ -40,6 +41,7 @@ class EvidenceDocument(BaseModel):
     freshness: datetime
     support_status: EvidenceSupportStatus
     support_explanation: str
+    sensitive_identifiers: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -51,18 +53,27 @@ class EvidenceAccessFilter:
     tenant_ids: tuple[str, ...]
     classifications: tuple[str, ...]
     identifier_entitlements: tuple[str, ...]
+    excluded_tenant_ids: tuple[str, ...] = ()
 
     def allows(self, document: EvidenceDocument) -> bool:
         """Apply the same policy at the context boundary as a defensive second layer."""
         return (
             document.product in self.products
             and document.region in self.regions
-            and bool(set(document.tenant_ids) & set(self.tenant_ids))
+            and set(document.tenant_ids).issubset(self.tenant_ids)
             and document.classification in self.classifications
             and document.identifier_entitlement in self.identifier_entitlements
         )
 
     def as_qdrant_filter(self) -> models.Filter:
+        must_not = []
+        if self.excluded_tenant_ids:
+            must_not.append(
+                models.FieldCondition(
+                    key="tenant_ids",
+                    match=models.MatchAny(any=list(self.excluded_tenant_ids)),
+                )
+            )
         return models.Filter(
             must=[
                 models.FieldCondition(
@@ -85,7 +96,8 @@ class EvidenceAccessFilter:
                     key="identifier_entitlement",
                     match=models.MatchAny(any=list(self.identifier_entitlements)),
                 ),
-            ]
+            ],
+            must_not=must_not,
         )
 
 
@@ -206,18 +218,23 @@ def build_evidence_answer(
 
 def _citation(document: EvidenceDocument) -> EvidenceCitation:
     return EvidenceCitation(
-        document_id=document.document_id,
-        title=document.title,
+        document_id=_redact_identifiers(document.document_id),
+        title=_redact_identifiers(document.title),
         affected_scope=EvidenceScope(
             product=document.product,
             region=document.region,
-            tenant_scope=document.tenant_scope,
+            tenant_scope=_redact_identifiers(document.tenant_scope),
         ),
         relevant_date=document.relevant_date,
         freshness=document.freshness.astimezone(UTC),
         support_status=document.support_status,
-        support_explanation=document.support_explanation,
+        support_explanation=_redact_identifiers(document.support_explanation),
     )
+
+
+def _redact_identifiers(value: str) -> str:
+    """Prevent raw identifier text from reaching a citation or generated response."""
+    return _IDENTIFIER_PATTERN.sub("[redacted identifier]", value)
 
 
 def _vectorize(value: str) -> list[float]:

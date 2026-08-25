@@ -130,6 +130,7 @@ class ValidatedMetricFlowGateway:
         group_by_names = ("product_user__product",)
         if len(access_profile.regions) != 3:
             group_by_names += ("product_user__region",)
+        access_profile.authorize_query_columns(group_by_names)
         plan = self.metricflow_planner.plan(
             MetricFlowQueryRequest(
                 metric_name=metric_name,
@@ -165,15 +166,17 @@ class ValidatedMetricFlowGateway:
         if context is None:
             return None, None, None, freshness
 
+        group_by_names = (
+            "metric_time__month",
+            "product_user__region",
+            "product_user__seat_tier",
+        )
+        access_profile.authorize_query_columns(group_by_names)
         plan = self.metricflow_planner.plan(
             MetricFlowQueryRequest(
                 metric_name=metric_name,
                 where_constraints=access_profile.metricflow_where_constraints("Jira"),
-                group_by_names=(
-                    "metric_time__month",
-                    "product_user__region",
-                    "product_user__seat_tier",
-                ),
+                group_by_names=group_by_names,
                 limit=None,
             )
         )

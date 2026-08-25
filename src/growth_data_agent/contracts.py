@@ -14,6 +14,8 @@ class ResultClassification(StrEnum):
     DRIVER_DECOMPOSITION = "driver_decomposition"
     HYPOTHESIS = "hypothesis"
     INCONCLUSIVE = "inconclusive"
+    DIRECT_IDENTIFIER_RESPONSE = "direct_identifier_response"
+    SAFE_REFUSAL = "safe_refusal"
     METRIC_DEFINITION_GAP = "metric_definition_gap"
     PROVISIONAL_METRIC = "provisional_metric"
     LIMITATION = "limitation"
@@ -167,6 +169,39 @@ class EvidenceAnswer(BaseModel):
     support_explanation: str
 
 
+class GraphPathCitation(BaseModel):
+    """Safe, bounded presentation of a permitted derived evidence path."""
+
+    path_id: str
+    node_labels: list[str]
+
+
+class SensitiveIdentifier(BaseModel):
+    """A direct identifier returned only after explicit entitlement checks."""
+
+    identifier_type: Literal["tenant_id", "person_id", "product_user_id"]
+    value: str
+
+
+class DirectIdentifierAnswer(BaseModel):
+    """Bounded direct-identifier output tied to an audit event."""
+
+    identifiers: list[SensitiveIdentifier]
+    maximum_results: int = Field(gt=0)
+    audit_event_id: str
+
+
+class DirectIdentifierAudit(BaseModel):
+    """Audit metadata that contains no returned identifier values."""
+
+    audit_event_id: str
+    trace_id: str
+    agent_user_id: str
+    recorded_at: datetime
+    returned_count: int = Field(ge=0)
+    maximum_results: int = Field(gt=0)
+
+
 class GovernedAnalyticalResponse(BaseModel):
     answer: str
     result_classification: ResultClassification
@@ -174,6 +209,9 @@ class GovernedAnalyticalResponse(BaseModel):
     semantic_query_evidence: SemanticQueryEvidence | None = None
     driver_decomposition: DriverDecomposition | None = None
     evidence: EvidenceAnswer | None = None
+    graph_paths: list[GraphPathCitation] | None = None
+    direct_identifier_answer: DirectIdentifierAnswer | None = None
+    direct_identifier_audit: DirectIdentifierAudit | None = None
     metric_definition_gap: MetricDefinitionGap | None = None
     provisional_metric: ProvisionalMetric | None = None
     data_team_verification_request: DataTeamVerificationRequest | None = None
