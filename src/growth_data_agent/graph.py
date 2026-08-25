@@ -38,6 +38,7 @@ class GraphAccessFilter:
     tenant_ids: tuple[str, ...]
     classifications: tuple[str, ...]
     identifier_entitlements: tuple[str, ...]
+    seat_tiers: tuple[str, ...] = ()
 
     def allows(self, path: GraphPath) -> bool:
         """Apply the policy to every node before a path reaches response generation."""

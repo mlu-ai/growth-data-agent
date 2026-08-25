@@ -73,6 +73,30 @@ def test_evidence_filter_contains_all_entitlements_before_store_retrieval(tmp_pa
     assert access_filter.identifier_entitlements == ("none",)
 
 
+def test_confluence_campaign_filter_contains_requested_seat_tier_before_retrieval(
+    tmp_path: Path,
+) -> None:
+    documents = evidence_corpus()
+    store = RecordingEvidenceStore(list(documents[4:7]))
+    client = _client(tmp_path, store)
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": (
+                "What evidence may explain the Americas 11–50-seat Confluence New PEU "
+                "movement after the acquisition campaign?"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    access_filter = store.filters[0]
+    assert access_filter.seat_tiers == ("11-50",)
+    assert access_filter.tenant_ids == tuple(documents[4].tenant_ids)
+
+
 def test_apac_manager_receives_no_out_of_scope_or_restricted_documents(client: TestClient) -> None:
     response = client.post(
         "/answer_question",

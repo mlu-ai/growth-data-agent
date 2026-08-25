@@ -1,0 +1,61 @@
+version: 2
+
+models:
+  - name: fct_confluence_new_peu
+    description: One row for the first Confluence Paid Enablement of each Product User.
+    columns:
+      - name: product_user_id
+        tests: [not_null, unique]
+      - name: tenant_id
+        tests: [not_null]
+      - name: paid_enabled_at
+        tests: [not_null]
+
+semantic_models:
+  - name: confluence_new_peu
+    description: Canonical Confluence New Paid Enabled User semantic model.
+    model: ref('fct_confluence_new_peu')
+    config:
+      meta:
+        semantic_version: "1.0.0"
+        canonical_grain: Product User in a Tenant and Confluence product
+        canonical_time_rule: Attribute to the first-ever Confluence Paid Enablement; later restorations do not qualify again.
+    defaults:
+      agg_time_dimension: paid_enablement_date
+    entities:
+      - name: confluence_product_user
+        type: primary
+        expr: product_user_id
+      - name: confluence_tenant
+        type: foreign
+        expr: tenant_id
+    dimensions:
+      - name: product
+        type: categorical
+        expr: product
+      - name: region
+        type: categorical
+        expr: region
+      - name: seat_tier
+        type: categorical
+        expr: seat_tier
+      - name: paid_tenant_tenure_days
+        description: Days since the Tenant began its paid subscription at Paid Enablement.
+        type: categorical
+        expr: paid_tenant_tenure_days
+      - name: paid_enablement_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: confluence_new_peu
+        description: Count of Product Users with their first-ever Confluence Paid Enablement.
+        agg: count_distinct
+        expr: product_user_id
+
+metrics:
+  - name: confluence_new_peu
+    description: Confluence New PEU is a Product User's first-ever Paid Enablement for Confluence.
+    type: simple
+    type_params:
+      measure: confluence_new_peu

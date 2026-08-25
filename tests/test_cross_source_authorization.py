@@ -155,7 +155,7 @@ def test_jira_product_manager_response_stays_within_jira_document_and_graph_scop
     )
 
 
-def test_confluence_product_manager_gets_a_scoped_safe_gap_response(client: TestClient) -> None:
+def test_confluence_product_manager_gets_a_scoped_canonical_response(client: TestClient) -> None:
     response = client.post(
         "/answer_question",
         json={
@@ -166,10 +166,10 @@ def test_confluence_product_manager_gets_a_scoped_safe_gap_response(client: Test
 
     assert response.status_code == 200
     body = response.json()
-    assert body["result_classification"] == "metric_definition_gap"
+    assert body["result_classification"] == "canonical_definition"
     assert body["effective_access_scope"]["products"] == ["Confluence"]
-    assert body["canonical_definition"] is None
-    assert "Jira" not in response.text
+    assert body["canonical_definition"]["name"] == "confluence_new_peu"
+    assert body["semantic_query_evidence"]["constrained_products"] == ["Confluence"]
 
 
 def test_indirect_identifier_prompt_is_refused_before_any_source_retrieval(

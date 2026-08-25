@@ -126,10 +126,14 @@ class ValidatedMetricFlowGateway:
         if context is None:
             return None, freshness
 
-        constraints = access_profile.metricflow_where_constraints("Jira")
-        group_by_names = ("product_user__product",)
+        metric_product = _metric_product(metric_name)
+        entity_name = _metricflow_entity(metric_name)
+        constraints = access_profile.metricflow_where_constraints(
+            metric_product, entity_name=entity_name
+        )
+        group_by_names = (f"{entity_name}__product",)
         if len(access_profile.regions) != 3:
-            group_by_names += ("product_user__region",)
+            group_by_names += (f"{entity_name}__region",)
         access_profile.authorize_query_columns(group_by_names)
         plan = self.metricflow_planner.plan(
             MetricFlowQueryRequest(
@@ -140,7 +144,7 @@ class ValidatedMetricFlowGateway:
         )
         result_row_count = self.postgres_executor.execute(plan)
         return (
-            self._query_evidence(context, access_profile, result_row_count),
+            self._query_evidence(context, access_profile, result_row_count, metric_product),
             freshness,
         )
 
@@ -166,16 +170,20 @@ class ValidatedMetricFlowGateway:
         if context is None:
             return None, None, None, freshness
 
+        entity_name = _metricflow_entity(metric_name)
         group_by_names = (
             "metric_time__month",
-            "product_user__region",
-            "product_user__seat_tier",
+            f"{entity_name}__product",
+            f"{entity_name}__region",
+            f"{entity_name}__seat_tier",
         )
         access_profile.authorize_query_columns(group_by_names)
         plan = self.metricflow_planner.plan(
             MetricFlowQueryRequest(
                 metric_name=metric_name,
-                where_constraints=access_profile.metricflow_where_constraints("Jira"),
+                where_constraints=access_profile.metricflow_where_constraints(
+                    _metric_product(metric_name), entity_name=entity_name
+                ),
                 group_by_names=group_by_names,
                 limit=None,
             )
@@ -186,11 +194,14 @@ class ValidatedMetricFlowGateway:
             metric_name=metric_name,
             baseline_period=baseline_period,
             comparison_period=comparison_period,
+            dimension_prefix=entity_name,
         )
         return (
             self._canonical_definition(context.metric, context.artifact),
             decomposition,
-            self._query_evidence(context, access_profile, len(rows)),
+            self._query_evidence(
+                context, access_profile, len(rows), _metric_product(metric_name)
+            ),
             freshness,
         )
 
@@ -237,11 +248,12 @@ class ValidatedMetricFlowGateway:
         context: ValidatedMetricQueryContext,
         access_profile: AccessProfile,
         result_row_count: int,
+        metric_product: str,
     ) -> SemanticQueryEvidence:
         return SemanticQueryEvidence(
             metric_name=context.metric.name,
             artifact_sha256=context.artifact.semantic_manifest_sha256,
-            constrained_products=["Jira"],
+            constrained_products=[metric_product],
             constrained_regions=list(access_profile.regions),
             tenant_scope=access_profile.tenant_scope,
             result_row_count=result_row_count,
@@ -254,22 +266,24 @@ def _reconcile_driver_rows(
     metric_name: str,
     baseline_period: str,
     comparison_period: str,
+    dimension_prefix: str = "product_user",
 ) -> DriverDecomposition:
     by_segment: dict[tuple[str, str], dict[str, int]] = {}
     for row in rows:
         period = _month_label(row["metric_time__month"])
         if period not in (baseline_period, comparison_period):
             continue
-        segment = (str(row["product_user__region"]), str(row["product_user__seat_tier"]))
+        segment = (
+            str(row[f"{dimension_prefix}__region"]),
+            str(row[f"{dimension_prefix}__seat_tier"]),
+        )
         by_segment.setdefault(segment, {})[period] = int(row[metric_name])
 
     contributions = [
         _driver_contribution(segment, values, baseline_period, comparison_period)
         for segment, values in by_segment.items()
     ]
-    contributions.sort(
-        key=lambda item: (-item.contribution_to_decline, item.region, item.seat_tier)
-    )
+    contributions.sort(key=lambda item: (-abs(item.change), item.region, item.seat_tier))
     baseline_value = sum(item.baseline_value for item in contributions)
     comparison_value = sum(item.comparison_value for item in contributions)
     net_change = comparison_value - baseline_value
@@ -324,3 +338,17 @@ def _driver_contribution(
 
 def _month_label(value: object) -> str:
     return str(value)[:7]
+
+
+def _metric_product(metric_name: str) -> str:
+    if metric_name.startswith("jira_"):
+        return "Jira"
+    if metric_name.startswith("confluence_"):
+        return "Confluence"
+    raise SemanticQueryExecutionError(f"Metric has no governed product scope: {metric_name}")
+
+
+def _metricflow_entity(metric_name: str) -> str:
+    if metric_name.startswith("confluence_"):
+        return "confluence_product_user"
+    return "product_user"

@@ -55,6 +55,7 @@ class EvidenceAccessFilter:
     classifications: tuple[str, ...]
     identifier_entitlements: tuple[str, ...]
     excluded_tenant_ids: tuple[str, ...] = ()
+    seat_tiers: tuple[str, ...] = ()
 
     def allows(self, document: EvidenceDocument) -> bool:
         """Apply the same policy at the context boundary as a defensive second layer."""
@@ -196,6 +197,7 @@ def build_evidence_answer(
     documents: Iterable[EvidenceDocument],
 ) -> EvidenceAnswer:
     """Classify retrieved evidence without turning it into a causal conclusion."""
+    documents = list(documents)
     citations = [_citation(document) for document in documents]
     statuses = {citation.support_status for citation in citations}
     if not citations:
@@ -216,12 +218,17 @@ def build_evidence_answer(
             ),
         )
     if EvidenceSupportStatus.SUPPORTS in statuses:
+        supporting_document = next(
+            document
+            for document in documents
+            if document.support_status == EvidenceSupportStatus.SUPPORTS
+        )
         return EvidenceAnswer(
             citations=citations,
             support_status=EvidenceSupportStatus.SUPPORTS,
             support_explanation=(
-                "The permitted incident overlaps the affected scope and decline period; it "
-                "supports a possible Hypothesis but does not establish causation."
+                f"{_redact_identifiers(supporting_document.support_explanation)} It supports a "
+                "possible Hypothesis but does not establish causation."
             ),
         )
     return EvidenceAnswer(

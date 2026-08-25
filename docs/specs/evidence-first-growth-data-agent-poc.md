@@ -8,9 +8,10 @@ evidence-backed Hypothesis. The service must never present a Driver
 Decomposition or Hypothesis as a causal conclusion.
 
 The first delivery is intentionally narrow: it proves the workflow for **Jira
-New Paid Enabled User (New PEU)** using synthetic data. It answers a canonical
-definition, explains a known month-on-month decline by approved dimensions,
-and retrieves access-filtered evidence that may explain the affected segment.
+and Confluence New Paid Enabled User (New PEU)** using synthetic data. It
+answers canonical definitions, explains known month-on-month movement by
+approved dimensions, and retrieves access-filtered evidence that may explain
+the affected segment.
 
 ## Product boundary
 
@@ -28,11 +29,12 @@ Agent User's Access Profile.
 
 ### Metric and semantic contract
 
-The first canonical metric is **Jira New PEU**. A Product User qualifies when
-they receive Jira paid access for the first time. A later restoration of access
-does not make that Product User new again. The grain is a Product User in a
-Tenant and product, not a Person. The same Person can therefore contribute a
-New PEU to Jira and separately to Confluence.
+The canonical metrics are **Jira New PEU** and **Confluence New PEU**. A
+Product User qualifies independently for each product when they receive that
+product's paid access for the first time. A later restoration of access does
+not make that Product User new again. The grain is a Product User in a Tenant
+and product, not a Person. The same Person can therefore contribute a New PEU
+to Jira and separately to Confluence.
 
 dbt and MetricFlow are the semantic authority for the metric's formula,
 dimensions, grain, time logic, version, and validation status. Postgres is the
@@ -47,6 +49,11 @@ For the first scenario, Jira New PEU falls from 4,000 in May to 3,440 in June
 (-14%). The APAC, 51–200 Seat Tier Tenant segment accounts for 420 of the 560
 decline (75%). An evidence document describes a paid-provisioning incident in
 that scope and period. It supports a possible explanation, not causal proof.
+For the Confluence campaign scenario, New PEU rises from 2,400 in May to 2,820
+in June. The Americas, 11–50 Seat Tier Tenant segment accounts for the full
+420 increase. An evidence document describes a targeted acquisition campaign
+in that scope and period. It supports a possible explanation, not causal
+proof.
 
 ### Acceptance questions
 
@@ -55,6 +62,8 @@ The following are the required first-vertical questions:
 1. “What is Jira New PEU?”
 2. “Why did Jira New PEU fall from May to June?”
 3. “What evidence may explain the APAC 51–200-seat Tenant decline?”
+4. “What evidence may explain the Americas 11–50-seat Confluence New PEU
+   movement after the acquisition campaign?”
 
 The service must answer each question correctly for a Data Analyst and must
 also demonstrate governed scope for an APAC Regional Manager.
@@ -78,9 +87,9 @@ also demonstrate governed scope for an APAC Regional Manager.
 6. As an APAC Regional Manager, I can investigate permitted APAC data and
    evidence but cannot infer or retrieve other regions through a broad query,
    decomposition, graph traversal, or document citation.
-7. As a Jira Product Manager, I can later use Jira-scoped data and evidence
+7. As a Jira Product Manager, I can use Jira-scoped data and evidence
    across permitted regions, but not Confluence-scoped material.
-8. As a Confluence Product Manager, I can later use Confluence-scoped data and
+8. As a Confluence Product Manager, I can use Confluence-scoped data and
    evidence, but not Jira-scoped material.
 9. As a Customer Success Manager with Tenant-portfolio entitlement, I can
    later view permitted direct identifiers only in a bounded, audited answer.
@@ -309,21 +318,24 @@ Required automated checks:
    version, grain, freshness, and source attribution.
 2. The May-to-June driver answer reconciles from 4,000 to 3,440 and reports
    APAC / 51–200 Seat Tier Tenants as 420 of the 560 decline.
-3. The evidence answer retrieves the relevant permitted incident ahead of the
-   distractors and labels the conclusion as a Hypothesis rather than a cause.
-4. The APAC Regional Manager cannot obtain non-APAC rows, documents, graph
+3. The Confluence May-to-June driver answer reconciles from 2,400 to 2,820
+   and reports Americas / 11–50 Seat Tier Tenants as the +420 movement.
+4. The evidence answers retrieve the relevant permitted incident or campaign
+   ahead of distractors and label the conclusion as a Hypothesis rather than a
+   cause.
+5. The APAC Regional Manager cannot obtain non-APAC rows, documents, graph
    paths, citations, or inference through any broad or indirect wording.
-5. A profile without direct-identifier entitlement cannot obtain identifiers
+6. A profile without direct-identifier entitlement cannot obtain identifiers
    through structured results, retrieved chunks, graph nodes, citations, or
    generated prose.
-6. An entitled Customer Success Manager can receive only permitted, bounded,
+7. An entitled Customer Success Manager can receive only permitted, bounded,
    audited identifiers.
-7. Failed or stale dbt semantic validation blocks a canonical semantic answer.
-8. Missing semantic definitions follow the Provisional Metric / Metric
+8. Failed or stale dbt semantic validation blocks a canonical semantic answer.
+9. Missing semantic definitions follow the Provisional Metric / Metric
    Definition Gap contract and never claim canonical status.
-9. Off-topic and unsupported-causal requests receive safe redirects or
+10. Off-topic and unsupported-causal requests receive safe redirects or
    limitations.
-10. MLflow traces contain required observability fields and no raw unauthorized
+11. MLflow traces contain required observability fields and no raw unauthorized
     identifiers.
 
 Start evaluation with deterministic fixture checks and human-labelled expected
@@ -337,7 +349,8 @@ retrieval quality, or evidence wording.
 
 ## Out of scope for the first delivery
 
-- Revenue, Activation Rate, and any metric other than Jira New PEU.
+- Revenue, Activation Rate, New MAU, and any metric other than Jira or
+  Confluence New PEU.
 - A production Teamwork Graph integration.
 - pgvector as the POC retrieval store.
 - General autonomous causal inference or automatic use of DML, matching, or
@@ -360,7 +373,8 @@ retrieval quality, or evidence wording.
    Hypothesis response.
 6. Add the APAC Regional Manager authorization tests, MLflow tracing, and the
    initial evaluation fixtures.
-7. Expand to Confluence and New MAU only after the first vertical is reliable.
+7. Expand to New MAU only after the Jira and Confluence New PEU verticals are
+   reliable.
 
 ## Open follow-ups
 

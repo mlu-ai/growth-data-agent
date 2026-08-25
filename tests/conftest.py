@@ -39,7 +39,22 @@ def write_artifact(path: Path, *, status: str = "success", hours_old: int = 0) -
                 "time_rule": "Attribute to first-ever Jira Paid Enablement.",
                 "model_name": "fct_jira_new_peu",
                 "citation_path": "dbt/models/marts/jira_new_peu.yml#jira_new_peu",
-            }
+            },
+            {
+                "name": "confluence_new_peu",
+                "definition": (
+                    "Confluence New PEU is a Product User's first-ever Paid Enablement "
+                    "for Confluence."
+                ),
+                "formula": "count_distinct(product_user_id)",
+                "grain": "Product User in a Tenant and Confluence product",
+                "time_rule": (
+                    "Attribute to the first-ever Confluence Paid Enablement; later "
+                    "restorations do not qualify again."
+                ),
+                "model_name": "fct_confluence_new_peu",
+                "citation_path": "dbt/models/marts/confluence_new_peu.yml#confluence_new_peu",
+            },
         ],
     }
     path.write_text(json.dumps(artifact))
@@ -55,7 +70,7 @@ class RecordingMetricFlowPlanner:
         self.requests.append(request)
         return PlannedMetricFlowQuery(
             metric_name=request.metric_name,
-            sql="select 1 as jira_new_peu",
+            sql=f"select 1 as {request.metric_name}",
             parameters={},
             where_constraints=request.where_constraints,
             group_by_names=request.group_by_names,
@@ -68,6 +83,17 @@ def _driver_row(month: str, region: str, seat_tier: str, value: int) -> dict[str
         "product_user__region": region,
         "product_user__seat_tier": seat_tier,
         "jira_new_peu": value,
+    }
+
+
+def _confluence_driver_row(
+    month: str, region: str, seat_tier: str, value: int
+) -> dict[str, object]:
+    return {
+        "metric_time__month": f"{month}-01",
+        "confluence_product_user__region": region,
+        "confluence_product_user__seat_tier": seat_tier,
+        "confluence_new_peu": value,
     }
 
 
@@ -89,6 +115,14 @@ class RecordingPostgresExecutor:
         _driver_row("2026-05", "Americas", "51-200", 400),
         _driver_row("2026-06", "Americas", "51-200", 380),
     ]
+    _confluence_driver_rows = [
+        _confluence_driver_row("2026-05", "Americas", "11-50", 1200),
+        _confluence_driver_row("2026-06", "Americas", "11-50", 1620),
+        _confluence_driver_row("2026-05", "APAC", "1-10", 600),
+        _confluence_driver_row("2026-06", "APAC", "1-10", 600),
+        _confluence_driver_row("2026-05", "EMEA", "51-200", 600),
+        _confluence_driver_row("2026-06", "EMEA", "51-200", 600),
+    ]
 
     def execute(self, plan: PlannedMetricFlowQuery) -> int:
         self.plans.append(plan)
@@ -96,6 +130,8 @@ class RecordingPostgresExecutor:
 
     def execute_rows(self, plan: PlannedMetricFlowQuery):
         self.plans.append(plan)
+        if plan.metric_name == "confluence_new_peu":
+            return self._confluence_driver_rows
         if "product_user__region IN ('APAC')" in plan.where_constraints:
             return [row for row in self._driver_rows if row["product_user__region"] == "APAC"]
         return self._driver_rows

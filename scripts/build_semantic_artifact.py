@@ -11,9 +11,6 @@ _ARTIFACT = Path("dbt/artifacts/last_validated_semantic.json")
 _RUN_RESULTS = Path("dbt/target/run_results.json")
 _MANIFEST = Path("dbt/target/manifest.json")
 _SEMANTIC_MANIFEST = Path("dbt/target/semantic_manifest.json")
-_METRIC_NAME = "jira_new_peu"
-
-
 def main() -> None:
     required_artifacts = (_RUN_RESULTS, _MANIFEST, _SEMANTIC_MANIFEST)
     if missing := [str(path) for path in required_artifacts if not path.exists()]:
@@ -32,24 +29,21 @@ def main() -> None:
 
     semantic_manifest = json.loads(_SEMANTIC_MANIFEST.read_text())
     manifest = json.loads(_MANIFEST.read_text())
-    metric = _find_by_name(semantic_manifest["metrics"], _METRIC_NAME)
-    semantic_model = _find_semantic_model(semantic_manifest, metric)
-    manifest_model = manifest["semantic_models"][
-        f"semantic_model.growth_data_agent.{semantic_model['name']}"
-    ]
-    metadata = manifest_model["config"]["meta"]
-    measure = _find_by_name(semantic_model["measures"], _METRIC_NAME)
-
-    artifact = {
-        "artifact_type": "dbt_metricflow_semantic_artifact",
-        "semantic_version": metadata["semantic_version"],
-        "semantic_manifest_sha256": sha256(_SEMANTIC_MANIFEST.read_bytes()).hexdigest(),
-        "validation": {
-            "status": "success",
-            "validated_at": datetime.now(UTC).isoformat(),
-            "maximum_age_seconds": 86_400,
-        },
-        "metrics": [
+    metric_artifacts = []
+    semantic_version = None
+    for metric in semantic_manifest["metrics"]:
+        semantic_model = _find_semantic_model(semantic_manifest, metric)
+        manifest_model = manifest["semantic_models"][
+            f"semantic_model.growth_data_agent.{semantic_model['name']}"
+        ]
+        metadata = manifest_model["config"]["meta"]
+        measure_name = metric["type_params"]["measure"]["name"]
+        measure = _find_by_name(semantic_model["measures"], measure_name)
+        if semantic_version is None:
+            semantic_version = metadata["semantic_version"]
+        elif semantic_version != metadata["semantic_version"]:
+            raise SystemExit("Semantic metrics do not share one semantic version.")
+        metric_artifacts.append(
             {
                 "name": metric["name"],
                 "definition": metric["description"],
@@ -61,7 +55,18 @@ def main() -> None:
                     f"dbt/{manifest_model['original_file_path']}#{metric['name']}"
                 ),
             }
-        ],
+        )
+
+    artifact = {
+        "artifact_type": "dbt_metricflow_semantic_artifact",
+        "semantic_version": semantic_version,
+        "semantic_manifest_sha256": sha256(_SEMANTIC_MANIFEST.read_bytes()).hexdigest(),
+        "validation": {
+            "status": "success",
+            "validated_at": datetime.now(UTC).isoformat(),
+            "maximum_age_seconds": 86_400,
+        },
+        "metrics": metric_artifacts,
     }
     _ARTIFACT.write_text(json.dumps(artifact, indent=2) + "\n")
     print(f"Built {_ARTIFACT} from validated dbt/MetricFlow artifacts.")

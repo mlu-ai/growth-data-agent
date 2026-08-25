@@ -30,6 +30,20 @@ def test_artifact_builder_accepts_passing_dbt_tests(tmp_path, monkeypatch) -> No
                                 "canonical_time_rule": "Use the first-ever Paid Enablement.",
                             }
                         },
+                    },
+                    "semantic_model.growth_data_agent.confluence_new_peu": {
+                        "original_file_path": "models/marts/confluence_new_peu.yml",
+                        "config": {
+                            "meta": {
+                                "semantic_version": "1.0.0",
+                                "canonical_grain": (
+                                    "Product User in a Tenant and Confluence product"
+                                ),
+                                "canonical_time_rule": (
+                                    "Use the first-ever Confluence Paid Enablement."
+                                ),
+                            }
+                        },
                     }
                 }
             }
@@ -44,8 +58,13 @@ def test_artifact_builder_accepts_passing_dbt_tests(tmp_path, monkeypatch) -> No
                         "name": "jira_new_peu",
                         "description": "First-ever Jira Paid Enablement.",
                         "type_params": {"measure": {"name": "jira_new_peu"}},
-                    }
-                ],
+                    },
+                    {
+                        "name": "confluence_new_peu",
+                        "description": "First-ever Confluence Paid Enablement.",
+                        "type_params": {"measure": {"name": "confluence_new_peu"}},
+                    },
+                    ],
                 "semantic_models": [
                     {
                         "name": "jira_new_peu",
@@ -53,6 +72,17 @@ def test_artifact_builder_accepts_passing_dbt_tests(tmp_path, monkeypatch) -> No
                         "measures": [
                             {
                                 "name": "jira_new_peu",
+                                "agg": "count_distinct",
+                                "expr": "product_user_id",
+                            }
+                        ],
+                    },
+                    {
+                        "name": "confluence_new_peu",
+                        "node_relation": {"alias": "fct_confluence_new_peu"},
+                        "measures": [
+                            {
+                                "name": "confluence_new_peu",
                                 "agg": "count_distinct",
                                 "expr": "product_user_id",
                             }
@@ -73,6 +103,10 @@ def test_artifact_builder_accepts_passing_dbt_tests(tmp_path, monkeypatch) -> No
     artifact = json.loads(artifact_path.read_text())
     assert artifact["validation"]["status"] == "success"
     assert artifact["metrics"][0]["formula"] == "count_distinct(product_user_id)"
+    assert [metric["name"] for metric in artifact["metrics"]] == [
+        "jira_new_peu",
+        "confluence_new_peu",
+    ]
     assert (
         artifact["metrics"][0]["citation_path"]
         == "dbt/models/marts/jira_new_peu.yml#jira_new_peu"
