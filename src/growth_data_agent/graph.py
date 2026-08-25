@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -59,6 +60,14 @@ class GraphPath(BaseModel):
 
 class EvidenceGraphUnavailableError(OSError):
     """Raised when the derived evidence graph cannot return a safe path."""
+
+
+_AGE_CONFIGURATION_ERROR = (
+    "Apache AGE is unavailable for this application role. Configure AGE in the "
+    "database's session_preload_libraries (for example, ALTER DATABASE ... SET "
+    "session_preload_libraries = 'age'), grant the role usage on ag_catalog, and "
+    "set APACHE_AGE_PRELOADED=true; do not make the application role a superuser."
+)
 
 
 @dataclass(frozen=True)
@@ -303,53 +312,90 @@ class ApacheAgeEvidenceGraphMaterializer:
 class PsycopgAgeGraphQueryExecutor:
     """Execute the AGE Cypher boundary in a read-only PostgreSQL transaction."""
 
-    def __init__(self, database_url: str, *, graph_name: str = "growth_evidence"):
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        graph_name: str = "growth_evidence",
+        age_preloaded: bool = False,
+    ):
         self.database_url = database_url
         self.graph_name = graph_name
+        self.age_preloaded = age_preloaded
 
     def query(self, cypher: str, parameters: dict[str, object]) -> list[GraphPath]:
-        with psycopg.connect(self.database_url) as connection:
-            with connection.transaction():
-                connection.execute("SET TRANSACTION READ ONLY")
-                connection.execute("LOAD 'age'")
-                connection.execute('SET search_path = ag_catalog, "$user", public')
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT * FROM cypher(%s, %s, %s) AS (path agtype)",
-                        (self.graph_name, cypher, json.dumps(parameters)),
-                    )
-                    try:
-                        return [_graph_path_from_age(row[0]) for row in cursor.fetchall()]
-                    except (TypeError, ValueError, KeyError) as error:
-                        raise EvidenceGraphUnavailableError(
-                            "Apache AGE returned a malformed evidence path."
-                        ) from error
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.transaction():
+                    connection.execute("SET TRANSACTION READ ONLY")
+                    _configure_age_session(connection, age_preloaded=self.age_preloaded)
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT * FROM cypher(%s, %s, %s) AS (path agtype)",
+                            (self.graph_name, cypher, json.dumps(parameters)),
+                        )
+                        try:
+                            return [_graph_path_from_age(row[0]) for row in cursor.fetchall()]
+                        except (TypeError, ValueError, KeyError) as error:
+                            raise EvidenceGraphUnavailableError(
+                                "Apache AGE returned a malformed evidence path."
+                            ) from error
+        except EvidenceGraphUnavailableError:
+            raise
+        except psycopg.Error as error:
+            raise EvidenceGraphUnavailableError(_AGE_CONFIGURATION_ERROR) from error
 
 
 class PsycopgAgeGraphMutationExecutor:
     """Execute AGE mutations in a normal PostgreSQL transaction."""
 
-    def __init__(self, database_url: str, *, graph_name: str = "growth_evidence"):
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        graph_name: str = "growth_evidence",
+        age_preloaded: bool = False,
+    ):
         self.database_url = database_url
         self.graph_name = graph_name
+        self.age_preloaded = age_preloaded
 
     def execute(self, cypher: str, parameters: dict[str, object]) -> None:
-        with psycopg.connect(self.database_url) as connection:
-            with connection.transaction():
-                connection.execute("LOAD 'age'")
-                connection.execute('SET search_path = ag_catalog, "$user", public')
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT 1 FROM ag_catalog.ag_graph WHERE name = %s",
-                        (self.graph_name,),
-                    )
-                    if cursor.fetchone() is None:
-                        cursor.execute("SELECT create_graph(%s)", (self.graph_name,))
-                    cursor.execute(
-                        "SELECT * FROM cypher(%s, %s, %s) AS (result agtype)",
-                        (self.graph_name, cypher, json.dumps(parameters)),
-                    )
-                    cursor.fetchall()
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.transaction():
+                    _configure_age_session(connection, age_preloaded=self.age_preloaded)
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT 1 FROM ag_catalog.ag_graph WHERE name = %s",
+                            (self.graph_name,),
+                        )
+                        if cursor.fetchone() is None:
+                            cursor.execute("SELECT create_graph(%s)", (self.graph_name,))
+                        cursor.execute(
+                            "SELECT * FROM cypher(%s, %s, %s) AS (result agtype)",
+                            (self.graph_name, cypher, json.dumps(parameters)),
+                        )
+                        cursor.fetchall()
+        except psycopg.Error as error:
+            raise EvidenceGraphUnavailableError(_AGE_CONFIGURATION_ERROR) from error
+
+
+def _configure_age_session(connection, *, age_preloaded: bool) -> None:
+    """Prepare AGE without requiring LOAD when the server preloads its library."""
+    if not age_preloaded:
+        connection.execute("LOAD 'age'")
+    connection.execute('SET search_path = ag_catalog, "$user", public')
+
+
+def apache_age_preloaded_from_environment() -> bool:
+    """Return whether the database/session administrator preloaded Apache AGE."""
+    return os.environ.get("APACHE_AGE_PRELOADED", "").casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class DerivedEvidenceGraphBuilder:

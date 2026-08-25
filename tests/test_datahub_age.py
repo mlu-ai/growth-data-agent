@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import psycopg
 import pytest
 from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, write_artifact
 from fastapi.testclient import TestClient
@@ -24,7 +25,9 @@ from growth_data_agent.graph import (
     GraphNode,
     GraphPath,
     InMemoryEvidenceGraphStore,
+    PsycopgAgeGraphMutationExecutor,
     PsycopgAgeGraphQueryExecutor,
+    apache_age_preloaded_from_environment,
 )
 from growth_data_agent.main import create_app
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
@@ -75,10 +78,14 @@ class FakeAgeCursor:
     def fetchall(self):
         return [(self.value,)]
 
+    def fetchone(self):
+        return None
+
 
 class FakeAgeConnection:
     def __init__(self, value: str) -> None:
         self.cursor_value = value
+        self.execute_calls: list[str] = []
 
     def __enter__(self):
         return self
@@ -90,10 +97,19 @@ class FakeAgeConnection:
         return self
 
     def execute(self, query):
+        self.execute_calls.append(query)
         self.last_execute = query
 
     def cursor(self):
         return FakeAgeCursor(self.cursor_value)
+
+
+class DeniedLoadAgeConnection(FakeAgeConnection):
+    def execute(self, query):
+        self.execute_calls.append(query)
+        if query == "LOAD 'age'":
+            raise psycopg.errors.InsufficientPrivilege("access to library 'age' is not allowed")
+        self.last_execute = query
 
 
 class FakeHttpResponse:
@@ -658,12 +674,21 @@ def test_psycopg_age_executor_decodes_vertex_edge_agtype(monkeypatch) -> None:
                 + "::edge"
             )
     age_path = "[" + ",".join(path_elements) + "]::path"
+    connections: list[FakeAgeConnection] = []
+
+    def connect(_database_url: str) -> FakeAgeConnection:
+        connection = FakeAgeConnection(age_path)
+        connections.append(connection)
+        return connection
+
     monkeypatch.setattr(
         "growth_data_agent.graph.psycopg.connect",
-        lambda database_url: FakeAgeConnection(age_path),
+        connect,
     )
 
-    paths = PsycopgAgeGraphQueryExecutor("postgresql://example").query(
+    paths = PsycopgAgeGraphQueryExecutor(
+        "postgresql://example", age_preloaded=True
+    ).query(
         "MATCH path RETURN path", {"tenant_ids": ["tenant-0002"]}
     )
 
@@ -672,6 +697,53 @@ def test_psycopg_age_executor_decodes_vertex_edge_agtype(monkeypatch) -> None:
         "segment",
         "tenant",
         "incident",
+    ]
+    assert connections[0].execute_calls == [
+        "SET TRANSACTION READ ONLY",
+        'SET search_path = ag_catalog, "$user", public',
+    ]
+
+
+def test_psycopg_age_executor_reports_preload_configuration_when_load_is_denied(
+    monkeypatch,
+) -> None:
+    connection = DeniedLoadAgeConnection("not-used")
+    monkeypatch.setattr(
+        "growth_data_agent.graph.psycopg.connect",
+        lambda database_url: connection,
+    )
+
+    with pytest.raises(EvidenceGraphUnavailableError, match="session_preload_libraries"):
+        PsycopgAgeGraphQueryExecutor("postgresql://example").query(
+            "MATCH path RETURN path", {}
+        )
+
+    assert connection.execute_calls == ["SET TRANSACTION READ ONLY", "LOAD 'age'"]
+
+
+def test_age_preloaded_environment_flag_is_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("APACHE_AGE_PRELOADED", raising=False)
+    assert not apache_age_preloaded_from_environment()
+
+    monkeypatch.setenv("APACHE_AGE_PRELOADED", "true")
+    assert apache_age_preloaded_from_environment()
+
+
+def test_psycopg_age_mutation_executor_skips_load_for_preloaded_non_superuser(
+    monkeypatch,
+) -> None:
+    connection = FakeAgeConnection("ignored")
+    monkeypatch.setattr(
+        "growth_data_agent.graph.psycopg.connect",
+        lambda database_url: connection,
+    )
+
+    PsycopgAgeGraphMutationExecutor(
+        "postgresql://example", age_preloaded=True
+    ).execute("MATCH (n) RETURN n", {})
+
+    assert connection.execute_calls == [
+        'SET search_path = ag_catalog, "$user", public',
     ]
 
 

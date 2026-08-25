@@ -13,6 +13,7 @@ from growth_data_agent.datahub import (
 from growth_data_agent.graph import (
     ApacheAgeEvidenceGraphMaterializer,
     PsycopgAgeGraphMutationExecutor,
+    apache_age_preloaded_from_environment,
 )
 from growth_data_agent.semantic import SemanticArtifactStore
 from growth_data_agent.synthetic import evidence_corpus
@@ -60,6 +61,7 @@ def main() -> None:
         PsycopgAgeGraphMutationExecutor(
             database_url,
             graph_name=os.environ.get("APACHE_AGE_GRAPH_NAME", "growth_evidence"),
+            age_preloaded=apache_age_preloaded_from_environment(),
         )
     ).replace(_approved_catalog_entities(artifact), evidence_corpus())
     print(
