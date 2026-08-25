@@ -257,18 +257,19 @@ Tenant region, paid-subscription start, and seat tier. It must preserve the
 domain rule that the same Person can be a separate Product User per product
 and Tenant.
 
-Seed, in addition to the first Jira New PEU incident, three future scenarios:
+Seed, in addition to the first Jira New PEU incident, three governed scenarios:
 
-1. Confluence New Monthly Active User (New MAU) decline in EMEA enterprise
+1. Confluence New Monthly Active User (New MAU) decline in EMEA 51–200 Seat Tier
    Tenants after an onboarding-email regression.
 2. Jira New MAU lift in Americas small Tenants in a registered onboarding
    treatment/control experiment.
 3. Confluence New PEU lift in Americas 11–50 Seat Tier Tenants after a
    targeted acquisition campaign.
 
-New MAU is reserved for subsequent delivery: it is a New PEU who has at least
-one Visit in the same calendar month and product as first paid enablement. A
-visit in another product does not qualify it.
+New MAU is a New PEU who has at least one Visit in the same calendar month and
+product as first paid enablement. A Visit in another product does not qualify
+it. The current delivery exposes the canonical Jira and Confluence New MAU
+definitions and the Confluence EMEA regression investigation.
 
 ## Response contract
 
@@ -349,8 +350,8 @@ retrieval quality, or evidence wording.
 
 ## Out of scope for the first delivery
 
-- Revenue, Activation Rate, New MAU, and any metric other than Jira or
-  Confluence New PEU.
+- Revenue, Activation Rate, and any metric other than the delivered Jira or
+  Confluence New PEU and New MAU metrics.
 - A production Teamwork Graph integration.
 - pgvector as the POC retrieval store.
 - General autonomous causal inference or automatic use of DML, matching, or
@@ -373,8 +374,8 @@ retrieval quality, or evidence wording.
    Hypothesis response.
 6. Add the APAC Regional Manager authorization tests, MLflow tracing, and the
    initial evaluation fixtures.
-7. Expand to New MAU only after the Jira and Confluence New PEU verticals are
-   reliable.
+7. Extend the governed metric catalog after the Jira and Confluence New MAU
+   verticals are reliable.
 
 ## Open follow-ups
 

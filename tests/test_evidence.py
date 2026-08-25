@@ -97,6 +97,30 @@ def test_confluence_campaign_filter_contains_requested_seat_tier_before_retrieva
     assert access_filter.tenant_ids == tuple(documents[4].tenant_ids)
 
 
+def test_confluence_emea_new_mau_filter_is_scoped_before_retrieval(tmp_path: Path) -> None:
+    documents = evidence_corpus()
+    store = RecordingEvidenceStore(list(documents[8:11]))
+    client = _client(tmp_path, store)
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": (
+                "What evidence may explain the Confluence EMEA 51–200-seat New MAU "
+                "decline after the onboarding-email regression?"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    access_filter = store.filters[0]
+    assert access_filter.products == ("Confluence",)
+    assert access_filter.regions == ("EMEA",)
+    assert access_filter.seat_tiers == ("51-200",)
+    assert access_filter.tenant_ids == tuple(documents[8].tenant_ids)
+
+
 def test_apac_manager_receives_no_out_of_scope_or_restricted_documents(client: TestClient) -> None:
     response = client.post(
         "/answer_question",
@@ -116,7 +140,11 @@ def test_apac_manager_receives_no_out_of_scope_or_restricted_documents(client: T
 
 
 def test_retrieved_restricted_document_is_not_added_to_response_context(tmp_path: Path) -> None:
-    restricted_document = evidence_corpus()[-1]
+    restricted_document = next(
+        document
+        for document in evidence_corpus()
+        if document.document_id == "jira-apac-paid-provisioning-incident-restricted"
+    )
     client = _client(tmp_path, RecordingEvidenceStore([restricted_document]))
 
     response = client.post(

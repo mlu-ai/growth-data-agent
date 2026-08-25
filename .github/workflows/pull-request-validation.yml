@@ -17,10 +17,37 @@ jobs:
   pytest:
     name: pytest
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: growth_data
+          POSTGRES_USER: growth_data
+          POSTGRES_PASSWORD: growth_data
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U growth_data -d growth_data"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: growth_data
+      POSTGRES_USER: growth_data
+      POSTGRES_PASSWORD: growth_data
+      METRICFLOW_TEST_DATABASE_URL: postgresql://growth_data:growth_data@127.0.0.1:5432/growth_data
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --all-groups --locked
+      - run: uv run python scripts/generate_synthetic_data.py
+      - run: uv run --group warehouse python scripts/load_postgres.py
+      - name: Build validated semantic artifacts
+        working-directory: dbt
+        run: uv run --group warehouse dbt build --profiles-dir .
+      - run: uv run python scripts/build_semantic_artifact.py
       - run: uv run pytest
 
   dbt-build:

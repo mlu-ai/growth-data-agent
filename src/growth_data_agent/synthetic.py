@@ -29,6 +29,9 @@ _CONFLUENCE_MAY_JUNE_SCENARIO = {
     ("APAC", "1-10"): (600, 600),
     ("EMEA", "51-200"): (600, 600),
 }
+_CONFLUENCE_EMEA_NEW_MAU_SCENARIO = {
+    ("EMEA", "51-200"): (600, 300),
+}
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,8 @@ class DatasetCounts:
 
 def evidence_corpus() -> tuple[EvidenceDocument, ...]:
     """Return the deterministic incident corpus used by the evidence POC."""
-    apac_enterprise_tenants = _tenant_ids_for_segment("APAC", "51-200")
+    apac_51_200_tenants = _tenant_ids_for_segment("APAC", "51-200")
+    emea_51_200_tenants = _tenant_ids_for_segment("EMEA", "51-200")
     return (
         EvidenceDocument(
             document_id="jira-apac-paid-provisioning-incident",
@@ -53,7 +57,7 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             ),
             product="Jira",
             region="APAC",
-            tenant_ids=apac_enterprise_tenants,
+            tenant_ids=apac_51_200_tenants,
             tenant_scope="APAC 51-200 Seat Tier Tenants",
             classification="internal",
             identifier_entitlement="none",
@@ -210,13 +214,98 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             ),
             sensitive_identifiers=["tenant-0002"],
         ),
+        EvidenceDocument(
+            document_id="confluence-emea-onboarding-email-regression",
+            title="Confluence EMEA onboarding-email regression",
+            text=(
+                "An onboarding-email regression affected Confluence EMEA 51-200 Seat Tier "
+                "Tenants from 2026-06-08 through 2026-06-20, overlapping the June New MAU "
+                "decline."
+            ),
+            product="Confluence",
+            region="EMEA",
+            tenant_ids=emea_51_200_tenants,
+            tenant_scope="EMEA 51-200 Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 6, 20),
+            freshness=datetime(2026, 6, 21, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.SUPPORTS,
+            support_explanation=(
+                "The onboarding-email regression overlaps the EMEA 51-200 Seat Tier Tenant "
+                "scope and the June 2026 New MAU decline period."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="confluence-emea-small-tenant-onboarding-email",
+            title="Confluence EMEA small-Tenant onboarding-email review",
+            text=(
+                "An onboarding-email review covered Confluence EMEA 1-10 Seat Tier Tenants "
+                "in May 2026, outside the affected 51-200 segment."
+            ),
+            product="Confluence",
+            region="EMEA",
+            tenant_ids=_tenant_ids_for_segment("EMEA", "1-10"),
+            tenant_scope="EMEA 1-10 Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 5, 18),
+            freshness=datetime(2026, 5, 19, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.INCONCLUSIVE,
+            support_explanation=(
+                "The review concerns a different Seat Tier from the affected segment."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="confluence-emea-201-plus-onboarding-email",
+            title="Confluence EMEA 201+ Seat Tier onboarding-email summary",
+            text=(
+                "An onboarding-email summary was published in June 2026, but it covered "
+                "201+ Seat Tier Tenants rather than the affected 51-200 segment."
+            ),
+            product="Confluence",
+            region="EMEA",
+            tenant_ids=_tenant_ids_for_segment("EMEA", "201+"),
+            tenant_scope="EMEA 201+ Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 6, 9),
+            freshness=datetime(2026, 6, 10, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.INCONCLUSIVE,
+            support_explanation=(
+                "The summary concerns a different Seat Tier from the affected segment."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="confluence-emea-onboarding-email-regression-restricted",
+            title="Restricted Confluence EMEA onboarding-email regression appendix",
+            text=(
+                "Restricted appendix with direct Tenant identifiers for the Confluence EMEA "
+                "onboarding-email regression: tenant-0003."
+            ),
+            product="Confluence",
+            region="EMEA",
+            tenant_ids=["tenant-0003"],
+            tenant_scope="EMEA 51-200 Seat Tier Tenants",
+            classification="restricted",
+            identifier_entitlement="direct",
+            relevant_date=date(2026, 6, 20),
+            freshness=datetime(2026, 6, 21, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.SUPPORTS,
+            support_explanation=(
+                "This restricted appendix cannot be used without classification and direct "
+                "identifier entitlement."
+            ),
+            sensitive_identifiers=["tenant-0003"],
+        ),
     )
 
 
 def graph_corpus() -> tuple[GraphPath, ...]:
     """Return deterministic public and direct-identifier evidence paths."""
-    apac_enterprise_tenants = _tenant_ids_for_segment("APAC", "51-200")
+    apac_51_200_tenants = _tenant_ids_for_segment("APAC", "51-200")
     americas_campaign_tenants = _tenant_ids_for_segment("Americas", "11-50")
+    emea_51_200_tenants = _tenant_ids_for_segment("EMEA", "51-200")
     return (
         GraphPath(
             path_id="jira-apac-new-peu-incident-chain",
@@ -227,7 +316,7 @@ def graph_corpus() -> tuple[GraphPath, ...]:
                     label="Jira New PEU",
                     product="Jira",
                     region="APAC",
-                    tenant_ids=apac_enterprise_tenants,
+                    tenant_ids=apac_51_200_tenants,
                     classification="internal",
                     identifier_entitlement="none",
                 ),
@@ -237,7 +326,7 @@ def graph_corpus() -> tuple[GraphPath, ...]:
                     label="APAC 51-200 Seat Tier Tenants",
                     product="Jira",
                     region="APAC",
-                    tenant_ids=apac_enterprise_tenants,
+                    tenant_ids=apac_51_200_tenants,
                     classification="internal",
                     identifier_entitlement="none",
                 ),
@@ -247,7 +336,7 @@ def graph_corpus() -> tuple[GraphPath, ...]:
                     label="Jira APAC paid provisioning incident",
                     product="Jira",
                     region="APAC",
-                    tenant_ids=apac_enterprise_tenants,
+                    tenant_ids=apac_51_200_tenants,
                     classification="internal",
                     identifier_entitlement="none",
                 ),
@@ -333,6 +422,66 @@ def graph_corpus() -> tuple[GraphPath, ...]:
                     product="Confluence",
                     region="Americas",
                     tenant_ids=["tenant-0002"],
+                    classification="restricted",
+                    identifier_entitlement="direct",
+                ),
+            ],
+        ),
+        GraphPath(
+            path_id="confluence-emea-onboarding-email-regression-chain",
+            nodes=[
+                GraphNode(
+                    node_id="metric-confluence-new-mau",
+                    node_type="metric",
+                    label="Confluence New MAU",
+                    product="Confluence",
+                    region="EMEA",
+                    tenant_ids=emea_51_200_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+                GraphNode(
+                    node_id="segment-emea-51-200",
+                    node_type="segment",
+                    label="EMEA 51-200 Seat Tier Tenants",
+                    product="Confluence",
+                    region="EMEA",
+                    tenant_ids=emea_51_200_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+                GraphNode(
+                    node_id="regression-confluence-emea-onboarding-email",
+                    node_type="regression",
+                    label="Confluence EMEA onboarding-email regression",
+                    product="Confluence",
+                    region="EMEA",
+                    tenant_ids=emea_51_200_tenants,
+                    classification="internal",
+                    identifier_entitlement="none",
+                ),
+            ],
+        ),
+        GraphPath(
+            path_id="confluence-emea-onboarding-email-identifier-chain",
+            nodes=[
+                GraphNode(
+                    node_id="regression-confluence-emea-onboarding-email-restricted",
+                    node_type="regression",
+                    label="Restricted Confluence EMEA onboarding-email appendix",
+                    product="Confluence",
+                    region="EMEA",
+                    tenant_ids=["tenant-0003"],
+                    classification="restricted",
+                    identifier_entitlement="direct",
+                ),
+                GraphNode(
+                    node_id="tenant-0003",
+                    node_type="tenant",
+                    label="tenant-0003",
+                    product="Confluence",
+                    region="EMEA",
+                    tenant_ids=["tenant-0003"],
                     classification="restricted",
                     identifier_entitlement="direct",
                 ),
@@ -514,19 +663,55 @@ def _enablement_event(
 
 
 def _visits(product_users: list[dict[str, str]]) -> list[dict[str, str]]:
-    return [
-        {
-            "visit_id": f"visit-{index:05d}",
-            "product_user_id": product_user["product_user_id"],
-            "product": product_user["product"],
-            "visited_at": datetime.combine(
-                _START_DATE + timedelta(days=(index * 41) % ((_END_DATE - _START_DATE).days + 1)),
-                datetime.min.time(),
-                UTC,
-            ).isoformat(),
-        }
-        for index, product_user in enumerate(product_users, start=1)
-    ]
+    scenario_seen: dict[tuple[str, tuple[str, str]], int] = {}
+    visits = []
+    for index, product_user in enumerate(product_users, start=1):
+        segment = _tenant_segment(product_user)
+        scenario_key = (product_user["product"], segment)
+        position = scenario_seen.get(scenario_key, 0)
+        scenario_seen[scenario_key] = position + 1
+        visited_on = _new_mau_visit_date(product_user, position)
+        if visited_on is None:
+            visited_on = _START_DATE + timedelta(
+                days=(index * 41) % ((_END_DATE - _START_DATE).days + 1)
+            )
+        visits.append(
+            {
+                "visit_id": f"visit-{index:05d}",
+                "product_user_id": product_user["product_user_id"],
+                "product": product_user["product"],
+                "visited_at": datetime.combine(visited_on, datetime.min.time(), UTC).isoformat(),
+            }
+        )
+    return visits
+
+
+def _new_mau_visit_date(
+    product_user: dict[str, str], position: int
+) -> date | None:
+    if product_user["product"] != "Confluence":
+        return None
+    segment = _tenant_segment(product_user)
+    new_mau_counts = _CONFLUENCE_EMEA_NEW_MAU_SCENARIO.get(segment)
+    peu_counts = _CONFLUENCE_MAY_JUNE_SCENARIO.get(segment)
+    if new_mau_counts is None or peu_counts is None:
+        return None
+    may_count, june_new_mau_count = new_mau_counts
+    _, june_peu_count = peu_counts
+    if position < may_count:
+        return date(2026, 5, position % 31 + 1)
+    if position < may_count + june_new_mau_count:
+        return date(2026, 6, (position - may_count) % 30 + 1)
+    if position < may_count + june_peu_count:
+        return date(2026, 4, (position - may_count - june_new_mau_count) % 30 + 1)
+    return None
+
+
+def _tenant_segment(product_user: dict[str, str]) -> tuple[str, str]:
+    tenant_number = int(product_user["tenant_id"].rsplit("-", 1)[1])
+    region = _REGIONS[(tenant_number - 1) % len(_REGIONS)]
+    seat_tier = _SEAT_TIERS[(tenant_number - 1) % len(_SEAT_TIERS)]
+    return region, seat_tier
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:

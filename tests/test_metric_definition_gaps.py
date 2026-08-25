@@ -94,14 +94,14 @@ def test_missing_canonical_metric_is_a_gap_and_never_a_canonical_metric(tmp_path
 
     response = client.post(
         "/answer_question",
-        json={"agent_user_id": "data_analyst", "question": "What is Jira New MAU?"},
+        json={"agent_user_id": "data_analyst", "question": "What is Jira Activation?"},
     )
 
     body = response.json()
     assert response.status_code == 200
     assert body["result_classification"] == "metric_definition_gap"
     assert body["metric_definition_gap"] == {
-        "requested_metric_name": "jira_new_mau",
+        "requested_metric_name": "jira_activation",
         "semantic_authority": "dbt/MetricFlow",
         "verification_request_offered": True,
     }
@@ -216,7 +216,7 @@ def test_provisional_calculation_with_an_unpermitted_input_is_refused(tmp_path: 
 
     response = client.post(
         "/answer_question",
-        json={"agent_user_id": "data_analyst", "question": "What is Jira New MAU?"},
+        json={"agent_user_id": "data_analyst", "question": "What is Jira Activation?"},
     )
 
     body = response.json()
@@ -256,7 +256,7 @@ def test_provisional_calculation_is_refused_when_gateway_returns_extra_input(
 
     response = client.post(
         "/answer_question",
-        json={"agent_user_id": "data_analyst", "question": "What is Jira New MAU?"},
+        json={"agent_user_id": "data_analyst", "question": "What is Jira Activation?"},
     )
 
     body = response.json()
@@ -271,10 +271,10 @@ def test_data_team_request_requires_explicit_confirmation_and_records_context(
     client, recorder = _client_and_recorder(tmp_path)
     request = {
         "agent_user_id": "data_analyst",
-        "question": "What is Jira New MAU?",
+        "question": "What is Jira Activation?",
         "verification_request_confirmation": {
             "approved": True,
-            "approval_context": "The Agent User approved review of the Jira New MAU definition.",
+            "approval_context": "The Agent User approved review of the Jira Activation definition.",
         },
     }
 
@@ -285,9 +285,9 @@ def test_data_team_request_requires_explicit_confirmation_and_records_context(
     assert len(recorder.requests) == 1
     assert body["data_team_verification_request"] == {
         "request_id": recorder.requests[0].request_id,
-        "requested_metric_name": "jira_new_mau",
+        "requested_metric_name": "jira_activation",
         "requested_by_agent_user_id": "data_analyst",
-        "approval_context": "The Agent User approved review of the Jira New MAU definition.",
+        "approval_context": "The Agent User approved review of the Jira Activation definition.",
         "approved_at": "2026-08-25T02:00:00Z",
     }
 
@@ -299,7 +299,7 @@ def test_declined_verification_confirmation_does_not_create_a_request(tmp_path: 
         "/answer_question",
         json={
             "agent_user_id": "data_analyst",
-            "question": "What is Jira New MAU?",
+            "question": "What is Jira Activation?",
             "verification_request_confirmation": {
                 "approved": False,
                 "approval_context": "The Agent User declined the verification request.",

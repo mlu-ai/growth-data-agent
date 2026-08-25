@@ -63,6 +63,28 @@ def test_apac_entitlement_is_passed_to_metricflow_before_postgres_execution(tmp_
     ]
 
 
+def test_new_mau_customer_success_query_uses_the_new_mau_entity_and_tenant_scope(
+    tmp_path: Path,
+) -> None:
+    gateway, planner, executor = _gateway(tmp_path)
+
+    evidence, freshness = gateway.execute_scoped_metric(
+        "jira_new_mau", resolve_access_profile("customer_success_manager")
+    )
+
+    assert freshness.is_current is True
+    assert evidence is not None
+    constraints = planner.requests[0].where_constraints
+    assert constraints[0] == "jira_new_mau_product_user__product = 'Jira'"
+    assert constraints[1] == "jira_new_mau_product_user__region IN ('APAC')"
+    assert constraints[2].startswith("jira_new_mau_product_user__tenant_id IN (")
+    assert "tenant-0011" in constraints[2]
+    assert executor.plans[0].group_by_names == (
+        "jira_new_mau_product_user__product",
+        "jira_new_mau_product_user__region",
+    )
+
+
 def test_stale_artifact_does_not_plan_or_execute_a_query(tmp_path: Path) -> None:
     artifact_path = write_artifact(tmp_path / "semantic.json")
     planner = RecordingMetricFlowPlanner(tmp_path / "semantic_manifest.json")
@@ -236,5 +258,40 @@ def test_confluence_metricflow_query_and_driver_reconcile_on_postgres() -> None:
     assert decomposition.contributions[0].region == "Americas"
     assert decomposition.contributions[0].seat_tier == "11-50"
     assert decomposition.contributions[0].change == 420
+    assert evidence is not None
+    assert evidence.constrained_products == ["Confluence"]
+
+
+def test_confluence_new_mau_driver_reconciles_on_postgres() -> None:
+    database_url = os.environ.get("METRICFLOW_TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip(
+            "METRICFLOW_TEST_DATABASE_URL is required for the local Postgres integration test"
+        )
+
+    repository = Path(__file__).resolve().parents[1]
+    gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(repository / "dbt/artifacts/last_validated_semantic.json"),
+        metricflow_planner=MetricFlowPlanner(repository / "dbt/target/semantic_manifest.json"),
+        postgres_executor=PostgresMetricFlowExecutor(database_url),
+    )
+
+    definition, decomposition, evidence, freshness = gateway.driver_decomposition(
+        "confluence_new_mau",
+        resolve_access_profile("data_analyst"),
+        baseline_period="2026-05",
+        comparison_period="2026-06",
+    )
+
+    assert freshness.is_current is True
+    assert definition is not None
+    assert definition.name == "confluence_new_mau"
+    assert decomposition is not None
+    assert (decomposition.baseline_value, decomposition.comparison_value) == (698, 422)
+    assert decomposition.net_change == decomposition.reconciled_change == -276
+    assert decomposition.residual == 0
+    assert decomposition.contributions[0].region == "EMEA"
+    assert decomposition.contributions[0].seat_tier == "51-200"
+    assert decomposition.contributions[0].change == -300
     assert evidence is not None
     assert evidence.constrained_products == ["Confluence"]

@@ -95,8 +95,8 @@ class AnswerQuestionService:
             return GovernedAnalyticalResponse(
                 answer=(
                     "This first delivery supports governed metric-definition questions, starting "
-                    "with Jira and Confluence New PEU. Name a metric to check its semantic "
-                    "status."
+                    "with Jira and Confluence New PEU and New MAU. Name a metric to check its "
+                    "semantic status."
                 ),
                 result_classification=ResultClassification.LIMITATION,
                 source_freshness=self.semantic_gateway.freshness(artifact),
@@ -123,7 +123,21 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        if metric_name in {"jira_new_peu", "confluence_new_peu"} and (
+        if metric_name == "confluence_new_mau" and self._requests_confluence_emea_regression(
+            request.question
+        ):
+            return self._answer_confluence_emea_regression_evidence(
+                scope=scope,
+                access_profile=access_profile,
+                trace_id=trace_id,
+            )
+
+        if metric_name in {
+            "jira_new_peu",
+            "confluence_new_peu",
+            "jira_new_mau",
+            "confluence_new_mau",
+        } and (
             self._requests_may_to_june_driver_decomposition(request.question)
         ):
             return self._answer_metric_driver_decomposition(
@@ -165,7 +179,7 @@ class AnswerQuestionService:
         if query_evidence is None:
             return GovernedAnalyticalResponse(
                 answer=(
-                    f"{metric_product} New PEU cannot be returned as canonical because "
+                    f"{self._metric_label(metric_name)} cannot be returned as canonical because "
                     "validation is not current."
                 ),
                 result_classification=ResultClassification.LIMITATION,
@@ -175,21 +189,36 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        return GovernedAnalyticalResponse(
-            answer=(
+        if metric_name.endswith("_new_mau"):
+            answer = (
+                f"{metric_product} New MAU is a New PEU with at least one Visit to "
+                f"{metric_product} in the same calendar month as first paid enablement. "
+                "A Visit to another product does not qualify the Product User."
+            )
+            caveats = [
+                "This is a canonical definition, not a count for a particular period.",
+                "The grain is Product User in a Tenant and product; it is not Person-level.",
+                "Only same-product Visits in the first paid-enablement calendar month qualify.",
+            ]
+        else:
+            answer = (
                 f"{metric_product} New PEU is a Product User's first-ever Paid Enablement for "
                 f"{metric_product}. "
                 "Later restorations of paid access do not create another New PEU."
-            ),
+            )
+            caveats = [
+                "This is a canonical definition, not a count for a particular period.",
+                "The grain is Product User in a Tenant and product; it is not Person-level.",
+            ]
+
+        return GovernedAnalyticalResponse(
+            answer=answer,
             result_classification=ResultClassification.CANONICAL_DEFINITION,
             canonical_definition=definition,
             semantic_query_evidence=query_evidence,
             source_freshness=freshness,
             effective_access_scope=scope,
-            caveats=[
-                "This is a canonical definition, not a count for a particular period.",
-                "The grain is Product User in a Tenant and product; it is not Person-level.",
-            ],
+            caveats=caveats,
             trace_id=trace_id,
         )
 
@@ -307,10 +336,9 @@ class AnswerQuestionService:
             )
         )
         if definition is None or decomposition is None or query_evidence is None:
-            metric_product = self._metric_product(metric_name)
             return GovernedAnalyticalResponse(
                 answer=(
-                    f"{metric_product} New PEU cannot be decomposed as canonical because "
+                    f"{self._metric_label(metric_name)} cannot be decomposed as canonical because "
                     "semantic validation is not current."
                 ),
                 result_classification=ResultClassification.LIMITATION,
@@ -336,10 +364,10 @@ class AnswerQuestionService:
                     f"{leading.contribution_to_decline:,} of the {decomposition.decline:,} decline "
                     f"({leading.percentage_of_decline:g}%)."
                 )
-        metric_product = self._metric_product(metric_name)
         return GovernedAnalyticalResponse(
             answer=(
-                f"Driver Decomposition (observed, non-causal): {metric_product} New PEU moved from "
+                f"Driver Decomposition (observed, non-causal): {self._metric_label(metric_name)} "
+                "moved from "
                 f"{decomposition.baseline_value:,} in May 2026 to "
                 f"{decomposition.comparison_value:,} in June 2026 "
                 f"({decomposition.net_change:+,}). Semantic definition v"
@@ -404,6 +432,31 @@ class AnswerQuestionService:
             inconclusive_answer=(
                 "Inconclusive: the permitted evidence does not support a reliable explanation "
                 "for the observed Americas 11-50 Seat Tier Tenant movement."
+            ),
+        )
+
+    def _answer_confluence_emea_regression_evidence(
+        self, *, scope, access_profile, trace_id: str
+    ):
+        return self._answer_segment_evidence(
+            metric_name="confluence_new_mau",
+            region="EMEA",
+            seat_tier="51-200",
+            scope=scope,
+            access_profile=access_profile,
+            trace_id=trace_id,
+            evidence_query=(
+                "Confluence EMEA 51-200 onboarding-email regression June 2026 New MAU decline"
+            ),
+            scope_evidence_to_seat_tier=True,
+            supported_answer=(
+                "Hypothesis: the permitted Confluence EMEA onboarding-email regression may help "
+                "explain the observed 51-200 Seat Tier Tenant New MAU decline. The evidence "
+                "supports this Hypothesis but does not establish causation."
+            ),
+            inconclusive_answer=(
+                "Inconclusive: the permitted evidence does not support a reliable explanation "
+                "for the observed Confluence EMEA 51-200 Seat Tier Tenant New MAU decline."
             ),
         )
 
@@ -704,6 +757,23 @@ class AnswerQuestionService:
         )
 
     @staticmethod
+    def _requests_confluence_emea_regression(question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        return (
+            "evidence" in normalized
+            and "confluence" in normalized
+            and "emea" in normalized
+            and "new mau" in normalized
+            and "decline" in normalized
+            and "onboarding" in normalized
+            and "regression" in normalized
+            and (
+                "51–200" in question
+                or "51-200" in normalized
+            )
+        )
+
+    @staticmethod
     def _requests_direct_identifier(question: str) -> bool:
         normalized = " ".join(question.casefold().split())
         return bool(
@@ -745,6 +815,14 @@ class AnswerQuestionService:
         if metric_name.startswith("confluence_"):
             return "Confluence"
         return None
+
+    @staticmethod
+    def _metric_label(metric_name: str) -> str:
+        product = AnswerQuestionService._metric_product(metric_name)
+        if product is None:
+            return metric_name
+        metric_type = "New MAU" if metric_name.endswith("_new_mau") else "New PEU"
+        return f"{product} {metric_type}"
 
     def _metric_definition_gap_response(
         self,
