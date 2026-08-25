@@ -30,7 +30,20 @@ eighteen months. Rebuild the semantic artifact after `make dbt-build`.
 
 ## Checks
 
+Pull requests to `main` run three independently selectable GitHub Actions
+checks: `Ruff`, `pytest`, and `dbt build`. After the workflow has succeeded at
+least once, repository administrators can select these exact check names in
+`main` branch protection.
+
+Run their local equivalents with:
+
 ```sh
-make lint
-make test
+uv sync --all-groups --locked
+uv run ruff check .
+uv run pytest
+
+docker compose up -d postgres
+uv run python scripts/generate_synthetic_data.py
+uv run --group warehouse python scripts/load_postgres.py
+cd dbt && uv run --group warehouse dbt build --profiles-dir .
 ```
