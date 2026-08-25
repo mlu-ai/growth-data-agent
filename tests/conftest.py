@@ -41,6 +41,21 @@ def write_artifact(path: Path, *, status: str = "success", hours_old: int = 0) -
                 "citation_path": "dbt/models/marts/jira_new_peu.yml#jira_new_peu",
             },
             {
+                "name": "jira_new_mau",
+                "definition": (
+                    "Jira New MAU is a New PEU with at least one Jira Visit in the "
+                    "same calendar month as first paid enablement."
+                ),
+                "formula": "count_distinct(product_user_id)",
+                "grain": "Product User in a Tenant and Jira product",
+                "time_rule": (
+                    "Attribute to first paid enablement only when a same-product Visit "
+                    "occurs in that calendar month."
+                ),
+                "model_name": "fct_jira_new_mau",
+                "citation_path": "dbt/models/marts/jira_new_mau.yml#jira_new_mau",
+            },
+            {
                 "name": "confluence_new_peu",
                 "definition": (
                     "Confluence New PEU is a Product User's first-ever Paid Enablement "
@@ -54,6 +69,21 @@ def write_artifact(path: Path, *, status: str = "success", hours_old: int = 0) -
                 ),
                 "model_name": "fct_confluence_new_peu",
                 "citation_path": "dbt/models/marts/confluence_new_peu.yml#confluence_new_peu",
+            },
+            {
+                "name": "confluence_new_mau",
+                "definition": (
+                    "Confluence New MAU is a New PEU with at least one Confluence Visit "
+                    "in the same calendar month as first paid enablement."
+                ),
+                "formula": "count_distinct(product_user_id)",
+                "grain": "Product User in a Tenant and Confluence product",
+                "time_rule": (
+                    "Attribute to first paid enablement only when a same-product Visit "
+                    "occurs in that calendar month."
+                ),
+                "model_name": "fct_confluence_new_mau",
+                "citation_path": "dbt/models/marts/confluence_new_mau.yml#confluence_new_mau",
             },
         ],
     }
@@ -82,7 +112,10 @@ def _driver_row(month: str, region: str, seat_tier: str, value: int) -> dict[str
         "metric_time__month": f"{month}-01",
         "product_user__region": region,
         "product_user__seat_tier": seat_tier,
+        "jira_new_mau_product_user__region": region,
+        "jira_new_mau_product_user__seat_tier": seat_tier,
         "jira_new_peu": value,
+        "jira_new_mau": value,
     }
 
 
@@ -94,6 +127,17 @@ def _confluence_driver_row(
         "confluence_product_user__region": region,
         "confluence_product_user__seat_tier": seat_tier,
         "confluence_new_peu": value,
+    }
+
+
+def _confluence_new_mau_driver_row(
+    month: str, region: str, seat_tier: str, value: int
+) -> dict[str, object]:
+    return {
+        "metric_time__month": f"{month}-01",
+        "confluence_new_mau_product_user__region": region,
+        "confluence_new_mau_product_user__seat_tier": seat_tier,
+        "confluence_new_mau": value,
     }
 
 
@@ -123,6 +167,14 @@ class RecordingPostgresExecutor:
         _confluence_driver_row("2026-05", "EMEA", "51-200", 600),
         _confluence_driver_row("2026-06", "EMEA", "51-200", 600),
     ]
+    _confluence_new_mau_driver_rows = [
+        _confluence_new_mau_driver_row("2026-05", "APAC", "1-10", 32),
+        _confluence_new_mau_driver_row("2026-06", "APAC", "1-10", 33),
+        _confluence_new_mau_driver_row("2026-05", "Americas", "11-50", 66),
+        _confluence_new_mau_driver_row("2026-06", "Americas", "11-50", 89),
+        _confluence_new_mau_driver_row("2026-05", "EMEA", "51-200", 600),
+        _confluence_new_mau_driver_row("2026-06", "EMEA", "51-200", 300),
+    ]
 
     def execute(self, plan: PlannedMetricFlowQuery) -> int:
         self.plans.append(plan)
@@ -130,9 +182,20 @@ class RecordingPostgresExecutor:
 
     def execute_rows(self, plan: PlannedMetricFlowQuery):
         self.plans.append(plan)
+        if plan.metric_name == "confluence_new_mau":
+            if any(
+                "confluence_new_mau_product_user__region IN ('APAC')" in constraint
+                for constraint in plan.where_constraints
+            ):
+                return [
+                    row
+                    for row in self._confluence_new_mau_driver_rows
+                    if row["confluence_new_mau_product_user__region"] == "APAC"
+                ]
+            return self._confluence_new_mau_driver_rows
         if plan.metric_name == "confluence_new_peu":
             return self._confluence_driver_rows
-        if "product_user__region IN ('APAC')" in plan.where_constraints:
+        if any("__region IN ('APAC')" in constraint for constraint in plan.where_constraints):
             return [row for row in self._driver_rows if row["product_user__region"] == "APAC"]
         return self._driver_rows
 

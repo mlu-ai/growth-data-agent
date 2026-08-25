@@ -1,10 +1,10 @@
 # Growth Data Agent
 
-The first governed response seam returns a typed, cited canonical definition for
-Jira New PEU. FastAPI verifies the validated semantic artifact, has MetricFlow
-compile a bounded entitlement-constrained aggregate, and executes that generated
-SQL against Postgres in a read-only transaction before describing the metric as
-canonical.
+The first governed response seam returns typed, cited canonical definitions for
+Jira and Confluence New PEU and New MAU. FastAPI verifies the validated semantic
+artifact, has MetricFlow compile a bounded entitlement-constrained aggregate,
+and executes that generated SQL against Postgres in a read-only transaction
+before describing the metric as canonical.
 
 When a named metric is absent from the current semantic artifact, the response
 is a `metric_definition_gap`, never a canonical result. A Provisional Metric is
@@ -15,12 +15,19 @@ data-team verification request, but creates its local POC record only when the
 Agent User sends `verification_request_confirmation.approved: true` together
 with approval context. It never creates an external ticket.
 
-Evidence questions about the APAC 51–200 Seat Tier Tenant decline first run the
-validated Driver Decomposition, then query the synthetic Qdrant corpus with
-Access Profile-derived product, Region, Tenant, classification, and identifier
-filters. The response returns a cited `hypothesis` only when permitted evidence
-supports the explanation; insufficient or contradictory evidence is returned as
-`inconclusive`, without a causal claim.
+Evidence questions about the APAC Jira decline or the Confluence EMEA New MAU
+decline first run the validated Driver Decomposition, then query the synthetic
+Qdrant corpus with Access Profile-derived product, Region, Tenant,
+classification, and identifier filters. The response returns a cited
+`hypothesis` only when permitted evidence supports the explanation; insufficient
+or contradictory evidence is returned as `inconclusive`, without a causal
+claim.
+
+Canonical New MAU counts a New PEU only when at least one Visit is recorded for
+the same Product User, product, and calendar month as first paid enablement. A
+Visit to another product never qualifies the Product User. The deterministic
+fixtures include a Confluence EMEA 51–200 Seat Tier New MAU decline and a
+labelled onboarding-email regression Hypothesis.
 
 ## Local run
 

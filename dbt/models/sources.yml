@@ -21,3 +21,15 @@ sources:
               - accepted_values:
                   arguments:
                     values: [Jira, Confluence]
+      - name: visits
+        description: Visit events for synthetic Product Users.
+        columns:
+          - name: visit_id
+            tests: [not_null, unique]
+          - name: product_user_id
+            tests: [not_null]
+          - name: product
+            tests:
+              - accepted_values:
+                  arguments:
+                    values: [Jira, Confluence]

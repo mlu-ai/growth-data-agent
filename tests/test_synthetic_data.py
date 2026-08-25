@@ -101,6 +101,51 @@ def test_synthetic_confluence_campaign_movement_is_reproducible_and_reconciled(
     assert counts[("2026-05", "Americas", "11-50")] == 1200
     assert counts[("2026-06", "Americas", "11-50")] == 1620
 
+
+def test_synthetic_confluence_new_mau_emea_regression_uses_same_product_and_month(
+    tmp_path,
+) -> None:
+    generate(tmp_path / "new-mau")
+    with (tmp_path / "new-mau" / "tenants.csv").open() as handle:
+        tenants = {
+            row["tenant_id"]: (row["billing_region"], row["seat_tier"])
+            for row in csv.DictReader(handle)
+        }
+    with (tmp_path / "new-mau" / "product_users.csv").open() as handle:
+        product_users = {row["product_user_id"]: row for row in csv.DictReader(handle)}
+    first_enablements = {}
+    with (tmp_path / "new-mau" / "paid_enablements.csv").open() as handle:
+        for event in csv.DictReader(handle):
+            product_user = product_users[event["product_user_id"]]
+            if product_user["product"] != "Confluence":
+                continue
+            current = first_enablements.get(event["product_user_id"])
+            if current is None or event["paid_enabled_at"] < current:
+                first_enablements[event["product_user_id"]] = event["paid_enabled_at"]
+
+    qualifying_months = {}
+    with (tmp_path / "new-mau" / "visits.csv").open() as handle:
+        for visit in csv.DictReader(handle):
+            product_user = product_users[visit["product_user_id"]]
+            first_enabled_at = first_enablements.get(visit["product_user_id"])
+            if (
+                product_user["product"] == "Confluence"
+                and tenants[product_user["tenant_id"]] == ("EMEA", "51-200")
+                and visit["product"] == product_user["product"]
+                and first_enabled_at is not None
+                and first_enabled_at[:7] in {"2026-05", "2026-06"}
+                and visit["visited_at"][:7] == first_enabled_at[:7]
+            ):
+                qualifying_months.setdefault(first_enabled_at[:7], set()).add(
+                    visit["product_user_id"]
+                )
+
+    assert {month: len(users) for month, users in qualifying_months.items()} == {
+        "2026-05": 600,
+        "2026-06": 300,
+    }
+
+
 def test_synthetic_evidence_corpus_has_incident_distractors_and_restricted_case() -> None:
     documents = evidence_corpus()
 
@@ -113,6 +158,10 @@ def test_synthetic_evidence_corpus_has_incident_distractors_and_restricted_case(
         "confluence-americas-enterprise-campaign",
         "confluence-americas-provisioning-maintenance",
         "confluence-americas-acquisition-campaign-restricted",
+        "confluence-emea-onboarding-email-regression",
+        "confluence-emea-small-tenant-onboarding-email",
+        "confluence-emea-201-plus-onboarding-email",
+        "confluence-emea-onboarding-email-regression-restricted",
     ]
     assert documents[0].support_status.value == "supports"
     assert documents[0].tenant_scope == "APAC 51-200 Seat Tier Tenants"

@@ -1,0 +1,108 @@
+version: 2
+
+models:
+  - name: fct_confluence_new_mau
+    description: One row for each New Confluence PEU with a same-month Confluence Visit.
+    columns:
+      - name: product_user_id
+        tests: [not_null, unique]
+      - name: tenant_id
+        tests: [not_null]
+      - name: paid_enabled_at
+        tests: [not_null]
+
+semantic_models:
+  - name: confluence_new_mau
+    description: Canonical Confluence New Monthly Active User semantic model.
+    model: ref('fct_confluence_new_mau')
+    config:
+      meta:
+        semantic_version: "1.0.0"
+        canonical_grain: Product User in a Tenant and Confluence product
+        canonical_time_rule: Attribute to first paid enablement only when a same-product Visit occurs in that calendar month.
+    defaults:
+      agg_time_dimension: paid_enablement_date
+    entities:
+      - name: confluence_new_mau_product_user
+        type: primary
+        expr: product_user_id
+      - name: confluence_tenant
+        type: foreign
+        expr: tenant_id
+    dimensions:
+      - name: product
+        type: categorical
+        expr: product
+      - name: region
+        type: categorical
+        expr: region
+      - name: seat_tier
+        type: categorical
+        expr: seat_tier
+      - name: paid_tenant_tenure_days
+        description: Days since the Tenant began its paid subscription at Paid Enablement.
+        type: categorical
+        expr: paid_tenant_tenure_days
+      - name: paid_enablement_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: confluence_new_mau
+        description: Count of New Confluence PEUs with a same-calendar-month Confluence Visit.
+        agg: count_distinct
+        expr: product_user_id
+
+metrics:
+  - name: confluence_new_mau
+    description: Confluence New MAU is a New PEU with at least one Confluence Visit in the same calendar month as first paid enablement.
+    type: simple
+    type_params:
+      measure: confluence_new_mau
+
+unit_tests:
+  - name: confluence_new_mau_requires_same_product_and_month
+    model: fct_confluence_new_mau
+    given:
+      - input: ref('fct_confluence_new_peu')
+        rows:
+          - product_user_id: confluence-qualified
+            tenant_id: tenant-confluence
+            product: Confluence
+            region: EMEA
+            seat_tier: 51-200
+            paid_tenant_tenure_days: 10
+            paid_enabled_at: "2026-06-10 00:00:00+00"
+            paid_enablement_date: "2026-06-10"
+          - product_user_id: confluence-rejected
+            tenant_id: tenant-confluence
+            product: Confluence
+            region: EMEA
+            seat_tier: 51-200
+            paid_tenant_tenure_days: 10
+            paid_enabled_at: "2026-06-10 00:00:00+00"
+            paid_enablement_date: "2026-06-10"
+      - input: ref('stg_visits')
+        rows:
+          - visit_id: visit-confluence-wrong-product
+            product_user_id: confluence-rejected
+            product: Jira
+            visited_at: "2026-06-20 00:00:00+00"
+          - visit_id: visit-confluence-wrong-month
+            product_user_id: confluence-rejected
+            product: Confluence
+            visited_at: "2026-07-20 00:00:00+00"
+          - visit_id: visit-confluence-qualified
+            product_user_id: confluence-qualified
+            product: Confluence
+            visited_at: "2026-06-20 00:00:00+00"
+    expect:
+      rows:
+        - product_user_id: confluence-qualified
+          tenant_id: tenant-confluence
+          product: Confluence
+          region: EMEA
+          seat_tier: 51-200
+          paid_tenant_tenure_days: 10
+          paid_enabled_at: "2026-06-10 00:00:00+00"
+          paid_enablement_date: "2026-06-10"

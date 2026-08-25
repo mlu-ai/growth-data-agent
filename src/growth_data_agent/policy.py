@@ -18,6 +18,12 @@ _QUERY_COLUMN_NAMES = {
     "confluence_product_user__product": "product",
     "confluence_product_user__region": "region",
     "confluence_product_user__seat_tier": "seat_tier",
+    "jira_new_mau_product_user__product": "product",
+    "jira_new_mau_product_user__region": "region",
+    "jira_new_mau_product_user__seat_tier": "seat_tier",
+    "confluence_new_mau_product_user__product": "product",
+    "confluence_new_mau_product_user__region": "region",
+    "confluence_new_mau_product_user__seat_tier": "seat_tier",
     "metric_time__month": "metric_month",
 }
 
