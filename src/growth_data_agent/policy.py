@@ -21,9 +21,11 @@ _QUERY_COLUMN_NAMES = {
     "jira_new_mau_product_user__product": "product",
     "jira_new_mau_product_user__region": "region",
     "jira_new_mau_product_user__seat_tier": "seat_tier",
+    "jira_new_mau_product_user__tenant_id": "tenant_id",
     "confluence_new_mau_product_user__product": "product",
     "confluence_new_mau_product_user__region": "region",
     "confluence_new_mau_product_user__seat_tier": "seat_tier",
+    "confluence_new_mau_product_user__tenant_id": "tenant_id",
     "metric_time__month": "metric_month",
 }
 
@@ -66,6 +68,7 @@ class AccessProfile:
         "product",
         "region",
         "seat_tier",
+        "tenant_id",
         "metric_month",
     )
 
@@ -105,6 +108,16 @@ class AccessProfile:
         """Authorize a Region before a scoped metric or evidence source is read."""
         if region not in self.regions:
             raise AccessDeniedError(f"Access Profile is not entitled to {region} data.")
+
+    def authorize_tenant_scope(self, region: str, seat_tier: str) -> None:
+        """Authorize every Tenant in a registered causal analysis scope."""
+        self.authorize_region(region)
+        scoped_tenants = set(tenant_ids_for_segment(region, seat_tier))
+        if not scoped_tenants.issubset(self.permitted_tenant_ids):
+            raise AccessDeniedError(
+                f"Access Profile is not entitled to the {region} {seat_tier} Seat Tier "
+                "Tenant scope."
+            )
 
     def as_effective_scope(self) -> EffectiveAccessScope:
         return EffectiveAccessScope(

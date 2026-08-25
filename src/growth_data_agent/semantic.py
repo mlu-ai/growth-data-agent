@@ -119,7 +119,14 @@ class ValidatedMetricFlowGateway:
         return self._canonical_definition(metric, artifact), freshness
 
     def execute_scoped_metric(
-        self, metric_name: str, access_profile: AccessProfile
+        self,
+        metric_name: str,
+        access_profile: AccessProfile,
+        *,
+        scoped_regions: tuple[str, ...] | None = None,
+        scoped_seat_tier: str | None = None,
+        scoped_tenant_ids: tuple[str, ...] | None = None,
+        scoped_tenant_scope: str | None = None,
     ) -> tuple[SemanticQueryEvidence | None, SourceFreshness]:
         """Plan and execute one entitlement-constrained aggregate after validation."""
         context, freshness = self._validated_metric_query_context(metric_name)
@@ -128,9 +135,22 @@ class ValidatedMetricFlowGateway:
 
         metric_product = _metric_product(metric_name)
         entity_name = _metricflow_entity(metric_name)
-        constraints = access_profile.metricflow_where_constraints(
-            metric_product, entity_name=entity_name
+        constraints = list(
+            access_profile.metricflow_where_constraints(
+                metric_product, entity_name=entity_name
+            )
         )
+        if scoped_regions is not None:
+            access_profile.authorize_query_columns((f"{entity_name}__region",))
+            regions = ", ".join(repr(region) for region in scoped_regions)
+            constraints.append(f"{entity_name}__region IN ({regions})")
+        if scoped_seat_tier is not None:
+            access_profile.authorize_query_columns((f"{entity_name}__seat_tier",))
+            constraints.append(f"{entity_name}__seat_tier = '{scoped_seat_tier}'")
+        if scoped_tenant_ids is not None:
+            access_profile.authorize_query_columns((f"{entity_name}__tenant_id",))
+            tenant_ids = ", ".join(repr(tenant_id) for tenant_id in scoped_tenant_ids)
+            constraints.append(f"{entity_name}__tenant_id IN ({tenant_ids})")
         group_by_names = (f"{entity_name}__product",)
         if len(access_profile.regions) != 3:
             group_by_names += (f"{entity_name}__region",)
@@ -138,13 +158,20 @@ class ValidatedMetricFlowGateway:
         plan = self.metricflow_planner.plan(
             MetricFlowQueryRequest(
                 metric_name=metric_name,
-                where_constraints=constraints,
+                where_constraints=tuple(constraints),
                 group_by_names=group_by_names,
             )
         )
         result_row_count = self.postgres_executor.execute(plan)
         return (
-            self._query_evidence(context, access_profile, result_row_count, metric_product),
+            self._query_evidence(
+                context,
+                access_profile,
+                result_row_count,
+                metric_product,
+                constrained_regions=scoped_regions,
+                tenant_scope=scoped_tenant_scope,
+            ),
             freshness,
         )
 
@@ -249,13 +276,16 @@ class ValidatedMetricFlowGateway:
         access_profile: AccessProfile,
         result_row_count: int,
         metric_product: str,
+        *,
+        constrained_regions: tuple[str, ...] | None = None,
+        tenant_scope: str | None = None,
     ) -> SemanticQueryEvidence:
         return SemanticQueryEvidence(
             metric_name=context.metric.name,
             artifact_sha256=context.artifact.semantic_manifest_sha256,
             constrained_products=[metric_product],
-            constrained_regions=list(access_profile.regions),
-            tenant_scope=access_profile.tenant_scope,
+            constrained_regions=list(constrained_regions or access_profile.regions),
+            tenant_scope=tenant_scope or access_profile.tenant_scope,
             result_row_count=result_row_count,
         )
 
