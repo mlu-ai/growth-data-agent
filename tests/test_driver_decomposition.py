@@ -35,8 +35,13 @@ def test_data_analyst_receives_reconciled_ranked_may_to_june_driver_decompositio
     assert decomposition["residual"] == 0
     assert decomposition["approved_dimensions"] == ["Region", "Seat Tier"]
     assert "Driver Decomposition" in body["answer"]
-    assert "does not establish cause" in body["answer"]
-    assert "Causal Estimate" in body["answer"]
+    assert "leading observed driver" in body["answer"]
+    assert "does not establish causation" in body["answer"]
+    assert "Causal Estimate" not in body["answer"]
+    assert body["canonical_definition"]["semantic_version"] == "1.0.0"
+    assert body["canonical_definition"]["definition"] == (
+        "A Product User's first-ever Paid Enablement for Jira."
+    )
 
 
 def test_apac_manager_receives_only_apac_decomposition_without_cross_region_values(

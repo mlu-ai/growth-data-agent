@@ -89,7 +89,7 @@ def test_driver_decomposition_uses_only_approved_dimensions_and_apac_row_scope(
 ) -> None:
     gateway, planner, executor = _gateway(tmp_path)
 
-    decomposition, evidence, freshness = gateway.driver_decomposition(
+    definition, decomposition, evidence, freshness = gateway.driver_decomposition(
         "jira_new_peu",
         resolve_access_profile("apac_regional_manager"),
         baseline_period="2026-05",
@@ -97,6 +97,8 @@ def test_driver_decomposition_uses_only_approved_dimensions_and_apac_row_scope(
     )
 
     assert freshness.is_current is True
+    assert definition is not None
+    assert definition.semantic_version == "1.0.0"
     assert evidence is not None
     assert decomposition is not None
     assert planner.requests[0].where_constraints == (

@@ -84,13 +84,15 @@ class AnswerQuestionService:
         )
 
     def _answer_may_to_june_driver_decomposition(self, *, scope, access_profile, trace_id: str):
-        decomposition, query_evidence, freshness = self.semantic_gateway.driver_decomposition(
-            "jira_new_peu",
-            access_profile,
-            baseline_period="2026-05",
-            comparison_period="2026-06",
+        definition, decomposition, query_evidence, freshness = (
+            self.semantic_gateway.driver_decomposition(
+                "jira_new_peu",
+                access_profile,
+                baseline_period="2026-05",
+                comparison_period="2026-06",
+            )
         )
-        if decomposition is None or query_evidence is None:
+        if definition is None or decomposition is None or query_evidence is None:
             return GovernedAnalyticalResponse(
                 answer=(
                     "Jira New PEU cannot be decomposed as canonical because semantic validation "
@@ -107,7 +109,8 @@ class AnswerQuestionService:
         leading_text = "No segment movement was returned."
         if leading is not None:
             leading_text = (
-                f"{leading.region} / {leading.seat_tier} Seat Tier Tenants contributed "
+                f"{leading.region} / {leading.seat_tier} Seat Tier Tenants are the leading "
+                "observed driver, contributing "
                 f"{leading.contribution_to_decline:,} of the {decomposition.decline:,} decline "
                 f"({leading.percentage_of_decline:g}%)."
             )
@@ -116,11 +119,14 @@ class AnswerQuestionService:
                 "Driver Decomposition (observed, non-causal): Jira New PEU moved from "
                 f"{decomposition.baseline_value:,} in May 2026 to "
                 f"{decomposition.comparison_value:,} in June 2026 "
-                f"({decomposition.net_change:+,}). {leading_text} The approved Region and "
+                f"({decomposition.net_change:+,}). Semantic definition v"
+                f"{definition.semantic_version}: {definition.definition} {leading_text} "
+                "The approved Region and "
                 "Seat Tier contributions reconcile to the scoped movement; this observation "
-                "does not establish cause or provide a Causal Estimate."
+                "does not establish causation."
             ),
             result_classification=ResultClassification.DRIVER_DECOMPOSITION,
+            canonical_definition=definition,
             semantic_query_evidence=query_evidence,
             driver_decomposition=decomposition,
             source_freshness=freshness,
