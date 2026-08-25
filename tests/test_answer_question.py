@@ -42,7 +42,16 @@ def test_apac_manager_receives_only_apac_effective_scope(client: TestClient) -> 
     )
 
     assert response.status_code == 200
-    assert response.json()["effective_access_scope"]["regions"] == ["APAC"]
+    body = response.json()
+    assert body["effective_access_scope"]["regions"] == ["APAC"]
+    assert body["semantic_query_evidence"] == {
+        "metric_name": "jira_new_peu",
+        "artifact_sha256": body["semantic_query_evidence"]["artifact_sha256"],
+        "constrained_products": ["Jira"],
+        "constrained_regions": ["APAC"],
+        "tenant_scope": "APAC Tenants only",
+        "result_row_count": 1,
+    }
 
 
 def test_unknown_agent_user_is_refused(client: TestClient) -> None:

@@ -14,7 +14,8 @@ class AnswerQuestionService:
         self.semantic_gateway = semantic_gateway
 
     def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
-        scope = resolve_access_profile(request.agent_user_id).as_effective_scope()
+        access_profile = resolve_access_profile(request.agent_user_id)
+        scope = access_profile.as_effective_scope()
         trace_id = str(uuid4())
 
         if not self._requests_jira_new_peu(request.question):
@@ -42,6 +43,22 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
+        query_evidence, freshness = self.semantic_gateway.execute_scoped_metric(
+            "jira_new_peu", access_profile
+        )
+        if query_evidence is None:
+            return GovernedAnalyticalResponse(
+                answer=(
+                    "Jira New PEU cannot be returned as canonical because "
+                    "validation is not current."
+                ),
+                result_classification=ResultClassification.LIMITATION,
+                source_freshness=freshness,
+                effective_access_scope=scope,
+                caveats=["Run dbt validation and refresh the semantic artifact before using it."],
+                trace_id=trace_id,
+            )
+
         return GovernedAnalyticalResponse(
             answer=(
                 "Jira New PEU is a Product User's first-ever Paid Enablement for Jira. "
@@ -49,6 +66,7 @@ class AnswerQuestionService:
             ),
             result_classification=ResultClassification.CANONICAL_DEFINITION,
             canonical_definition=definition,
+            semantic_query_evidence=query_evidence,
             source_freshness=freshness,
             effective_access_scope=scope,
             caveats=[

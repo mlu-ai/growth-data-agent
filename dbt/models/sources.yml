@@ -4,6 +4,11 @@ sources:
   - name: synthetic
     schema: public
     tables:
+      - name: tenants
+        description: Synthetic Tenants, including the governed billing Region.
+        columns:
+          - name: tenant_id
+            tests: [not_null, unique]
       - name: paid_enablements
         description: Immutable Paid Enablement events for synthetic Product Users.
         columns:

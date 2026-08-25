@@ -14,6 +14,24 @@ class AccessProfile:
     tenant_scope: str
     permitted_columns: tuple[str, ...]
 
+    def metricflow_where_constraints(self, metric_product: str) -> tuple[str, ...]:
+        """Return fixed, profile-derived MetricFlow filters for a canonical metric.
+
+        The service never accepts filter text from an Agent User. Product is a
+        metric request property, while Region is an entitlement applied before
+        MetricFlow plans SQL. Tenant scope is included in the effective scope;
+        for the APAC profile, its permitted Tenant set is represented by the
+        APAC Region constraint.
+        """
+        if metric_product not in self.products:
+            raise AccessDeniedError(f"Access Profile is not entitled to {metric_product} data.")
+
+        constraints = [f"product_user__product = '{metric_product}'"]
+        if len(self.regions) != len(_ALL_REGIONS):
+            regions = ", ".join(repr(region) for region in self.regions)
+            constraints.append(f"product_user__region IN ({regions})")
+        return tuple(constraints)
+
     def as_effective_scope(self) -> EffectiveAccessScope:
         return EffectiveAccessScope(
             products=list(self.products),
@@ -33,10 +51,12 @@ _CANONICAL_DEFINITION_COLUMNS = (
     "source_freshness",
 )
 
+_ALL_REGIONS = ("Americas", "APAC", "EMEA")
+
 _PROFILES = {
     "data_analyst": AccessProfile(
         products=("Jira", "Confluence"),
-        regions=("Americas", "APAC", "EMEA"),
+        regions=_ALL_REGIONS,
         tenant_scope="all permitted Tenants",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
     ),
@@ -51,6 +71,10 @@ _PROFILES = {
 
 class UnknownAgentUserError(ValueError):
     """Raised when no Access Profile exists for an Agent User."""
+
+
+class AccessDeniedError(ValueError):
+    """Raised when an Access Profile is outside a metric's product scope."""
 
 
 def resolve_access_profile(agent_user_id: str) -> AccessProfile:

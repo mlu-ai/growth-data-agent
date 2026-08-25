@@ -14,6 +14,10 @@ def test_dbt_model_selects_only_first_jira_paid_enablement() -> None:
     assert "product = 'Jira'" in fact_model
     assert "paid_enablement_ordinal = 1" in fact_model
     assert "count_distinct" in semantic_yaml
+    assert "seat_tier" in semantic_yaml
+    assert "paid_tenant_tenure_days" in semantic_yaml
+    tenant_staging = (repository / "dbt/models/staging/stg_tenants.sql").read_text()
+    assert "paid_subscription_started_at" in tenant_staging
     assert "standard_granularity_column: date_day" in time_spine_yaml
     loader = (repository / "scripts/load_postgres.py").read_text()
     assert 'if __name__ == "__main__":' in loader

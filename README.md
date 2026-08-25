@@ -1,8 +1,10 @@
 # Growth Data Agent
 
 The first governed response seam returns a typed, cited canonical definition for
-Jira New PEU. Metric logic stays in dbt/MetricFlow; FastAPI verifies the
-artifact validation state and freshness before describing a metric as canonical.
+Jira New PEU. FastAPI verifies the validated semantic artifact, has MetricFlow
+compile a bounded entitlement-constrained aggregate, and executes that generated
+SQL against Postgres in a read-only transaction before describing the metric as
+canonical.
 
 ## Local run
 

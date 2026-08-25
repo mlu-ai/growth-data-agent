@@ -1,10 +1,10 @@
 {
   "artifact_type": "dbt_metricflow_semantic_artifact",
   "semantic_version": "1.0.0",
-  "semantic_manifest_sha256": "8ada15fc5dc1c41fcdc6702a59f872af4c38da9833ebab6e0c180732a5cea9d3",
+  "semantic_manifest_sha256": "e5f5746de4c27e688185e35065bd71ee80a77025bc03f3ed388266c8bb6ea946",
   "validation": {
     "status": "success",
-    "validated_at": "2026-08-25T00:34:09.122885+00:00",
+    "validated_at": "2026-08-25T01:11:16.197693+00:00",
     "maximum_age_seconds": 86400
   },
   "metrics": [

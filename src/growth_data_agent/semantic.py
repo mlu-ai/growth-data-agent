@@ -8,11 +8,24 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from .contracts import CanonicalMetricDefinition, SemanticCitation, SourceFreshness
+from .contracts import (
+    CanonicalMetricDefinition,
+    SemanticCitation,
+    SemanticQueryEvidence,
+    SourceFreshness,
+)
+from .metricflow_query import (
+    MetricFlowPlanner,
+    MetricFlowQueryRequest,
+    PostgresMetricFlowExecutor,
+    SemanticQueryExecutionError,
+)
+from .policy import AccessProfile
 
 
 class ArtifactValidation(BaseModel):
@@ -34,6 +47,7 @@ class MetricArtifact(BaseModel):
 class SemanticArtifact(BaseModel):
     artifact_type: str
     semantic_version: str
+    semantic_manifest_sha256: str
     validation: ArtifactValidation
     metrics: list[MetricArtifact]
 
@@ -53,9 +67,13 @@ class ValidatedMetricFlowGateway:
         self,
         artifact_store: SemanticArtifactStore,
         *,
+        metricflow_planner: MetricFlowPlanner | None = None,
+        postgres_executor: PostgresMetricFlowExecutor | None = None,
         now: Callable[[], datetime] | None = None,
     ):
         self.artifact_store = artifact_store
+        self.metricflow_planner = metricflow_planner
+        self.postgres_executor = postgres_executor
         self.now = now or (lambda: datetime.now(UTC))
 
     def freshness(self, artifact: SemanticArtifact) -> SourceFreshness:
@@ -99,6 +117,49 @@ class ValidatedMetricFlowGateway:
                     metric_name=metric.name,
                     model_name=metric.model_name,
                 ),
+            ),
+            freshness,
+        )
+
+    def execute_scoped_metric(
+        self, metric_name: str, access_profile: AccessProfile
+    ) -> tuple[SemanticQueryEvidence | None, SourceFreshness]:
+        """Plan and execute one entitlement-constrained aggregate after validation."""
+        artifact = self.artifact_store.load()
+        freshness = self.freshness(artifact)
+        metric = next((item for item in artifact.metrics if item.name == metric_name), None)
+        if not freshness.is_current or metric is None:
+            return None, freshness
+        if self.metricflow_planner is None or self.postgres_executor is None:
+            raise SemanticQueryExecutionError("Semantic query execution is not configured.")
+
+        semantic_manifest = self.metricflow_planner.semantic_manifest_path
+        actual_hash = sha256(semantic_manifest.read_bytes()).hexdigest()
+        if actual_hash != artifact.semantic_manifest_sha256:
+            raise SemanticQueryExecutionError(
+                "The semantic manifest does not match the validated artifact."
+            )
+
+        constraints = access_profile.metricflow_where_constraints("Jira")
+        group_by_names = ("product_user__product",)
+        if len(access_profile.regions) != 3:
+            group_by_names += ("product_user__region",)
+        plan = self.metricflow_planner.plan(
+            MetricFlowQueryRequest(
+                metric_name=metric_name,
+                where_constraints=constraints,
+                group_by_names=group_by_names,
+            )
+        )
+        result_row_count = self.postgres_executor.execute(plan)
+        return (
+            SemanticQueryEvidence(
+                metric_name=metric_name,
+                artifact_sha256=artifact.semantic_manifest_sha256,
+                constrained_products=["Jira"],
+                constrained_regions=list(access_profile.regions),
+                tenant_scope=access_profile.tenant_scope,
+                result_row_count=result_row_count,
             ),
             freshness,
         )
