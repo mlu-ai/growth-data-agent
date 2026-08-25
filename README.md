@@ -6,6 +6,15 @@ compile a bounded entitlement-constrained aggregate, and executes that generated
 SQL against Postgres in a read-only transaction before describing the metric as
 canonical.
 
+When a named metric is absent from the current semantic artifact, the response
+is a `metric_definition_gap`, never a canonical result. A Provisional Metric is
+returned only by a configured entitlement-aware calculator that declares its
+formula, inputs, scope, freshness, unverified status, and material caveats;
+otherwise the service safely refuses to calculate it. The response offers a
+data-team verification request, but creates its local POC record only when the
+Agent User sends `verification_request_confirmation.approved: true` together
+with approval context. It never creates an external ticket.
+
 ## Local run
 
 ```sh
