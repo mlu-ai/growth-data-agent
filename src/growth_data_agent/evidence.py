@@ -30,6 +30,7 @@ class EvidenceDocument(BaseModel):
     """A document and the metadata needed for pre-retrieval authorization."""
 
     document_id: str
+    metric_name: str | None = None
     title: str
     text: str
     product: str
@@ -43,6 +44,7 @@ class EvidenceDocument(BaseModel):
     support_status: EvidenceSupportStatus
     support_explanation: str
     sensitive_identifiers: list[str] = Field(default_factory=list)
+    accountable_team: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,15 +58,18 @@ class EvidenceAccessFilter:
     identifier_entitlements: tuple[str, ...]
     excluded_tenant_ids: tuple[str, ...] = ()
     seat_tiers: tuple[str, ...] = ()
+    metric_names: tuple[str, ...] = ()
 
     def allows(self, document: EvidenceDocument) -> bool:
         """Apply the same policy at the context boundary as a defensive second layer."""
         return (
             document.product in self.products
             and document.region in self.regions
+            and bool(document.tenant_ids)
             and set(document.tenant_ids).issubset(self.tenant_ids)
             and document.classification in self.classifications
             and document.identifier_entitlement in self.identifier_entitlements
+            and (not self.metric_names or document.metric_name in self.metric_names)
         )
 
     def as_qdrant_filter(self) -> models.Filter:
@@ -97,6 +102,16 @@ class EvidenceAccessFilter:
                 models.FieldCondition(
                     key="identifier_entitlement",
                     match=models.MatchAny(any=list(self.identifier_entitlements)),
+                ),
+                *(
+                    [
+                        models.FieldCondition(
+                            key="metric_name",
+                            match=models.MatchAny(any=list(self.metric_names)),
+                        )
+                    ]
+                    if self.metric_names
+                    else []
                 ),
             ],
             must_not=must_not,

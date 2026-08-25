@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: apache/age:release_PG16_1.6.0
     environment:
       POSTGRES_DB: growth_data
       POSTGRES_USER: growth_data

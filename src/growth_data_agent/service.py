@@ -10,6 +10,8 @@ from .audit import DirectIdentifierAuditRecorder, InMemoryDirectIdentifierAuditR
 from .causal import CausalAnalysisPipeline, default_causal_pipeline
 from .contracts import (
     AnswerQuestionRequest,
+    CatalogFreshness,
+    CatalogMetadata,
     DirectIdentifierAnswer,
     EvidenceSupportStatus,
     GovernedAnalyticalResponse,
@@ -18,8 +20,12 @@ from .contracts import (
     SensitiveIdentifier,
     SourceFreshness,
 )
+from .datahub import (
+    DataHubCatalogStore,
+    DataHubCatalogUnavailableError,
+)
 from .evidence import QdrantEvidenceStore, VectorEvidenceStore, build_evidence_answer
-from .graph import EvidenceGraphStore, InMemoryEvidenceGraphStore
+from .graph import ApacheAgeEvidenceGraphStore, EvidenceGraphStore, InMemoryEvidenceGraphStore
 from .metric_definition_gaps import (
     DataTeamVerificationRequestRecorder,
     InMemoryDataTeamVerificationRequestRecorder,
@@ -53,6 +59,7 @@ class AnswerQuestionService:
         verification_request_recorder: DataTeamVerificationRequestRecorder | None = None,
         evidence_store: VectorEvidenceStore | None = None,
         graph_store: EvidenceGraphStore | None = None,
+        catalog_store: DataHubCatalogStore | None = None,
         direct_identifier_audit_recorder: DirectIdentifierAuditRecorder | None = None,
         causal_pipeline: CausalAnalysisPipeline | None = None,
         trace_sink: TraceSink | None = None,
@@ -69,6 +76,7 @@ class AnswerQuestionService:
         )
         self.evidence_store = evidence_store or QdrantEvidenceStore(evidence_corpus())
         self.graph_store = graph_store or InMemoryEvidenceGraphStore(graph_corpus())
+        self.catalog_store = catalog_store
         self.direct_identifier_audit_recorder = (
             direct_identifier_audit_recorder or InMemoryDirectIdentifierAuditRecorder()
         )
@@ -92,6 +100,15 @@ class AnswerQuestionService:
         if self._requests_direct_identifier(request.question):
             return self._answer_direct_identifier_request(
                 request=request,
+                scope=scope,
+                access_profile=access_profile,
+                trace_id=trace_id,
+            )
+
+        catalog_entity_name = self._requested_catalog_entity(request)
+        if catalog_entity_name is not None:
+            return self._answer_catalog_ownership(
+                entity_name=catalog_entity_name,
                 scope=scope,
                 access_profile=access_profile,
                 trace_id=trace_id,
@@ -227,6 +244,12 @@ class AnswerQuestionService:
                 "This is a canonical definition, not a count for a particular period.",
                 "The grain is Product User in a Tenant and product; it is not Person-level.",
             ]
+
+        caveats.append(
+            "DataHub catalog availability does not affect canonical metric logic; "
+            "catalog-dependent ownership, classification, and discovery answers disclose "
+            "degradation separately."
+        )
 
         return GovernedAnalyticalResponse(
             answer=answer,
@@ -421,6 +444,107 @@ class AnswerQuestionService:
                     "not a causal conclusion."
                 ),
                 "Only Region and Seat Tier are approved dimensions for this decomposition.",
+            ],
+            trace_id=trace_id,
+        )
+
+    def _answer_catalog_ownership(self, *, entity_name, scope, access_profile, trace_id: str):
+        product = self._catalog_product(entity_name)
+        if product is None:
+            raise AccessDeniedError(
+                "Catalog ownership requires an entity with a known governed product scope."
+            )
+        access_profile.authorize_product(product)
+        artifact = self.semantic_gateway.artifact_store.load()
+        allowed_entities = {
+            entity_name
+            for metric in artifact.metrics
+            for entity_name in (metric.name, metric.model_name)
+        }
+        if entity_name not in allowed_entities:
+            raise AccessDeniedError(
+                "Catalog ownership is limited to entities in the validated semantic artifact."
+            )
+        source_freshness = self.semantic_gateway.freshness(artifact)
+        if self.catalog_store is None:
+            return self._catalog_limitation(
+                entity_name=entity_name,
+                scope=scope,
+                source_freshness=source_freshness,
+                trace_id=trace_id,
+                detail="DataHub catalog is not configured.",
+            )
+        try:
+            metadata = self.catalog_store.get(entity_name)
+        except DataHubCatalogUnavailableError as error:
+            return self._catalog_limitation(
+                entity_name=entity_name,
+                scope=scope,
+                source_freshness=source_freshness,
+                trace_id=trace_id,
+                detail=str(error),
+            )
+        if metadata is None:
+            return self._catalog_limitation(
+                entity_name=entity_name,
+                scope=scope,
+                source_freshness=source_freshness,
+                trace_id=trace_id,
+                detail=f"No published DataHub metadata was found for {entity_name}.",
+                available=True,
+            )
+        if metadata.classification not in access_profile.permitted_classifications:
+            raise AccessDeniedError("Access Profile is not entitled to this catalog metadata.")
+        metadata_payload = metadata.model_dump(mode="json")
+        metadata_payload["entity_name"] = entity_name
+        catalog_metadata = CatalogMetadata.model_validate(metadata_payload)
+        return GovernedAnalyticalResponse(
+            answer=(
+                f"DataHub ownership: {entity_name} is owned by "
+                f"{', '.join(catalog_metadata.owners)}. "
+                f"Classification: {catalog_metadata.classification}. "
+                "The published metadata is catalog context, not metric logic."
+            ),
+            result_classification=ResultClassification.CATALOG_OWNERSHIP,
+            catalog_metadata=catalog_metadata,
+            catalog_freshness=CatalogFreshness(available=True, degraded=False),
+            source_freshness=source_freshness,
+            effective_access_scope=scope,
+            caveats=[
+                "DataHub provides ownership, classification, and discovery metadata only.",
+                "The validated dbt/MetricFlow artifact remains the semantic authority.",
+            ],
+            trace_id=trace_id,
+        )
+
+    @staticmethod
+    def _catalog_limitation(
+        *,
+        entity_name: str,
+        scope,
+        source_freshness,
+        trace_id: str,
+        detail: str,
+        available: bool = False,
+    ):
+        return GovernedAnalyticalResponse(
+            answer=(
+                f"Catalog ownership for {entity_name} is degraded because {detail} "
+                "Canonical metric computation remains available from the validated "
+                "dbt/MetricFlow artifact."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            catalog_freshness=CatalogFreshness(
+                available=available,
+                degraded=True,
+                detail=detail,
+            ),
+            source_freshness=source_freshness,
+            effective_access_scope=scope,
+            caveats=[
+                "Catalog-dependent ownership, classification, and discovery details are not "
+                "available in this response.",
+                "Canonical metric logic is independent of DataHub availability.",
             ],
             trace_id=trace_id,
         )
@@ -686,10 +810,11 @@ class AnswerQuestionService:
         )
         graph_paths = [
             path
-            for path in self.graph_store.traverse(
+            for path in self._traverse_graph(
                 evidence_query,
                 graph_filter,
                 limit=3,
+                metric_name=metric_name,
             )
             if graph_filter.allows(path)
         ][:3]
@@ -697,6 +822,7 @@ class AnswerQuestionService:
             metric_product,
             region,
             seat_tier=seat_tier if scope_evidence_to_seat_tier else None,
+            metric_name=metric_name,
         )
         documents = [
             document
@@ -775,14 +901,21 @@ class AnswerQuestionService:
         graph_filter = access_profile.graph_filter(product, region)
         graph_paths = [
             path
-            for path in self.graph_store.traverse(
+            for path in self._traverse_graph(
                 f"{product} {region} direct identifiers",
                 graph_filter,
                 limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
+                metric_name=(
+                    "confluence_new_peu" if product == "Confluence" else "jira_new_peu"
+                ),
             )
             if graph_filter.allows(path)
         ][:_DIRECT_IDENTIFIER_RESULT_LIMIT]
-        access_filter = access_profile.evidence_filter(product, region)
+        access_filter = access_profile.evidence_filter(
+            product,
+            region,
+            metric_name="confluence_new_peu" if product == "Confluence" else "jira_new_peu",
+        )
         documents = [
             document
             for document in self.evidence_store.retrieve(
@@ -828,6 +961,28 @@ class AnswerQuestionService:
             ],
             trace_id=trace_id,
         )
+
+    def _traverse_graph(self, query, access_filter, *, limit: int, metric_name: str):
+        if isinstance(self.graph_store, ApacheAgeEvidenceGraphStore):
+            return self.graph_store.traverse(
+                query,
+                access_filter,
+                limit=limit,
+                metric_name=metric_name,
+            )
+        if isinstance(self.graph_store, InMemoryEvidenceGraphStore):
+            return self.graph_store.traverse(
+                query,
+                access_filter,
+                limit=limit,
+                metric_name=metric_name,
+            )
+        paths = self.graph_store.traverse(
+            query,
+            access_filter,
+            limit=limit,
+        )
+        return [path for path in paths if _path_matches_metric(path, metric_name)]
 
     @staticmethod
     def _permitted_identifiers(*, graph_paths, documents, access_profile):
@@ -1078,6 +1233,42 @@ class AnswerQuestionService:
         metric_type = "New MAU" if metric_name.endswith("_new_mau") else "New PEU"
         return f"{product} {metric_type}"
 
+    @staticmethod
+    def _catalog_product(entity_name: str) -> str | None:
+        normalized = entity_name.casefold()
+        if "jira" in normalized:
+            return "Jira"
+        if "confluence" in normalized:
+            return "Confluence"
+        return None
+
+    @staticmethod
+    def _requests_catalog_ownership(question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        return any(term in normalized for term in ("who owns", "owner of", "ownership"))
+
+    @staticmethod
+    def _requested_catalog_entity(request: AnswerQuestionRequest) -> str | None:
+        if not AnswerQuestionService._requests_catalog_ownership(request.question):
+            return None
+        normalized = " ".join(request.question.casefold().split())
+        requested_metric = request.requested_metric_name
+        if requested_metric is not None:
+            return _metric_identifier(requested_metric)
+        for entity_name in (
+            "fct_jira_new_peu",
+            "fct_confluence_new_peu",
+            "fct_jira_new_mau",
+            "fct_confluence_new_mau",
+            "jira_new_peu",
+            "confluence_new_peu",
+            "jira_new_mau",
+            "confluence_new_mau",
+        ):
+            if entity_name.replace("_", " ") in normalized or entity_name in normalized:
+                return entity_name
+        return None
+
     def _metric_definition_gap_response(
         self,
         *,
@@ -1192,6 +1383,12 @@ class AnswerQuestionService:
 
 def _metric_identifier(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+
+def _path_matches_metric(path, metric_name: str) -> bool:
+    """Keep legacy graph stores compatible while filtering metric-bearing paths."""
+    metric_nodes = [node for node in path.nodes if node.node_type == "metric"]
+    return not metric_nodes or any(node.node_id == metric_name for node in metric_nodes)
 
 
 def _named_metric_question(question: str) -> str | None:

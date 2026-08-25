@@ -1,4 +1,4 @@
-.PHONY: generate-data load-data dbt-build semantic-artifact serve evaluate lint test
+.PHONY: generate-data load-data dbt-build semantic-artifact publish-datahub materialize-age serve evaluate lint test
 
 generate-data:
 	uv run python scripts/generate_synthetic_data.py
@@ -11,6 +11,12 @@ dbt-build:
 
 semantic-artifact:
 	uv run python scripts/build_semantic_artifact.py
+
+publish-datahub:
+	uv run python scripts/publish_datahub_metadata.py
+
+materialize-age:
+	uv run python scripts/materialize_age_graph.py
 
 serve:
 	uv run uvicorn --app-dir src growth_data_agent.main:app --reload

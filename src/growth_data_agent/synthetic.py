@@ -8,8 +8,9 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from .contracts import EvidenceSupportStatus
+from .datahub import DataHubEntityMetadata
 from .evidence import EvidenceDocument
-from .graph import GraphNode, GraphPath
+from .graph import DerivedEvidenceGraphBuilder, GraphPath
 from .policy import tenant_ids_for_segment
 
 _START_DATE = date(2025, 1, 1)
@@ -50,6 +51,7 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
     return (
         EvidenceDocument(
             document_id="jira-apac-paid-provisioning-incident",
+            metric_name="jira_new_peu",
             title="Jira APAC paid provisioning incident",
             text=(
                 "Paid provisioning errors affected Jira APAC 51-200 Seat Tier Tenants "
@@ -68,9 +70,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "The incident overlaps the APAC 51-200 Seat Tier Tenant scope and the June "
                 "2026 decline period."
             ),
+            accountable_team="Jira Platform Provisioning Team",
         ),
         EvidenceDocument(
             document_id="jira-apac-small-tenant-maintenance",
+            metric_name="jira_new_peu",
             title="Jira APAC small-Tenant provisioning maintenance",
             text=(
                 "A Jira provisioning maintenance window affected APAC 1-10 Seat Tier "
@@ -88,9 +92,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             support_explanation=(
                 "The notice concerns a different Seat Tier from the affected segment."
             ),
+            accountable_team="Jira Platform Provisioning Team",
         ),
         EvidenceDocument(
             document_id="jira-apac-tenant-migration-notice",
+            metric_name="jira_new_peu",
             title="Jira APAC Tenant migration notice",
             text=(
                 "A Jira APAC Tenant migration notice was published in June 2026, but it "
@@ -108,9 +114,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             support_explanation=(
                 "The notice concerns a different Seat Tier from the affected segment."
             ),
+            accountable_team="Jira Platform Migration Team",
         ),
         EvidenceDocument(
             document_id="jira-apac-paid-provisioning-incident-restricted",
+            metric_name="jira_new_peu",
             title="Restricted Jira APAC provisioning incident appendix",
             text=(
                 "Restricted appendix with direct Tenant identifiers for the Jira APAC paid "
@@ -130,9 +138,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "identifier entitlement."
             ),
             sensitive_identifiers=["tenant-0011"],
+            accountable_team="Jira Platform Provisioning Team",
         ),
         EvidenceDocument(
             document_id="confluence-americas-acquisition-campaign",
+            metric_name="confluence_new_peu",
             title="Confluence Americas targeted acquisition campaign",
             text=(
                 "A targeted acquisition campaign ran for Confluence Americas 11-50 Seat Tier "
@@ -151,9 +161,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "The campaign overlaps the Americas 11-50 Seat Tier Tenant scope and the June "
                 "2026 New PEU increase period."
             ),
+            accountable_team="Confluence Growth Acquisition Team",
         ),
         EvidenceDocument(
             document_id="confluence-americas-enterprise-campaign",
+            metric_name="confluence_new_peu",
             title="Confluence Americas enterprise campaign summary",
             text=(
                 "A Confluence campaign summary was published in June 2026, but it covered "
@@ -171,9 +183,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             support_explanation=(
                 "The campaign concerns a different Seat Tier from the affected segment."
             ),
+            accountable_team="Confluence Growth Acquisition Team",
         ),
         EvidenceDocument(
             document_id="confluence-americas-provisioning-maintenance",
+            metric_name="confluence_new_peu",
             title="Confluence Americas provisioning maintenance notice",
             text=(
                 "A Confluence provisioning maintenance window affected Americas 1-10 Seat Tier "
@@ -191,9 +205,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             support_explanation=(
                 "The notice concerns a different Seat Tier from the affected segment."
             ),
+            accountable_team="Confluence Platform Provisioning Team",
         ),
         EvidenceDocument(
             document_id="confluence-americas-acquisition-campaign-restricted",
+            metric_name="confluence_new_peu",
             title="Restricted Confluence Americas acquisition campaign appendix",
             text=(
                 "Restricted appendix with direct Tenant identifiers for the Confluence Americas "
@@ -213,9 +229,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "identifier entitlement."
             ),
             sensitive_identifiers=["tenant-0002"],
+            accountable_team="Confluence Growth Acquisition Team",
         ),
         EvidenceDocument(
             document_id="confluence-emea-onboarding-email-regression",
+            metric_name="confluence_new_mau",
             title="Confluence EMEA onboarding-email regression",
             text=(
                 "An onboarding-email regression affected Confluence EMEA 51-200 Seat Tier "
@@ -235,9 +253,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "The onboarding-email regression overlaps the EMEA 51-200 Seat Tier Tenant "
                 "scope and the June 2026 New MAU decline period."
             ),
+            accountable_team="Confluence Growth Activation Team",
         ),
         EvidenceDocument(
             document_id="confluence-emea-small-tenant-onboarding-email",
+            metric_name="confluence_new_mau",
             title="Confluence EMEA small-Tenant onboarding-email review",
             text=(
                 "An onboarding-email review covered Confluence EMEA 1-10 Seat Tier Tenants "
@@ -255,9 +275,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             support_explanation=(
                 "The review concerns a different Seat Tier from the affected segment."
             ),
+            accountable_team="Confluence Growth Activation Team",
         ),
         EvidenceDocument(
             document_id="confluence-emea-201-plus-onboarding-email",
+            metric_name="confluence_new_mau",
             title="Confluence EMEA 201+ Seat Tier onboarding-email summary",
             text=(
                 "An onboarding-email summary was published in June 2026, but it covered "
@@ -275,9 +297,11 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             support_explanation=(
                 "The summary concerns a different Seat Tier from the affected segment."
             ),
+            accountable_team="Confluence Growth Activation Team",
         ),
         EvidenceDocument(
             document_id="confluence-emea-onboarding-email-regression-restricted",
+            metric_name="confluence_new_mau",
             title="Restricted Confluence EMEA onboarding-email regression appendix",
             text=(
                 "Restricted appendix with direct Tenant identifiers for the Confluence EMEA "
@@ -297,197 +321,44 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "identifier entitlement."
             ),
             sensitive_identifiers=["tenant-0003"],
+            accountable_team="Confluence Growth Activation Team",
         ),
     )
 
 
 def graph_corpus() -> tuple[GraphPath, ...]:
-    """Return deterministic public and direct-identifier evidence paths."""
-    apac_51_200_tenants = _tenant_ids_for_segment("APAC", "51-200")
-    americas_campaign_tenants = _tenant_ids_for_segment("Americas", "11-50")
-    emea_51_200_tenants = _tenant_ids_for_segment("EMEA", "51-200")
-    return (
-        GraphPath(
-            path_id="jira-apac-new-peu-incident-chain",
-            nodes=[
-                GraphNode(
-                    node_id="metric-jira-new-peu",
-                    node_type="metric",
-                    label="Jira New PEU",
-                    product="Jira",
-                    region="APAC",
-                    tenant_ids=apac_51_200_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
+    """Derive governed evidence chains from catalog and document metadata."""
+    return DerivedEvidenceGraphBuilder().build(_synthetic_catalog_entities(), evidence_corpus())
+
+
+def _synthetic_catalog_entities() -> tuple[DataHubEntityMetadata, ...]:
+    published_at = datetime(2026, 8, 25, tzinfo=UTC)
+    entities: list[DataHubEntityMetadata] = []
+    for metric_name, product in (
+        ("jira_new_peu", "Jira"),
+        ("jira_new_mau", "Jira"),
+        ("confluence_new_peu", "Confluence"),
+        ("confluence_new_mau", "Confluence"),
+    ):
+        entities.append(
+            DataHubEntityMetadata(
+                entity_name=f"fct_{metric_name}",
+                entity_type="model",
+                urn=(
+                    "urn:li:dataset:(urn:li:dataPlatform:postgres,"
+                    f"growth_data.analytics.fct_{metric_name},PROD)"
                 ),
-                GraphNode(
-                    node_id="segment-apac-51-200",
-                    node_type="segment",
-                    label="APAC 51-200 Seat Tier Tenants",
-                    product="Jira",
-                    region="APAC",
-                    tenant_ids=apac_51_200_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-                GraphNode(
-                    node_id="incident-jira-apac-paid-provisioning",
-                    node_type="incident",
-                    label="Jira APAC paid provisioning incident",
-                    product="Jira",
-                    region="APAC",
-                    tenant_ids=apac_51_200_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-            ],
-        ),
-        GraphPath(
-            path_id="jira-apac-tenant-identifier-chain",
-            nodes=[
-                GraphNode(
-                    node_id="incident-jira-apac-paid-provisioning-restricted",
-                    node_type="incident",
-                    label="Restricted Jira APAC provisioning appendix",
-                    product="Jira",
-                    region="APAC",
-                    tenant_ids=["tenant-0011"],
-                    classification="restricted",
-                    identifier_entitlement="direct",
-                ),
-                GraphNode(
-                    node_id="tenant-0011",
-                    node_type="tenant",
-                    label="tenant-0011",
-                    product="Jira",
-                    region="APAC",
-                    tenant_ids=["tenant-0011"],
-                    classification="restricted",
-                    identifier_entitlement="direct",
-                ),
-            ],
-        ),
-        GraphPath(
-            path_id="confluence-americas-acquisition-campaign-chain",
-            nodes=[
-                GraphNode(
-                    node_id="metric-confluence-new-peu",
-                    node_type="metric",
-                    label="Confluence New PEU",
-                    product="Confluence",
-                    region="Americas",
-                    tenant_ids=americas_campaign_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-                GraphNode(
-                    node_id="segment-americas-11-50",
-                    node_type="segment",
-                    label="Americas 11-50 Seat Tier Tenants",
-                    product="Confluence",
-                    region="Americas",
-                    tenant_ids=americas_campaign_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-                GraphNode(
-                    node_id="campaign-confluence-americas-acquisition",
-                    node_type="campaign",
-                    label="Confluence Americas targeted acquisition campaign",
-                    product="Confluence",
-                    region="Americas",
-                    tenant_ids=americas_campaign_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-            ],
-        ),
-        GraphPath(
-            path_id="confluence-americas-campaign-identifier-chain",
-            nodes=[
-                GraphNode(
-                    node_id="campaign-confluence-americas-acquisition-restricted",
-                    node_type="campaign",
-                    label="Restricted Confluence Americas campaign appendix",
-                    product="Confluence",
-                    region="Americas",
-                    tenant_ids=["tenant-0002"],
-                    classification="restricted",
-                    identifier_entitlement="direct",
-                ),
-                GraphNode(
-                    node_id="tenant-0002",
-                    node_type="tenant",
-                    label="tenant-0002",
-                    product="Confluence",
-                    region="Americas",
-                    tenant_ids=["tenant-0002"],
-                    classification="restricted",
-                    identifier_entitlement="direct",
-                ),
-            ],
-        ),
-        GraphPath(
-            path_id="confluence-emea-onboarding-email-regression-chain",
-            nodes=[
-                GraphNode(
-                    node_id="metric-confluence-new-mau",
-                    node_type="metric",
-                    label="Confluence New MAU",
-                    product="Confluence",
-                    region="EMEA",
-                    tenant_ids=emea_51_200_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-                GraphNode(
-                    node_id="segment-emea-51-200",
-                    node_type="segment",
-                    label="EMEA 51-200 Seat Tier Tenants",
-                    product="Confluence",
-                    region="EMEA",
-                    tenant_ids=emea_51_200_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-                GraphNode(
-                    node_id="regression-confluence-emea-onboarding-email",
-                    node_type="regression",
-                    label="Confluence EMEA onboarding-email regression",
-                    product="Confluence",
-                    region="EMEA",
-                    tenant_ids=emea_51_200_tenants,
-                    classification="internal",
-                    identifier_entitlement="none",
-                ),
-            ],
-        ),
-        GraphPath(
-            path_id="confluence-emea-onboarding-email-identifier-chain",
-            nodes=[
-                GraphNode(
-                    node_id="regression-confluence-emea-onboarding-email-restricted",
-                    node_type="regression",
-                    label="Restricted Confluence EMEA onboarding-email appendix",
-                    product="Confluence",
-                    region="EMEA",
-                    tenant_ids=["tenant-0003"],
-                    classification="restricted",
-                    identifier_entitlement="direct",
-                ),
-                GraphNode(
-                    node_id="tenant-0003",
-                    node_type="tenant",
-                    label="tenant-0003",
-                    product="Confluence",
-                    region="EMEA",
-                    tenant_ids=["tenant-0003"],
-                    classification="restricted",
-                    identifier_entitlement="direct",
-                ),
-            ],
-        ),
-    )
+                product=product,
+                owners=["growth-data"],
+                classification="internal",
+                discovery_tags=["dbt-model", "canonical-metric", f"product:{product.casefold()}"],
+                description=f"Synthetic validated {product} {metric_name} dbt model.",
+                semantic_version="1.0.0",
+                source_artifact_sha256="synthetic-v1",
+                published_at=published_at,
+            )
+        )
+    return tuple(entities)
 
 
 def _tenant_ids_for_segment(region: str, seat_tier: str) -> list[str]:

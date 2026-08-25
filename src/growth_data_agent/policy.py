@@ -128,7 +128,12 @@ class AccessProfile:
         )
 
     def evidence_filter(
-        self, product: str, region: str, *, seat_tier: str | None = None
+        self,
+        product: str,
+        region: str,
+        *,
+        seat_tier: str | None = None,
+        metric_name: str | None = None,
     ) -> EvidenceAccessFilter:
         """Derive every document filter before the vector store is queried."""
         if product not in self.products:
@@ -156,6 +161,7 @@ class AccessProfile:
                 tenant_id for tenant_id in _ALL_TENANT_IDS if tenant_id not in permitted_tenants
             ),
             seat_tiers=(seat_tier,) if seat_tier is not None else (),
+            metric_names=(metric_name,) if metric_name is not None else (),
         )
 
     def graph_filter(
