@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .contracts import EffectiveAccessScope
+from .contracts import EffectiveAccessScope, ProvisionalMetricInput
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,10 @@ class AccessProfile:
             permitted_columns=list(self.permitted_columns),
         )
 
+    def permits_provisional_inputs(self, inputs: list[ProvisionalMetricInput]) -> bool:
+        """Allow a provisional calculation only when every declared input is entitled."""
+        return all(item.name in self.permitted_columns for item in inputs)
+
 
 _CANONICAL_DEFINITION_COLUMNS = (
     "metric_name",
@@ -49,6 +53,7 @@ _CANONICAL_DEFINITION_COLUMNS = (
     "time_rule",
     "semantic_version",
     "source_freshness",
+    "paid_enablement_id",
 )
 
 _ALL_REGIONS = ("Americas", "APAC", "EMEA")

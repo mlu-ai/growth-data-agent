@@ -4,18 +4,23 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
 class ResultClassification(StrEnum):
     CANONICAL_DEFINITION = "canonical_definition"
+    METRIC_DEFINITION_GAP = "metric_definition_gap"
+    PROVISIONAL_METRIC = "provisional_metric"
     LIMITATION = "limitation"
 
 
 class AnswerQuestionRequest(BaseModel):
     agent_user_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
+    requested_metric_name: str | None = Field(default=None, min_length=1)
+    verification_request_confirmation: VerificationRequestConfirmation | None = None
 
 
 class EffectiveAccessScope(BaseModel):
@@ -29,6 +34,50 @@ class SourceFreshness(BaseModel):
     validated_at: datetime
     maximum_age_seconds: int = Field(gt=0)
     is_current: bool
+
+
+class VerificationRequestConfirmation(BaseModel):
+    """An Agent User's affirmative approval to create a verification request."""
+
+    approved: bool
+    approval_context: str = Field(min_length=1)
+
+
+class MetricDefinitionGap(BaseModel):
+    requested_metric_name: str
+    semantic_authority: str = "dbt/MetricFlow"
+    verification_request_offered: bool = True
+
+
+class ProvisionalMetricInput(BaseModel):
+    name: str
+    source: str
+
+
+class ProvisionalMetricFreshness(BaseModel):
+    source: str
+    observed_at: datetime
+
+
+class ProvisionalMetric(BaseModel):
+    """A bounded calculation that must never be mistaken for a canonical metric."""
+
+    name: str
+    value: int | float
+    formula: str = Field(min_length=1)
+    inputs: list[ProvisionalMetricInput] = Field(min_length=1)
+    scope: EffectiveAccessScope
+    verification_status: Literal["unverified"] = "unverified"
+    freshness: ProvisionalMetricFreshness
+    material_caveats: list[str] = Field(min_length=1)
+
+
+class DataTeamVerificationRequest(BaseModel):
+    request_id: str
+    requested_metric_name: str
+    requested_by_agent_user_id: str
+    approval_context: str
+    approved_at: datetime
 
 
 class SemanticCitation(BaseModel):
@@ -64,6 +113,9 @@ class GovernedAnalyticalResponse(BaseModel):
     result_classification: ResultClassification
     canonical_definition: CanonicalMetricDefinition | None = None
     semantic_query_evidence: SemanticQueryEvidence | None = None
+    metric_definition_gap: MetricDefinitionGap | None = None
+    provisional_metric: ProvisionalMetric | None = None
+    data_team_verification_request: DataTeamVerificationRequest | None = None
     source_freshness: SourceFreshness
     effective_access_scope: EffectiveAccessScope
     caveats: list[str]
