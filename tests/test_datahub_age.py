@@ -64,6 +64,7 @@ class RecordingAgeMutationExecutor:
 class FakeAgeCursor:
     def __init__(self, value: str) -> None:
         self.value = value
+        self.calls: list[object] = []
 
     def __enter__(self):
         return self
@@ -71,9 +72,11 @@ class FakeAgeCursor:
     def __exit__(self, *args):
         return None
 
-    def execute(self, query, parameters):
+    def execute(self, query, parameters=None, **kwargs):
+        self.calls.append(query)
         self.query = query
         self.parameters = parameters
+        self.prepare = kwargs.get("prepare", False)
 
     def fetchall(self):
         return [(self.value,)]
@@ -86,6 +89,7 @@ class FakeAgeConnection:
     def __init__(self, value: str) -> None:
         self.cursor_value = value
         self.execute_calls: list[str] = []
+        self.cursors: list[FakeAgeCursor] = []
 
     def __enter__(self):
         return self
@@ -101,7 +105,9 @@ class FakeAgeConnection:
         self.last_execute = query
 
     def cursor(self):
-        return FakeAgeCursor(self.cursor_value)
+        cursor = FakeAgeCursor(self.cursor_value)
+        self.cursors.append(cursor)
+        return cursor
 
 
 class DeniedLoadAgeConnection(FakeAgeConnection):
@@ -110,6 +116,18 @@ class DeniedLoadAgeConnection(FakeAgeConnection):
         if query == "LOAD 'age'":
             raise psycopg.errors.InsufficientPrivilege("access to library 'age' is not allowed")
         self.last_execute = query
+
+
+class SyntaxErrorAgeCursor(FakeAgeCursor):
+    def execute(self, query, parameters=None, **kwargs):
+        raise psycopg.errors.SyntaxError("syntax error at or near FOREACH")
+
+
+class SyntaxErrorAgeConnection(FakeAgeConnection):
+    def cursor(self):
+        cursor = SyntaxErrorAgeCursor(self.cursor_value)
+        self.cursors.append(cursor)
+        return cursor
 
 
 class FakeHttpResponse:
@@ -702,6 +720,11 @@ def test_psycopg_age_executor_decodes_vertex_edge_agtype(monkeypatch) -> None:
         "SET TRANSACTION READ ONLY",
         'SET search_path = ag_catalog, "$user", public',
     ]
+    cypher_statement = connections[0].cursors[0].query.as_string(None)
+    assert "$gda$MATCH path RETURN path$gda$" in cypher_statement
+    assert "cypher(%s" not in cypher_statement
+    assert connections[0].cursors[0].parameters == ('{"tenant_ids": ["tenant-0002"]}',)
+    assert connections[0].cursors[0].prepare
 
 
 def test_psycopg_age_executor_reports_preload_configuration_when_load_is_denied(
@@ -719,6 +742,23 @@ def test_psycopg_age_executor_reports_preload_configuration_when_load_is_denied(
         )
 
     assert connection.execute_calls == ["SET TRANSACTION READ ONLY", "LOAD 'age'"]
+
+
+def test_psycopg_age_executor_does_not_label_cypher_syntax_as_preload_failure(
+    monkeypatch,
+) -> None:
+    connection = SyntaxErrorAgeConnection("not-used")
+    monkeypatch.setattr(
+        "growth_data_agent.graph.psycopg.connect",
+        lambda database_url: connection,
+    )
+
+    with pytest.raises(EvidenceGraphUnavailableError, match="Cypher statement") as error:
+        PsycopgAgeGraphQueryExecutor(
+            "postgresql://example", age_preloaded=True
+        ).query("FOREACH", {})
+
+    assert "session_preload_libraries" not in str(error.value)
 
 
 def test_age_preloaded_environment_flag_is_opt_in(monkeypatch) -> None:
@@ -745,6 +785,20 @@ def test_psycopg_age_mutation_executor_skips_load_for_preloaded_non_superuser(
     assert connection.execute_calls == [
         'SET search_path = ag_catalog, "$user", public',
     ]
+    statements = [
+        query.as_string(None)
+        for cursor in connection.cursors
+        for query in cursor.calls
+    ]
+    assert any("create_graph" in statement for statement in statements)
+    assert all("ag_graph" not in statement for statement in statements)
+
+
+def test_age_graph_name_is_validated_before_sql_composition() -> None:
+    with pytest.raises(ValueError, match="APACHE_AGE_GRAPH_NAME"):
+        PsycopgAgeGraphQueryExecutor(
+            "postgresql://example", graph_name="growth_evidence;DROP TABLE users"
+        )
 
 
 def test_psycopg_age_executor_fails_closed_on_malformed_path(monkeypatch) -> None:
@@ -872,12 +926,16 @@ def test_age_materializer_replaces_graph_from_approved_metadata() -> None:
     assert result.path_count == 1
     assert result.node_count == 4
     assert result.edge_count == 3
-    assert len(mutation_executor.calls) == 1
-    cypher, parameters = mutation_executor.calls[0]
-    assert "DETACH DELETE" in cypher
-    assert "WITH collect(created)" in cypher
-    assert len(parameters["nodes"]) == 4
-    assert len(parameters["edges"]) == 3
+    assert len(mutation_executor.calls) == 3
+    clear_cypher, clear_parameters = mutation_executor.calls[0]
+    nodes_cypher, nodes_parameters = mutation_executor.calls[1]
+    edges_cypher, edges_parameters = mutation_executor.calls[2]
+    assert "DETACH DELETE" in clear_cypher
+    assert clear_parameters == {"graph_namespace": "growth-data-agent"}
+    assert "FOREACH" not in nodes_cypher
+    assert len(nodes_parameters["nodes"]) == 4
+    assert "UNWIND $edges" in edges_cypher
+    assert len(edges_parameters["edges"]) == 3
 
     empty_executor = RecordingAgeMutationExecutor()
     empty_result = ApacheAgeEvidenceGraphMaterializer(empty_executor).replace([], [])
