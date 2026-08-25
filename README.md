@@ -15,6 +15,13 @@ data-team verification request, but creates its local POC record only when the
 Agent User sends `verification_request_confirmation.approved: true` together
 with approval context. It never creates an external ticket.
 
+Evidence questions about the APAC 51–200 Seat Tier Tenant decline first run the
+validated Driver Decomposition, then query the synthetic Qdrant corpus with
+Access Profile-derived product, Region, Tenant, classification, and identifier
+filters. The response returns a cited `hypothesis` only when permitted evidence
+supports the explanation; insufficient or contradictory evidence is returned as
+`inconclusive`, without a causal claim.
+
 ## Local run
 
 ```sh

@@ -5,6 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .contracts import EffectiveAccessScope, ProvisionalMetricInput
+from .evidence import EvidenceAccessFilter
+
+_ALL_TENANT_IDS = tuple(f"tenant-{number:04d}" for number in range(1, 1_001))
+_ALL_REGIONS = ("Americas", "APAC", "EMEA")
+
+
+def tenant_ids_for_region(region: str) -> tuple[str, ...]:
+    """Resolve synthetic Tenant entitlements by their recorded billing Region."""
+    try:
+        region_index = _ALL_REGIONS.index(region)
+    except ValueError as error:
+        raise AccessDeniedError(f"Unknown Region entitlement: {region}.") from error
+    return tuple(
+        tenant_id
+        for number, tenant_id in enumerate(_ALL_TENANT_IDS, start=1)
+        if (number - 1) % len(_ALL_REGIONS) == region_index
+    )
 
 
 @dataclass(frozen=True)
@@ -13,6 +30,9 @@ class AccessProfile:
     regions: tuple[str, ...]
     tenant_scope: str
     permitted_columns: tuple[str, ...]
+    permitted_tenant_ids: tuple[str, ...]
+    permitted_classifications: tuple[str, ...] = ("internal",)
+    permitted_identifiers: tuple[str, ...] = ()
 
     def metricflow_where_constraints(self, metric_product: str) -> tuple[str, ...]:
         """Return fixed, profile-derived MetricFlow filters for a canonical metric.
@@ -30,6 +50,14 @@ class AccessProfile:
         if len(self.regions) != len(_ALL_REGIONS):
             regions = ", ".join(repr(region) for region in self.regions)
             constraints.append(f"product_user__region IN ({regions})")
+        permitted_region_tenants = {
+            tenant_id
+            for region in self.regions
+            for tenant_id in tenant_ids_for_region(region)
+        }
+        if set(self.permitted_tenant_ids) != permitted_region_tenants:
+            tenants = ", ".join(repr(tenant_id) for tenant_id in self.permitted_tenant_ids)
+            constraints.append(f"product_user__tenant_id IN ({tenants})")
         return tuple(constraints)
 
     def as_effective_scope(self) -> EffectiveAccessScope:
@@ -38,6 +66,27 @@ class AccessProfile:
             regions=list(self.regions),
             tenant_scope=self.tenant_scope,
             permitted_columns=list(self.permitted_columns),
+        )
+
+    def evidence_filter(self, product: str, region: str) -> EvidenceAccessFilter:
+        """Derive every document filter before the vector store is queried."""
+        if product not in self.products:
+            raise AccessDeniedError(f"Access Profile is not entitled to {product} evidence.")
+        if region not in self.regions:
+            raise AccessDeniedError(f"Access Profile is not entitled to {region} evidence.")
+        permitted_tenants = tuple(
+            tenant_id for tenant_id in tenant_ids_for_region(region)
+            if tenant_id in self.permitted_tenant_ids
+        )
+        if not permitted_tenants:
+            raise AccessDeniedError(f"Access Profile has no permitted {region} Tenants.")
+        identifier_entitlements = ("none", "direct") if self.permitted_identifiers else ("none",)
+        return EvidenceAccessFilter(
+            products=(product,),
+            regions=(region,),
+            tenant_ids=permitted_tenants,
+            classifications=self.permitted_classifications,
+            identifier_entitlements=identifier_entitlements,
         )
 
     def permits_provisional_inputs(self, inputs: list[ProvisionalMetricInput]) -> bool:
@@ -56,20 +105,20 @@ _CANONICAL_DEFINITION_COLUMNS = (
     "paid_enablement_id",
 )
 
-_ALL_REGIONS = ("Americas", "APAC", "EMEA")
-
 _PROFILES = {
     "data_analyst": AccessProfile(
         products=("Jira", "Confluence"),
         regions=_ALL_REGIONS,
         tenant_scope="all permitted Tenants",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
+        permitted_tenant_ids=_ALL_TENANT_IDS,
     ),
     "apac_regional_manager": AccessProfile(
         products=("Jira", "Confluence"),
         regions=("APAC",),
         tenant_scope="APAC Tenants only",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
+        permitted_tenant_ids=tenant_ids_for_region("APAC"),
     ),
 }
 
