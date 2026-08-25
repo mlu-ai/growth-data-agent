@@ -1,0 +1,57 @@
+name: Pull Request Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  ruff:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-groups --locked
+      - run: uv run ruff check .
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-groups --locked
+      - run: uv run pytest
+
+  dbt-build:
+    name: dbt build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: growth_data
+          POSTGRES_USER: growth_data
+          POSTGRES_PASSWORD: growth_data
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U growth_data -d growth_data"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: growth_data
+      POSTGRES_USER: growth_data
+      POSTGRES_PASSWORD: growth_data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-groups --locked
+      - run: uv run python scripts/generate_synthetic_data.py
+      - run: uv run --group warehouse python scripts/load_postgres.py
+      - name: Validate dbt models and tests
+        working-directory: dbt
+        run: uv run --group warehouse dbt build --profiles-dir .
