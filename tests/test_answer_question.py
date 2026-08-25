@@ -61,3 +61,55 @@ def test_unknown_agent_user_is_refused(client: TestClient) -> None:
     )
 
     assert response.status_code == 403
+
+
+def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClient) -> None:
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_classification"] == "hypothesis"
+    assert body["driver_decomposition"]["decline"] == 560
+    assert body["driver_decomposition"]["contributions"][0] == {
+        "region": "APAC",
+        "seat_tier": "51-200",
+        "baseline_value": 800,
+        "comparison_value": 380,
+        "change": -420,
+        "contribution_to_decline": 420,
+        "percentage_of_decline": 75.0,
+    }
+    assert body["evidence"]["citations"][0] == {
+        "document_id": "jira-apac-paid-provisioning-incident",
+        "title": "Jira APAC paid provisioning incident",
+        "affected_scope": {
+            "product": "Jira",
+            "region": "APAC",
+            "tenant_scope": "APAC 51-200 Seat Tier Tenants",
+        },
+        "relevant_date": "2026-06-12",
+        "freshness": "2026-06-13T00:00:00Z",
+        "support_status": "supports",
+        "support_explanation": (
+            "The incident overlaps the APAC 51-200 Seat Tier Tenant scope and the June 2026 "
+            "decline period."
+        ),
+    }
+    citation_ids = [citation["document_id"] for citation in body["evidence"]["citations"]]
+    assert citation_ids[0] == "jira-apac-paid-provisioning-incident"
+    assert set(citation_ids[1:]) == {
+        "jira-apac-tenant-migration-notice",
+        "jira-apac-small-tenant-maintenance",
+    }
+    assert all(
+        citation["document_id"] != "jira-apac-paid-provisioning-incident-restricted"
+        for citation in body["evidence"]["citations"]
+    )
+    assert "does not establish causation" in body["answer"]
+    assert body["effective_access_scope"]["regions"] == ["Americas", "APAC", "EMEA"]

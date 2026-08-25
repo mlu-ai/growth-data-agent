@@ -1,6 +1,6 @@
 import csv
 
-from growth_data_agent.synthetic import generate
+from growth_data_agent.synthetic import evidence_corpus, generate
 
 
 def test_synthetic_dataset_is_reproducible_and_glossary_aligned(tmp_path) -> None:
@@ -59,3 +59,20 @@ def test_synthetic_dataset_is_reproducible_and_glossary_aligned(tmp_path) -> Non
     assert june_total == 3440
     assert may_june_counts[("2026-05", "APAC", "51-200")] == 800
     assert may_june_counts[("2026-06", "APAC", "51-200")] == 380
+
+
+def test_synthetic_evidence_corpus_has_incident_distractors_and_restricted_case() -> None:
+    documents = evidence_corpus()
+
+    assert [document.document_id for document in documents] == [
+        "jira-apac-paid-provisioning-incident",
+        "jira-apac-small-tenant-maintenance",
+        "jira-apac-tenant-migration-notice",
+        "jira-apac-paid-provisioning-incident-restricted",
+    ]
+    assert documents[0].support_status.value == "supports"
+    assert documents[0].tenant_scope == "APAC 51-200 Seat Tier Tenants"
+    assert documents[1].support_status.value == "inconclusive"
+    assert documents[2].support_status.value == "inconclusive"
+    assert documents[3].classification == "restricted"
+    assert documents[3].identifier_entitlement == "direct"

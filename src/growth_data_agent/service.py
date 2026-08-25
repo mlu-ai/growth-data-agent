@@ -7,10 +7,12 @@ from uuid import uuid4
 
 from .contracts import (
     AnswerQuestionRequest,
+    EvidenceSupportStatus,
     GovernedAnalyticalResponse,
     MetricDefinitionGap,
     ResultClassification,
 )
+from .evidence import QdrantEvidenceStore, VectorEvidenceStore, build_evidence_answer
 from .metric_definition_gaps import (
     DataTeamVerificationRequestRecorder,
     InMemoryDataTeamVerificationRequestRecorder,
@@ -22,6 +24,7 @@ from .metric_definition_gaps import (
 )
 from .policy import resolve_access_profile
 from .semantic import ValidatedMetricFlowGateway
+from .synthetic import evidence_corpus
 
 
 class AnswerQuestionService:
@@ -32,6 +35,7 @@ class AnswerQuestionService:
         provisional_metric_calculator: ProvisionalMetricCalculator | None = None,
         provisional_metric_input_gateway: ProvisionalMetricInputGateway | None = None,
         verification_request_recorder: DataTeamVerificationRequestRecorder | None = None,
+        evidence_store: VectorEvidenceStore | None = None,
     ):
         self.semantic_gateway = semantic_gateway
         self.provisional_metric_calculator = (
@@ -43,6 +47,7 @@ class AnswerQuestionService:
         self.verification_request_recorder = (
             verification_request_recorder or InMemoryDataTeamVerificationRequestRecorder()
         )
+        self.evidence_store = evidence_store or QdrantEvidenceStore(evidence_corpus())
 
     def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
         access_profile = resolve_access_profile(request.agent_user_id)
@@ -61,6 +66,16 @@ class AnswerQuestionService:
                 source_freshness=self.semantic_gateway.freshness(artifact),
                 effective_access_scope=scope,
                 caveats=["The request did not identify a governed metric."],
+                trace_id=trace_id,
+            )
+
+        if (
+            metric_name == "jira_new_peu"
+            and self._requests_apac_decline_evidence(request.question)
+        ):
+            return self._answer_apac_decline_evidence(
+                scope=scope,
+                access_profile=access_profile,
                 trace_id=trace_id,
             )
 
@@ -188,6 +203,76 @@ class AnswerQuestionService:
             trace_id=trace_id,
         )
 
+    def _answer_apac_decline_evidence(self, *, scope, access_profile, trace_id: str):
+        definition, decomposition, query_evidence, freshness = (
+            self.semantic_gateway.driver_decomposition(
+                "jira_new_peu",
+                access_profile,
+                baseline_period="2026-05",
+                comparison_period="2026-06",
+            )
+        )
+        if definition is None or decomposition is None or query_evidence is None:
+            return GovernedAnalyticalResponse(
+                answer=(
+                    "Evidence for the APAC decline cannot be assessed because semantic "
+                    "validation is not current."
+                ),
+                result_classification=ResultClassification.LIMITATION,
+                source_freshness=freshness,
+                effective_access_scope=scope,
+                caveats=[
+                    "Run dbt validation and refresh the semantic artifact before retrieving "
+                    "evidence."
+                ],
+                trace_id=trace_id,
+            )
+
+        access_filter = access_profile.evidence_filter("Jira", "APAC")
+        documents = [
+            document
+            for document in self.evidence_store.retrieve(
+                "Jira APAC 51-200 paid provisioning June 2026 decline",
+                access_filter,
+                limit=3,
+            )
+            if access_filter.allows(document)
+        ]
+        evidence = build_evidence_answer(documents)
+        if evidence.support_status == EvidenceSupportStatus.SUPPORTS:
+            classification = ResultClassification.HYPOTHESIS
+            answer = (
+                "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
+                "part of the observed APAC 51-200 Seat Tier Tenant decline. "
+                "The evidence supports this Hypothesis but does not establish causation."
+            )
+        else:
+            classification = ResultClassification.INCONCLUSIVE
+            answer = (
+                "Inconclusive: the permitted evidence does not support a reliable explanation "
+                "for the observed APAC 51-200 Seat Tier Tenant decline. "
+                f"{evidence.support_explanation}"
+            )
+        return GovernedAnalyticalResponse(
+            answer=answer,
+            result_classification=classification,
+            canonical_definition=definition,
+            semantic_query_evidence=query_evidence,
+            driver_decomposition=decomposition,
+            evidence=evidence,
+            source_freshness=freshness,
+            effective_access_scope=scope,
+            caveats=[
+                (
+                    "The APAC 51-200 Seat Tier result is an observed Driver Decomposition; "
+                    "the retrieved incident is a Hypothesis, not a causal conclusion."
+                ),
+                "Only evidence permitted by product, Region, Tenant, classification, and "
+                "identifier entitlements was retrieved.",
+            ],
+            trace_id=trace_id,
+        )
+
     @staticmethod
     def _requests_jira_new_peu(question: str) -> bool:
         normalized = " ".join(question.casefold().split())
@@ -202,6 +287,16 @@ class AnswerQuestionService:
             ("why" in normalized or "driver" in normalized or "decomposition" in normalized)
             and "may" in normalized
             and "june" in normalized
+        )
+
+    @staticmethod
+    def _requests_apac_decline_evidence(question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        return (
+            "evidence" in normalized
+            and "apac" in normalized
+            and "decline" in normalized
+            and ("51–200" in question or "51-200" in normalized)
         )
 
     def _metric_definition_gap_response(
@@ -304,6 +399,8 @@ class AnswerQuestionService:
             return "confluence_new_peu"
         if "confluence" in normalized and "new mau" in normalized:
             return "confluence_new_mau"
+        if AnswerQuestionService._requests_apac_decline_evidence(request.question):
+            return "jira_new_peu"
         if any(term in normalized for term in ("metric", "rate", "count", "revenue")):
             return _metric_identifier(request.question)
         named_metric = _named_metric_question(request.question)

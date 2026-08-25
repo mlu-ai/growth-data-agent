@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 class ResultClassification(StrEnum):
     CANONICAL_DEFINITION = "canonical_definition"
     DRIVER_DECOMPOSITION = "driver_decomposition"
+    HYPOTHESIS = "hypothesis"
+    INCONCLUSIVE = "inconclusive"
     METRIC_DEFINITION_GAP = "metric_definition_gap"
     PROVISIONAL_METRIC = "provisional_metric"
     LIMITATION = "limitation"
@@ -137,12 +139,41 @@ class DriverDecomposition(BaseModel):
     approved_dimensions: list[str]
 
 
+class EvidenceSupportStatus(StrEnum):
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    INCONCLUSIVE = "inconclusive"
+
+
+class EvidenceScope(BaseModel):
+    product: str
+    region: str
+    tenant_scope: str
+
+
+class EvidenceCitation(BaseModel):
+    document_id: str
+    title: str
+    affected_scope: EvidenceScope
+    relevant_date: date
+    freshness: datetime
+    support_status: EvidenceSupportStatus
+    support_explanation: str
+
+
+class EvidenceAnswer(BaseModel):
+    citations: list[EvidenceCitation]
+    support_status: EvidenceSupportStatus
+    support_explanation: str
+
+
 class GovernedAnalyticalResponse(BaseModel):
     answer: str
     result_classification: ResultClassification
     canonical_definition: CanonicalMetricDefinition | None = None
     semantic_query_evidence: SemanticQueryEvidence | None = None
     driver_decomposition: DriverDecomposition | None = None
+    evidence: EvidenceAnswer | None = None
     metric_definition_gap: MetricDefinitionGap | None = None
     provisional_metric: ProvisionalMetric | None = None
     data_team_verification_request: DataTeamVerificationRequest | None = None

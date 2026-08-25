@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+from .contracts import EvidenceSupportStatus
+from .evidence import EvidenceDocument
+from .policy import tenant_ids_for_region
+
 _START_DATE = date(2025, 1, 1)
 _END_DATE = date(2026, 6, 30)
 _REGIONS = ("Americas", "APAC", "EMEA")
@@ -28,6 +32,106 @@ class DatasetCounts:
     product_users: int
     paid_enablements: int
     visits: int
+
+
+def evidence_corpus() -> tuple[EvidenceDocument, ...]:
+    """Return the deterministic incident corpus used by the evidence POC."""
+    apac_enterprise_tenants = _tenant_ids_for_segment("APAC", "51-200")
+    return (
+        EvidenceDocument(
+            document_id="jira-apac-paid-provisioning-incident",
+            title="Jira APAC paid provisioning incident",
+            text=(
+                "Paid provisioning errors affected Jira APAC 51-200 Seat Tier Tenants "
+                "from 2026-06-10 through 2026-06-12, overlapping the June New PEU decline."
+            ),
+            product="Jira",
+            region="APAC",
+            tenant_ids=apac_enterprise_tenants,
+            tenant_scope="APAC 51-200 Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 6, 12),
+            freshness=datetime(2026, 6, 13, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.SUPPORTS,
+            support_explanation=(
+                "The incident overlaps the APAC 51-200 Seat Tier Tenant scope and the June "
+                "2026 decline period."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="jira-apac-small-tenant-maintenance",
+            title="Jira APAC small-Tenant provisioning maintenance",
+            text=(
+                "A Jira provisioning maintenance window affected APAC 1-10 Seat Tier "
+                "Tenants in May 2026, outside the affected 51-200 Seat Tier scope."
+            ),
+            product="Jira",
+            region="APAC",
+            tenant_ids=_tenant_ids_for_segment("APAC", "1-10"),
+            tenant_scope="APAC 1-10 Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 5, 18),
+            freshness=datetime(2026, 5, 19, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.INCONCLUSIVE,
+            support_explanation=(
+                "The notice concerns a different Seat Tier from the affected segment."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="jira-apac-tenant-migration-notice",
+            title="Jira APAC Tenant migration notice",
+            text=(
+                "A Jira APAC Tenant migration notice was published in June 2026, but it "
+                "covered 201+ Seat Tier Tenants and not the affected 51-200 segment."
+            ),
+            product="Jira",
+            region="APAC",
+            tenant_ids=_tenant_ids_for_segment("APAC", "201+"),
+            tenant_scope="APAC 201+ Seat Tier Tenants",
+            classification="internal",
+            identifier_entitlement="none",
+            relevant_date=date(2026, 6, 9),
+            freshness=datetime(2026, 6, 10, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.INCONCLUSIVE,
+            support_explanation=(
+                "The notice concerns a different Seat Tier from the affected segment."
+            ),
+        ),
+        EvidenceDocument(
+            document_id="jira-apac-paid-provisioning-incident-restricted",
+            title="Restricted Jira APAC provisioning incident appendix",
+            text=(
+                "Restricted appendix with direct Tenant identifiers for the Jira APAC paid "
+                "provisioning incident."
+            ),
+            product="Jira",
+            region="APAC",
+            tenant_ids=apac_enterprise_tenants,
+            tenant_scope="APAC 51-200 Seat Tier Tenants",
+            classification="restricted",
+            identifier_entitlement="direct",
+            relevant_date=date(2026, 6, 12),
+            freshness=datetime(2026, 6, 13, tzinfo=UTC),
+            support_status=EvidenceSupportStatus.SUPPORTS,
+            support_explanation=(
+                "This restricted appendix cannot be used without classification and direct "
+                "identifier entitlement."
+            ),
+        ),
+    )
+
+
+def _tenant_ids_for_segment(region: str, seat_tier: str) -> list[str]:
+    return [
+        tenant_id
+        for tenant_id in tenant_ids_for_region(region)
+        if (
+            (int(tenant_id.rsplit("-", 1)[1]) - 1) % len(_SEAT_TIERS)
+            == _SEAT_TIERS.index(seat_tier)
+        )
+    ]
 
 
 def generate(output_directory: Path) -> DatasetCounts:

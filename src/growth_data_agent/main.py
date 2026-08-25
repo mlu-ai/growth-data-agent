@@ -14,7 +14,7 @@ from .metricflow_query import (
     PostgresMetricFlowExecutor,
     SemanticQueryExecutionError,
 )
-from .policy import UnknownAgentUserError
+from .policy import AccessDeniedError, UnknownAgentUserError
 from .semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from .service import AnswerQuestionService
 
@@ -51,6 +51,8 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
         try:
             return app.state.answer_service.answer_question(request)
         except UnknownAgentUserError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except AccessDeniedError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
         except (OSError, ValidationError, SemanticQueryExecutionError) as error:
             raise HTTPException(
