@@ -29,6 +29,13 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
+        if self._requests_may_to_june_driver_decomposition(request.question):
+            return self._answer_may_to_june_driver_decomposition(
+                scope=scope,
+                access_profile=access_profile,
+                trace_id=trace_id,
+            )
+
         definition, freshness = self.semantic_gateway.canonical_definition("jira_new_peu")
         if definition is None:
             return GovernedAnalyticalResponse(
@@ -76,9 +83,70 @@ class AnswerQuestionService:
             trace_id=trace_id,
         )
 
+    def _answer_may_to_june_driver_decomposition(self, *, scope, access_profile, trace_id: str):
+        decomposition, query_evidence, freshness = self.semantic_gateway.driver_decomposition(
+            "jira_new_peu",
+            access_profile,
+            baseline_period="2026-05",
+            comparison_period="2026-06",
+        )
+        if decomposition is None or query_evidence is None:
+            return GovernedAnalyticalResponse(
+                answer=(
+                    "Jira New PEU cannot be decomposed as canonical because semantic validation "
+                    "is not current."
+                ),
+                result_classification=ResultClassification.LIMITATION,
+                source_freshness=freshness,
+                effective_access_scope=scope,
+                caveats=["Run dbt validation and refresh the semantic artifact before using it."],
+                trace_id=trace_id,
+            )
+
+        leading = decomposition.contributions[0] if decomposition.contributions else None
+        leading_text = "No segment movement was returned."
+        if leading is not None:
+            leading_text = (
+                f"{leading.region} / {leading.seat_tier} Seat Tier Tenants contributed "
+                f"{leading.contribution_to_decline:,} of the {decomposition.decline:,} decline "
+                f"({leading.percentage_of_decline:g}%)."
+            )
+        return GovernedAnalyticalResponse(
+            answer=(
+                "Driver Decomposition (observed, non-causal): Jira New PEU moved from "
+                f"{decomposition.baseline_value:,} in May 2026 to "
+                f"{decomposition.comparison_value:,} in June 2026 "
+                f"({decomposition.net_change:+,}). {leading_text} The approved Region and "
+                "Seat Tier contributions reconcile to the scoped movement; this observation "
+                "does not establish cause or provide a Causal Estimate."
+            ),
+            result_classification=ResultClassification.DRIVER_DECOMPOSITION,
+            semantic_query_evidence=query_evidence,
+            driver_decomposition=decomposition,
+            source_freshness=freshness,
+            effective_access_scope=scope,
+            caveats=[
+                (
+                    "This is a Driver Decomposition of observed canonical metric values, "
+                    "not a causal conclusion."
+                ),
+                "Only Region and Seat Tier are approved dimensions for this decomposition.",
+            ],
+            trace_id=trace_id,
+        )
+
     @staticmethod
     def _requests_jira_new_peu(question: str) -> bool:
         normalized = " ".join(question.casefold().split())
         return "jira" in normalized and (
             "new peu" in normalized or "new paid enabled" in normalized
+        )
+
+    @staticmethod
+    def _requests_may_to_june_driver_decomposition(question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        return (
+            ("why" in normalized or "driver" in normalized or "decomposition" in normalized)
+            and "may" in normalized
+            and "june" in normalized
         )

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 class ResultClassification(StrEnum):
     CANONICAL_DEFINITION = "canonical_definition"
+    DRIVER_DECOMPOSITION = "driver_decomposition"
     LIMITATION = "limitation"
 
 
@@ -59,11 +60,40 @@ class SemanticQueryEvidence(BaseModel):
     result_row_count: int = Field(ge=0)
 
 
+class DriverContribution(BaseModel):
+    """One approved-dimension contribution to an observed metric movement."""
+
+    region: str
+    seat_tier: str
+    baseline_value: int = Field(ge=0)
+    comparison_value: int = Field(ge=0)
+    change: int
+    contribution_to_decline: int = Field(ge=0)
+    percentage_of_decline: float = Field(ge=0)
+
+
+class DriverDecomposition(BaseModel):
+    """A reconciled, non-causal explanation derived from semantic query results."""
+
+    metric_name: str
+    baseline_period: str
+    comparison_period: str
+    baseline_value: int = Field(ge=0)
+    comparison_value: int = Field(ge=0)
+    net_change: int
+    decline: int = Field(ge=0)
+    contributions: list[DriverContribution]
+    reconciled_change: int
+    residual: int
+    approved_dimensions: list[str]
+
+
 class GovernedAnalyticalResponse(BaseModel):
     answer: str
     result_classification: ResultClassification
     canonical_definition: CanonicalMetricDefinition | None = None
     semantic_query_evidence: SemanticQueryEvidence | None = None
+    driver_decomposition: DriverDecomposition | None = None
     source_freshness: SourceFreshness
     effective_access_scope: EffectiveAccessScope
     caveats: list[str]

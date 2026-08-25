@@ -11,6 +11,14 @@ _START_DATE = date(2025, 1, 1)
 _END_DATE = date(2026, 6, 30)
 _REGIONS = ("Americas", "APAC", "EMEA")
 _SEAT_TIERS = ("1-10", "11-50", "51-200", "201+")
+_JIRA_MAY_JUNE_SCENARIO = {
+    ("APAC", "51-200"): (800, 380),
+    ("Americas", "1-10"): (1000, 940),
+    ("EMEA", "11-50"): (700, 680),
+    ("APAC", "1-10"): (600, 580),
+    ("EMEA", "51-200"): (500, 480),
+    ("Americas", "51-200"): (400, 380),
+}
 
 
 @dataclass(frozen=True)
@@ -27,8 +35,8 @@ def generate(output_directory: Path) -> DatasetCounts:
     output_directory.mkdir(parents=True, exist_ok=True)
     tenants = _tenants()
     persons = [{"person_id": f"person-{number:05d}"} for number in range(1, 10_001)]
-    product_users = _product_users()
-    paid_enablements = _paid_enablements(product_users)
+    product_users = _product_users(tenants)
+    paid_enablements = _paid_enablements(product_users, tenants)
     visits = _visits(product_users)
 
     _write_csv(output_directory / "tenants.csv", tenants)
@@ -59,12 +67,13 @@ def _tenants() -> list[dict[str, str]]:
     ]
 
 
-def _product_users() -> list[dict[str, str]]:
+def _product_users(tenants: list[dict[str, str]]) -> list[dict[str, str]]:
     product_users: list[dict[str, str]] = []
+    scenario_tenant_ids = iter(_scenario_tenant_ids(tenants))
     sequence = 1
     # Each of these Persons has separate Product User relationships in both products.
     for person_number in range(1, 6_001):
-        tenant_id = f"tenant-{((person_number * 17 - 1) % 1_000) + 1:04d}"
+        tenant_id = next(scenario_tenant_ids)
         for product in ("Jira", "Confluence"):
             product_users.append(
                 {
@@ -76,24 +85,56 @@ def _product_users() -> list[dict[str, str]]:
             )
             sequence += 1
     for person_number in range(6_001, 10_001):
+        product = "Jira" if person_number % 2 else "Confluence"
+        tenant_id = (
+            next(scenario_tenant_ids)
+            if product == "Jira" and person_number < 8_881
+            else f"tenant-{((person_number * 29 - 1) % 1_000) + 1:04d}"
+        )
         product_users.append(
             {
                 "product_user_id": f"product-user-{sequence:05d}",
                 "person_id": f"person-{person_number:05d}",
-                "tenant_id": f"tenant-{((person_number * 29 - 1) % 1_000) + 1:04d}",
-                "product": "Jira" if person_number % 2 else "Confluence",
+                "tenant_id": tenant_id,
+                "product": product,
             }
         )
         sequence += 1
     return product_users
 
 
-def _paid_enablements(product_users: list[dict[str, str]]) -> list[dict[str, str]]:
+def _scenario_tenant_ids(tenants: list[dict[str, str]]) -> list[str]:
+    tenant_ids_by_segment: dict[tuple[str, str], list[str]] = {}
+    for tenant in tenants:
+        segment = (tenant["billing_region"], tenant["seat_tier"])
+        tenant_ids_by_segment.setdefault(segment, []).append(tenant["tenant_id"])
+
+    assigned: list[str] = []
+    for segment, (may_count, june_count) in _JIRA_MAY_JUNE_SCENARIO.items():
+        tenant_ids = tenant_ids_by_segment[segment]
+        assigned.extend(
+            tenant_ids[index % len(tenant_ids)] for index in range(may_count + june_count)
+        )
+    return assigned
+
+
+def _paid_enablements(
+    product_users: list[dict[str, str]], tenants: list[dict[str, str]]
+) -> list[dict[str, str]]:
     event_rows: list[dict[str, str]] = []
-    days_in_period = (_END_DATE - _START_DATE).days + 1
+    tenant_segments = {
+        tenant["tenant_id"]: (tenant["billing_region"], tenant["seat_tier"])
+        for tenant in tenants
+    }
+    scenario_seen: dict[tuple[str, str], int] = {}
     sequence = 1
     for index, product_user in enumerate(product_users, start=1):
-        first_enabled = _START_DATE + timedelta(days=(index * 37) % days_in_period)
+        first_enabled = _first_enablement_date(
+            index,
+            product_user,
+            tenant_segments,
+            scenario_seen,
+        )
         event_rows.append(_enablement_event(sequence, product_user, first_enabled))
         sequence += 1
         # A later immutable Paid Enablement event proves that restoration does not requalify.
@@ -102,6 +143,28 @@ def _paid_enablements(product_users: list[dict[str, str]]) -> list[dict[str, str
             event_rows.append(_enablement_event(sequence, product_user, restoration))
             sequence += 1
     return event_rows
+
+
+def _first_enablement_date(
+    index: int,
+    product_user: dict[str, str],
+    tenant_segments: dict[str, tuple[str, str]],
+    scenario_seen: dict[tuple[str, str], int],
+) -> date:
+    segment = tenant_segments[product_user["tenant_id"]]
+    if product_user["product"] == "Jira" and segment in _JIRA_MAY_JUNE_SCENARIO:
+        scenario_position = scenario_seen.get(segment, 0)
+        scenario_seen[segment] = scenario_position + 1
+        may_count, june_count = _JIRA_MAY_JUNE_SCENARIO[segment]
+        if scenario_position < may_count:
+            return date(2026, 5, scenario_position % 31 + 1)
+        if scenario_position < may_count + june_count:
+            return date(2026, 6, (scenario_position - may_count) % 30 + 1)
+
+    # Keep non-scenario New PEU outside the comparison months so the first
+    # Driver Decomposition is deterministic while retaining eighteen months of events.
+    days_before_scenario = (date(2026, 4, 30) - _START_DATE).days + 1
+    return _START_DATE + timedelta(days=(index * 37) % days_before_scenario)
 
 
 def _enablement_event(

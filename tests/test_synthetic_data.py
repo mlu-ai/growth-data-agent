@@ -24,3 +24,38 @@ def test_synthetic_dataset_is_reproducible_and_glossary_aligned(tmp_path) -> Non
         == {"Jira", "Confluence"}
         for pair in pairs
     )
+
+    tenants_by_id = {}
+    with (tmp_path / "first" / "tenants.csv").open() as handle:
+        for tenant in csv.DictReader(handle):
+            tenants_by_id[tenant["tenant_id"]] = (
+                tenant["billing_region"],
+                tenant["seat_tier"],
+            )
+    product_users_by_id = {row["product_user_id"]: row for row in product_users}
+    first_jira_enablements = {}
+    with (tmp_path / "first" / "paid_enablements.csv").open() as handle:
+        for event in csv.DictReader(handle):
+            product_user = product_users_by_id[event["product_user_id"]]
+            if product_user["product"] != "Jira":
+                continue
+            product_user_id = event["product_user_id"]
+            if event["paid_enabled_at"] < first_jira_enablements.get(product_user_id, "~"):
+                first_jira_enablements[product_user_id] = event["paid_enabled_at"]
+
+    may_june_counts = {}
+    for product_user_id, paid_enabled_at in first_jira_enablements.items():
+        month = paid_enabled_at[:7]
+        if month not in {"2026-05", "2026-06"}:
+            continue
+        product_user = product_users_by_id[product_user_id]
+        segment = tenants_by_id[product_user["tenant_id"]]
+        key = (month, *segment)
+        may_june_counts[key] = may_june_counts.get(key, 0) + 1
+
+    may_total = sum(count for (month, *_), count in may_june_counts.items() if month == "2026-05")
+    june_total = sum(count for (month, *_), count in may_june_counts.items() if month == "2026-06")
+    assert may_total == 4000
+    assert june_total == 3440
+    assert may_june_counts[("2026-05", "APAC", "51-200")] == 800
+    assert may_june_counts[("2026-06", "APAC", "51-200")] == 380
