@@ -23,6 +23,14 @@ classification, and identifier filters. The response returns a cited
 or contradictory evidence is returned as `inconclusive`, without a causal
 claim.
 
+Causal questions for Jira New MAU run through the deterministic experiment
+registry. The registered onboarding treatment/control design returns a
+`causal_estimate` only when its support checks, pre-approved
+`difference_in_means` estimator, diagnostics, assumptions, and human review
+pass. Failed support, unregistered or observational designs, and missing review
+return a descriptive result or reviewable analysis plan. All-user pre/post
+comparisons are always labelled descriptive.
+
 Canonical New MAU counts a New PEU only when at least one Visit is recorded for
 the same Product User, product, and calendar month as first paid enablement. A
 Visit to another product never qualifies the Product User. The deterministic
