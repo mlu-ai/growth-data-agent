@@ -57,16 +57,48 @@ class RecordingMetricFlowPlanner:
             metric_name=request.metric_name,
             sql="select 1 as jira_new_peu",
             parameters={},
+            where_constraints=request.where_constraints,
+            group_by_names=request.group_by_names,
         )
+
+
+def _driver_row(month: str, region: str, seat_tier: str, value: int) -> dict[str, object]:
+    return {
+        "metric_time__month": f"{month}-01",
+        "product_user__region": region,
+        "product_user__seat_tier": seat_tier,
+        "jira_new_peu": value,
+    }
 
 
 class RecordingPostgresExecutor:
     def __init__(self) -> None:
         self.plans = []
 
+    _driver_rows = [
+        _driver_row("2026-05", "APAC", "51-200", 800),
+        _driver_row("2026-06", "APAC", "51-200", 380),
+        _driver_row("2026-05", "Americas", "1-10", 1000),
+        _driver_row("2026-06", "Americas", "1-10", 940),
+        _driver_row("2026-05", "EMEA", "11-50", 700),
+        _driver_row("2026-06", "EMEA", "11-50", 680),
+        _driver_row("2026-05", "APAC", "1-10", 600),
+        _driver_row("2026-06", "APAC", "1-10", 580),
+        _driver_row("2026-05", "EMEA", "51-200", 500),
+        _driver_row("2026-06", "EMEA", "51-200", 480),
+        _driver_row("2026-05", "Americas", "51-200", 400),
+        _driver_row("2026-06", "Americas", "51-200", 380),
+    ]
+
     def execute(self, plan: PlannedMetricFlowQuery) -> int:
         self.plans.append(plan)
         return 1
+
+    def execute_rows(self, plan: PlannedMetricFlowQuery):
+        self.plans.append(plan)
+        if "product_user__region IN ('APAC')" in plan.where_constraints:
+            return [row for row in self._driver_rows if row["product_user__region"] == "APAC"]
+        return self._driver_rows
 
 
 @pytest.fixture

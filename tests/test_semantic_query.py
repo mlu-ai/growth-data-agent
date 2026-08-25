@@ -50,7 +50,16 @@ def test_apac_entitlement_is_passed_to_metricflow_before_postgres_execution(tmp_
         "product_user__region IN ('APAC')",
     )
     assert executor.plans == [
-        PlannedMetricFlowQuery("jira_new_peu", "select 1 as jira_new_peu", {})
+        PlannedMetricFlowQuery(
+            "jira_new_peu",
+            "select 1 as jira_new_peu",
+            {},
+            where_constraints=(
+                "product_user__product = 'Jira'",
+                "product_user__region IN ('APAC')",
+            ),
+            group_by_names=("product_user__product", "product_user__region"),
+        )
     ]
 
 
@@ -73,6 +82,38 @@ def test_stale_artifact_does_not_plan_or_execute_a_query(tmp_path: Path) -> None
     assert freshness.is_current is False
     assert planner.requests == []
     assert executor.plans == []
+
+
+def test_driver_decomposition_uses_only_approved_dimensions_and_apac_row_scope(
+    tmp_path: Path,
+) -> None:
+    gateway, planner, executor = _gateway(tmp_path)
+
+    definition, decomposition, evidence, freshness = gateway.driver_decomposition(
+        "jira_new_peu",
+        resolve_access_profile("apac_regional_manager"),
+        baseline_period="2026-05",
+        comparison_period="2026-06",
+    )
+
+    assert freshness.is_current is True
+    assert definition is not None
+    assert definition.semantic_version == "1.0.0"
+    assert evidence is not None
+    assert decomposition is not None
+    assert planner.requests[0].where_constraints == (
+        "product_user__product = 'Jira'",
+        "product_user__region IN ('APAC')",
+    )
+    assert planner.requests[0].group_by_names == (
+        "metric_time__month",
+        "product_user__region",
+        "product_user__seat_tier",
+    )
+    assert planner.requests[0].limit is None
+    assert evidence.constrained_regions == ["APAC"]
+    assert decomposition.approved_dimensions == ["Region", "Seat Tier"]
+    assert all(item.region == "APAC" for item in decomposition.contributions)
 
 
 def test_metricflow_planner_compiles_the_validated_semantic_manifest() -> None:

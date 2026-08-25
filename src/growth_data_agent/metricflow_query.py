@@ -28,11 +28,12 @@ class SemanticQueryExecutionError(RuntimeError):
 
 @dataclass(frozen=True)
 class MetricFlowQueryRequest:
-    """The only query shape this delivery permits: one aggregate, no group-by."""
+    """An approved aggregate shape compiled exclusively by MetricFlow."""
 
     metric_name: str
     where_constraints: tuple[str, ...]
     group_by_names: tuple[str, ...]
+    limit: int | None = 1
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,8 @@ class PlannedMetricFlowQuery:
     metric_name: str
     sql: str
     parameters: Mapping[str, object]
+    where_constraints: tuple[str, ...] = ()
+    group_by_names: tuple[str, ...] = ()
 
 
 class MetricFlowPlanner:
@@ -61,7 +64,7 @@ class MetricFlowPlanner:
                 metric_names=(request.metric_name,),
                 group_by_names=request.group_by_names,
                 where_constraints=request.where_constraints,
-                limit=1,
+                limit=request.limit,
             )
         )
         statement = explanation.sql_statement.without_descriptions
@@ -71,6 +74,8 @@ class MetricFlowPlanner:
             metric_name=request.metric_name,
             sql=statement.sql,
             parameters=statement.bind_parameter_set.param_dict,
+            where_constraints=request.where_constraints,
+            group_by_names=request.group_by_names,
         )
 
 
@@ -81,13 +86,17 @@ class PostgresMetricFlowExecutor:
         self.database_url = database_url
 
     def execute(self, plan: PlannedMetricFlowQuery) -> int:
+        return len(self.execute_rows(plan))
+
+    def execute_rows(self, plan: PlannedMetricFlowQuery) -> list[Mapping[str, object]]:
         if not _is_single_read_only_select(plan.sql):
             raise SemanticQueryExecutionError("Refusing to execute a non-read-only query plan.")
         with psycopg.connect(self.database_url) as connection:
             with connection.transaction():
                 connection.execute("SET TRANSACTION READ ONLY")
-                result = connection.execute(plan.sql, plan.parameters)
-                return len(result.fetchall())
+                with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
+                    cursor.execute(plan.sql, plan.parameters)
+                    return list(cursor.fetchall())
 
 
 class _PostgresPlanningClient:

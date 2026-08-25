@@ -6,7 +6,8 @@ this module only determines whether it is safe to describe as canonical.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -15,6 +16,8 @@ from pydantic import BaseModel, Field
 
 from .contracts import (
     CanonicalMetricDefinition,
+    DriverContribution,
+    DriverDecomposition,
     SemanticCitation,
     SemanticQueryEvidence,
     SourceFreshness,
@@ -58,6 +61,15 @@ class SemanticArtifactStore:
 
     def load(self) -> SemanticArtifact:
         return SemanticArtifact.model_validate_json(self.path.read_text())
+
+
+@dataclass(frozen=True)
+class ValidatedMetricQueryContext:
+    """The validated semantic inputs shared by all canonical metric queries."""
+
+    artifact: SemanticArtifact
+    metric: MetricArtifact
+    freshness: SourceFreshness
 
 
 class ValidatedMetricFlowGateway:
@@ -104,41 +116,15 @@ class ValidatedMetricFlowGateway:
         if metric is None:
             return None, freshness
 
-        return (
-            CanonicalMetricDefinition(
-                name=metric.name,
-                definition=metric.definition,
-                formula=metric.formula,
-                grain=metric.grain,
-                time_rule=metric.time_rule,
-                semantic_version=artifact.semantic_version,
-                citation=SemanticCitation(
-                    artifact_path=metric.citation_path,
-                    metric_name=metric.name,
-                    model_name=metric.model_name,
-                ),
-            ),
-            freshness,
-        )
+        return self._canonical_definition(metric, artifact), freshness
 
     def execute_scoped_metric(
         self, metric_name: str, access_profile: AccessProfile
     ) -> tuple[SemanticQueryEvidence | None, SourceFreshness]:
         """Plan and execute one entitlement-constrained aggregate after validation."""
-        artifact = self.artifact_store.load()
-        freshness = self.freshness(artifact)
-        metric = next((item for item in artifact.metrics if item.name == metric_name), None)
-        if not freshness.is_current or metric is None:
+        context, freshness = self._validated_metric_query_context(metric_name)
+        if context is None:
             return None, freshness
-        if self.metricflow_planner is None or self.postgres_executor is None:
-            raise SemanticQueryExecutionError("Semantic query execution is not configured.")
-
-        semantic_manifest = self.metricflow_planner.semantic_manifest_path
-        actual_hash = sha256(semantic_manifest.read_bytes()).hexdigest()
-        if actual_hash != artifact.semantic_manifest_sha256:
-            raise SemanticQueryExecutionError(
-                "The semantic manifest does not match the validated artifact."
-            )
 
         constraints = access_profile.metricflow_where_constraints("Jira")
         group_by_names = ("product_user__product",)
@@ -153,13 +139,185 @@ class ValidatedMetricFlowGateway:
         )
         result_row_count = self.postgres_executor.execute(plan)
         return (
-            SemanticQueryEvidence(
-                metric_name=metric_name,
-                artifact_sha256=artifact.semantic_manifest_sha256,
-                constrained_products=["Jira"],
-                constrained_regions=list(access_profile.regions),
-                tenant_scope=access_profile.tenant_scope,
-                result_row_count=result_row_count,
-            ),
+            self._query_evidence(context, access_profile, result_row_count),
             freshness,
         )
+
+    def driver_decomposition(
+        self,
+        metric_name: str,
+        access_profile: AccessProfile,
+        *,
+        baseline_period: str,
+        comparison_period: str,
+    ) -> tuple[
+        CanonicalMetricDefinition | None,
+        DriverDecomposition | None,
+        SemanticQueryEvidence | None,
+        SourceFreshness,
+    ]:
+        """Reconcile approved dimensional aggregates from a validated MetricFlow query.
+
+        MetricFlow computes the canonical metric. This boundary only compares the
+        returned monthly aggregates; it never reconstructs the metric formula.
+        """
+        context, freshness = self._validated_metric_query_context(metric_name)
+        if context is None:
+            return None, None, None, freshness
+
+        plan = self.metricflow_planner.plan(
+            MetricFlowQueryRequest(
+                metric_name=metric_name,
+                where_constraints=access_profile.metricflow_where_constraints("Jira"),
+                group_by_names=(
+                    "metric_time__month",
+                    "product_user__region",
+                    "product_user__seat_tier",
+                ),
+                limit=None,
+            )
+        )
+        rows = self.postgres_executor.execute_rows(plan)
+        decomposition = _reconcile_driver_rows(
+            rows,
+            metric_name=metric_name,
+            baseline_period=baseline_period,
+            comparison_period=comparison_period,
+        )
+        return (
+            self._canonical_definition(context.metric, context.artifact),
+            decomposition,
+            self._query_evidence(context, access_profile, len(rows)),
+            freshness,
+        )
+
+    def _validated_metric_query_context(
+        self, metric_name: str
+    ) -> tuple[ValidatedMetricQueryContext | None, SourceFreshness]:
+        """Authorize canonical querying from one current, hash-matched semantic artifact."""
+        artifact = self.artifact_store.load()
+        freshness = self.freshness(artifact)
+        metric = next((item for item in artifact.metrics if item.name == metric_name), None)
+        if not freshness.is_current or metric is None:
+            return None, freshness
+        if self.metricflow_planner is None or self.postgres_executor is None:
+            raise SemanticQueryExecutionError("Semantic query execution is not configured.")
+
+        semantic_manifest = self.metricflow_planner.semantic_manifest_path
+        actual_hash = sha256(semantic_manifest.read_bytes()).hexdigest()
+        if actual_hash != artifact.semantic_manifest_sha256:
+            raise SemanticQueryExecutionError(
+                "The semantic manifest does not match the validated artifact."
+            )
+        return ValidatedMetricQueryContext(artifact, metric, freshness), freshness
+
+    @staticmethod
+    def _canonical_definition(
+        metric: MetricArtifact, artifact: SemanticArtifact
+    ) -> CanonicalMetricDefinition:
+        return CanonicalMetricDefinition(
+            name=metric.name,
+            definition=metric.definition,
+            formula=metric.formula,
+            grain=metric.grain,
+            time_rule=metric.time_rule,
+            semantic_version=artifact.semantic_version,
+            citation=SemanticCitation(
+                artifact_path=metric.citation_path,
+                metric_name=metric.name,
+                model_name=metric.model_name,
+            ),
+        )
+
+    @staticmethod
+    def _query_evidence(
+        context: ValidatedMetricQueryContext,
+        access_profile: AccessProfile,
+        result_row_count: int,
+    ) -> SemanticQueryEvidence:
+        return SemanticQueryEvidence(
+            metric_name=context.metric.name,
+            artifact_sha256=context.artifact.semantic_manifest_sha256,
+            constrained_products=["Jira"],
+            constrained_regions=list(access_profile.regions),
+            tenant_scope=access_profile.tenant_scope,
+            result_row_count=result_row_count,
+        )
+
+
+def _reconcile_driver_rows(
+    rows: list[Mapping[str, object]],
+    *,
+    metric_name: str,
+    baseline_period: str,
+    comparison_period: str,
+) -> DriverDecomposition:
+    by_segment: dict[tuple[str, str], dict[str, int]] = {}
+    for row in rows:
+        period = _month_label(row["metric_time__month"])
+        if period not in (baseline_period, comparison_period):
+            continue
+        segment = (str(row["product_user__region"]), str(row["product_user__seat_tier"]))
+        by_segment.setdefault(segment, {})[period] = int(row[metric_name])
+
+    contributions = [
+        _driver_contribution(segment, values, baseline_period, comparison_period)
+        for segment, values in by_segment.items()
+    ]
+    contributions.sort(
+        key=lambda item: (-item.contribution_to_decline, item.region, item.seat_tier)
+    )
+    baseline_value = sum(item.baseline_value for item in contributions)
+    comparison_value = sum(item.comparison_value for item in contributions)
+    net_change = comparison_value - baseline_value
+    decline = max(-net_change, 0)
+    if decline:
+        contributions = [
+            item.model_copy(
+                update={
+                    "percentage_of_decline": round(
+                        item.contribution_to_decline / decline * 100,
+                        2,
+                    )
+                }
+            )
+            for item in contributions
+        ]
+    reconciled_change = sum(item.change for item in contributions)
+    return DriverDecomposition(
+        metric_name=metric_name,
+        baseline_period=baseline_period,
+        comparison_period=comparison_period,
+        baseline_value=baseline_value,
+        comparison_value=comparison_value,
+        net_change=net_change,
+        decline=decline,
+        contributions=contributions,
+        reconciled_change=reconciled_change,
+        residual=net_change - reconciled_change,
+        approved_dimensions=["Region", "Seat Tier"],
+    )
+
+
+def _driver_contribution(
+    segment: tuple[str, str],
+    values: Mapping[str, int],
+    baseline_period: str,
+    comparison_period: str,
+) -> DriverContribution:
+    baseline_value = values.get(baseline_period, 0)
+    comparison_value = values.get(comparison_period, 0)
+    change = comparison_value - baseline_value
+    return DriverContribution(
+        region=segment[0],
+        seat_tier=segment[1],
+        baseline_value=baseline_value,
+        comparison_value=comparison_value,
+        change=change,
+        contribution_to_decline=max(-change, 0),
+        percentage_of_decline=0,
+    )
+
+
+def _month_label(value: object) -> str:
+    return str(value)[:7]
