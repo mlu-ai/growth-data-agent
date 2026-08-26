@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
@@ -183,6 +184,7 @@ def _gateway(tmp_path: Path) -> ValidatedMetricFlowGateway:
         SemanticArtifactStore(artifact_path),
         metricflow_planner=planner,
         postgres_executor=RecordingPostgresExecutor(),
+        now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
 
 

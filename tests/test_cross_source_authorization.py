@@ -44,6 +44,7 @@ def _client(
         SemanticArtifactStore(artifact_path),
         metricflow_planner=planner,
         postgres_executor=executor,
+        now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
     evidence_store = evidence_store or RecordingEvidenceStore()
     graph_store = graph_store or RecordingGraphStore()
