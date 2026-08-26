@@ -9,6 +9,9 @@ validation, and unsupported requests.
 Retrieval is scored independently from response wording. The retrieval fixture
 uses a human-labelled relevant document and computes recall@k, precision@k, and
 reciprocal rank before the governed-response fixtures are judged.
+Generation fixtures can opt into the `answer_faithfulness` evaluation category;
+their deterministic field, wording, and refusal assertions are linked to the
+governed trace in MLflow alongside the retrieval-quality metrics.
 
 After the local Postgres and dbt steps in `README.md` have completed, run:
 

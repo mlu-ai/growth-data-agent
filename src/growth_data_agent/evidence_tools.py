@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from .evidence import EvidenceAccessFilter, EvidenceDocument, VectorEvidenceStore
 from .graph import GraphAccessFilter, GraphPath
+from .observability import trace_span
 
 _MAX_EVIDENCE_TOOL_RESULTS = 3
 
@@ -47,11 +48,16 @@ class BoundedEvidenceInvestigationTools:
             metric_name,
             _MAX_EVIDENCE_TOOL_RESULTS,
         )
-        documents = self._evidence_store.retrieve(
-            query,
-            evidence_filter,
-            limit=_MAX_EVIDENCE_TOOL_RESULTS,
-        )
+        with trace_span(
+            "evidence_retrieval",
+            kind="tool",
+            attributes={"result_limit": _MAX_EVIDENCE_TOOL_RESULTS},
+        ):
+            documents = self._evidence_store.retrieve(
+                query,
+                evidence_filter,
+                limit=_MAX_EVIDENCE_TOOL_RESULTS,
+            )
         return EvidenceInvestigation(
             documents=[
                 document

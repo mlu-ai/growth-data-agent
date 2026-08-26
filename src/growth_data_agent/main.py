@@ -98,11 +98,27 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
             ) from error
         except EvidenceGraphUnavailableError as error:
             raise HTTPException(
-                status_code=503, detail="Evidence graph is unavailable."
+                status_code=503,
+                detail=(
+                    "Evidence graph is unavailable. "
+                    f"(trace_id={getattr(error, 'trace_id', 'unavailable')})"
+                ),
             ) from error
         except (OSError, ValidationError, SemanticQueryExecutionError) as error:
             raise HTTPException(
-                status_code=503, detail="Semantic artifact is unavailable."
+                status_code=503,
+                detail=(
+                    "Semantic artifact is unavailable. "
+                    f"(trace_id={getattr(error, 'trace_id', 'unavailable')})"
+                ),
+            ) from error
+        except Exception as error:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Governed dependency is unavailable. "
+                    f"(trace_id={getattr(error, 'trace_id', 'unavailable')})"
+                ),
             ) from error
 
     return app

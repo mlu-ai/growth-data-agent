@@ -39,7 +39,15 @@ from .metric_definition_gaps import (
     ProvisionalMetricInputGateway,
     ProvisionalMetricInputRequest,
 )
-from .observability import NoOpTraceSink, TraceRecord, TraceSink, policy_fingerprint
+from .observability import (
+    NoOpTraceSink,
+    TraceContext,
+    TraceRecord,
+    TraceSink,
+    capture_trace,
+    policy_fingerprint,
+    trace_span,
+)
 from .policy import (
     AccessDeniedError,
     UnknownAgentUserError,
@@ -108,13 +116,17 @@ class AnswerQuestionService:
         )
 
     def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
-        try:
-            response = self.execution_graph.answer_question(request)
-        except (AccessDeniedError, UnknownAgentUserError) as error:
-            error.trace_id = self._record_authorization_denial(request)
-            raise
-        self._record_trace(request, response)
-        return response
+        with capture_trace() as trace_context:
+            try:
+                response = self.execution_graph.answer_question(request)
+            except (AccessDeniedError, UnknownAgentUserError) as error:
+                error.trace_id = self._record_authorization_denial(request, trace_context)
+                raise
+            except Exception as error:
+                error.trace_id = self._record_dependency_failure(request, trace_context)
+                raise
+            self._record_trace(request, response, trace_context)
+            return response
 
     def _answer_legacy_question(
         self, authorized_execution: AuthorizedExecution
@@ -234,7 +246,7 @@ class AnswerQuestionService:
         metric_product = self._metric_product(metric_name)
         if metric_product is not None:
             access_profile.authorize_product(metric_product)
-        definition, freshness = self.semantic_gateway.canonical_definition(metric_name)
+        definition, freshness = self._semantic_canonical_definition(metric_name)
         if definition is None:
             if freshness.is_current:
                 return self._metric_definition_gap_response(
@@ -257,7 +269,7 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        query_evidence, freshness = self.semantic_gateway.execute_scoped_metric(
+        query_evidence, freshness = self._semantic_execute_scoped_metric(
             metric_name, access_profile
         )
         if query_evidence is None:
@@ -385,7 +397,7 @@ class AnswerQuestionService:
         metric_product = self._metric_product(metric_name)
         if metric_product is not None:
             authorized_execution.access_profile.authorize_product(metric_product)
-        definition, freshness = self.semantic_gateway.canonical_definition(metric_name)
+        definition, freshness = self._semantic_canonical_definition(metric_name)
         if definition is not None:
             return self._answer_canonical_definition(authorized_execution, intent)
         if not freshness.is_current:
@@ -432,6 +444,7 @@ class AnswerQuestionService:
         self,
         request: AnswerQuestionRequest,
         response: GovernedAnalyticalResponse,
+        trace_context: TraceContext,
     ) -> None:
         access_profile = resolve_access_profile(request.agent_user_id)
         source_versions: dict[str, str] = {}
@@ -494,6 +507,8 @@ class AnswerQuestionService:
                 else "not_evaluated"
             ),
             response=response.model_dump(mode="json"),
+            node_spans=trace_context.node_spans,
+            tool_spans=trace_context.tool_spans,
         )
         try:
             self.trace_sink.record(trace)
@@ -501,7 +516,9 @@ class AnswerQuestionService:
             # Observability must not turn a governed response into an outage.
             return
 
-    def _record_authorization_denial(self, request: AnswerQuestionRequest) -> str:
+    def _record_authorization_denial(
+        self, request: AnswerQuestionRequest, trace_context: TraceContext
+    ) -> str:
         try:
             access_profile = resolve_access_profile(request.agent_user_id)
             fingerprint = policy_fingerprint(access_profile)
@@ -539,6 +556,8 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "access_denied",
             },
+            node_spans=trace_context.node_spans,
+            tool_spans=trace_context.tool_spans,
         )
         try:
             self.trace_sink.record(trace)
@@ -546,11 +565,139 @@ class AnswerQuestionService:
             pass
         return trace.trace_id
 
+    def _record_dependency_failure(
+        self, request: AnswerQuestionRequest, trace_context: TraceContext
+    ) -> str:
+        trace_id = str(uuid4())
+        source_versions: dict[str, str] = {}
+        try:
+            artifact = self.semantic_gateway.artifact_store.load()
+            source_versions = {
+                "semantic_version": artifact.semantic_version,
+                "semantic_manifest_sha256": artifact.semantic_manifest_sha256,
+            }
+        except (OSError, ValueError):
+            source_versions["semantic_artifact"] = "unavailable"
+        trace = TraceRecord(
+            trace_id=trace_id,
+            request_route="answer_question",
+            response_classification="safe_refusal",
+            policy_fingerprint=self._policy_fingerprint_or_unknown(request),
+            source_versions=source_versions,
+            tool_outcomes={
+                span.name: "error" if span.status == "error" else "success"
+                for span in trace_context.tool_spans
+            },
+            retrieval_scores=(),
+            evaluation_outcome="not_evaluated",
+            response={
+                "result_classification": "safe_refusal",
+                "error_code": "dependency_unavailable",
+            },
+            node_spans=trace_context.node_spans,
+            tool_spans=trace_context.tool_spans,
+        )
+        try:
+            self.trace_sink.record(trace)
+        except Exception:
+            pass
+        return trace_id
+
+    def _policy_fingerprint_or_unknown(self, request: AnswerQuestionRequest) -> str:
+        try:
+            return policy_fingerprint(resolve_access_profile(request.agent_user_id))
+        except UnknownAgentUserError:
+            return "unknown-agent"
+
+    def _semantic_canonical_definition(self, metric_name: str):
+        with trace_span(
+            "semantic_definition",
+            kind="tool",
+            attributes={"metric_name": metric_name},
+        ):
+            return self.semantic_gateway.canonical_definition(metric_name)
+
+    def _semantic_execute_scoped_metric(
+        self, metric_name: str, access_profile, **scope_kwargs
+    ):
+        with trace_span(
+            "semantic_query",
+            kind="tool",
+            attributes={"metric_name": metric_name},
+        ):
+            return self.semantic_gateway.execute_scoped_metric(
+                metric_name, access_profile, **scope_kwargs
+            )
+
+    def _semantic_driver_decomposition(
+        self,
+        metric_name: str,
+        access_profile,
+        *,
+        baseline_period: str,
+        comparison_period: str,
+    ):
+        with trace_span(
+            "semantic_driver_decomposition",
+            kind="tool",
+            attributes={"metric_name": metric_name},
+        ):
+            return self.semantic_gateway.driver_decomposition(
+                metric_name,
+                access_profile,
+                baseline_period=baseline_period,
+                comparison_period=comparison_period,
+            )
+
+    def _retrieve_evidence(self, query: str, access_filter, *, limit: int):
+        with trace_span(
+            "evidence_retrieval",
+            kind="tool",
+            attributes={"result_limit": limit},
+        ):
+            return self.evidence_store.retrieve(query, access_filter, limit=limit)
+
+    def _catalog_get(self, entity_name: str):
+        with trace_span(
+            "catalog_lookup",
+            kind="tool",
+            attributes={"entity_name": entity_name},
+        ):
+            return self.catalog_store.get(entity_name)
+
+    def _causal_evaluate(self, experiment_id: str):
+        with trace_span(
+            "causal_evaluation",
+            kind="tool",
+            attributes={"experiment_id": experiment_id},
+        ):
+            return self.causal_pipeline.evaluate(experiment_id)
+
+    def _audit_direct_identifiers(
+        self,
+        *,
+        trace_id: str,
+        agent_user_id: str,
+        returned_count: int,
+        maximum_results: int,
+    ):
+        with trace_span(
+            "direct_identifier_audit",
+            kind="tool",
+            attributes={"returned_count": returned_count, "result_limit": maximum_results},
+        ):
+            return self.direct_identifier_audit_recorder.record(
+                trace_id=trace_id,
+                agent_user_id=agent_user_id,
+                returned_count=returned_count,
+                maximum_results=maximum_results,
+            )
+
     def _answer_metric_driver_decomposition(
         self, *, metric_name: str, scope, access_profile, trace_id: str
     ):
         definition, decomposition, query_evidence, freshness = (
-            self.semantic_gateway.driver_decomposition(
+            self._semantic_driver_decomposition(
                 metric_name,
                 access_profile,
                 baseline_period="2026-05",
@@ -641,7 +788,7 @@ class AnswerQuestionService:
                 detail="DataHub catalog is not configured.",
             )
         try:
-            metadata = self.catalog_store.get(entity_name)
+            metadata = self._catalog_get(entity_name)
         except DataHubCatalogUnavailableError as error:
             return self._catalog_limitation(
                 entity_name=entity_name,
@@ -730,7 +877,7 @@ class AnswerQuestionService:
             experiment_id = question_experiment_id
         else:
             experiment_id = request.experiment_id or question_experiment_id
-        evaluation = self.causal_pipeline.evaluate(experiment_id)
+        evaluation = self._causal_evaluate(experiment_id)
         if evaluation.registration is not None:
             for region in evaluation.registration.regions:
                 if evaluation.registration.seat_tier is None:
@@ -742,7 +889,7 @@ class AnswerQuestionService:
         definition = None
         query_evidence = None
         if evaluation.outcome == "causal_estimate":
-            definition, freshness = self.semantic_gateway.canonical_definition("jira_new_mau")
+            definition, freshness = self._semantic_canonical_definition("jira_new_mau")
             if definition is None:
                 return GovernedAnalyticalResponse(
                     answer=(
@@ -760,7 +907,7 @@ class AnswerQuestionService:
                     trace_id=trace_id,
                 )
 
-            query_evidence, freshness = self.semantic_gateway.execute_scoped_metric(
+            query_evidence, freshness = self._semantic_execute_scoped_metric(
                 "jira_new_mau",
                 access_profile,
                 scoped_regions=tuple(evaluation.registration.regions),
@@ -953,7 +1100,7 @@ class AnswerQuestionService:
         access_profile.authorize_product(metric_product)
         access_profile.authorize_region(region)
         definition, decomposition, query_evidence, freshness = (
-            self.semantic_gateway.driver_decomposition(
+            self._semantic_driver_decomposition(
                 metric_name,
                 access_profile,
                 baseline_period="2026-05",
@@ -1081,7 +1228,7 @@ class AnswerQuestionService:
         )
         documents = [
             document
-            for document in self.evidence_store.retrieve(
+            for document in self._retrieve_evidence(
                 f"{product} {region} direct identifiers",
                 access_filter,
                 limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
@@ -1093,7 +1240,7 @@ class AnswerQuestionService:
             documents=documents,
             access_profile=access_profile,
         )[:_DIRECT_IDENTIFIER_RESULT_LIMIT]
-        audit = self.direct_identifier_audit_recorder.record(
+        audit = self._audit_direct_identifiers(
             trace_id=trace_id,
             agent_user_id=request.agent_user_id,
             returned_count=len(identifiers),
@@ -1126,26 +1273,31 @@ class AnswerQuestionService:
         )
 
     def _traverse_graph(self, query, access_filter, *, limit: int, metric_name: str):
-        if isinstance(self.graph_store, ApacheAgeEvidenceGraphStore):
-            return self.graph_store.traverse(
+        with trace_span(
+            "graph_traversal",
+            kind="tool",
+            attributes={"result_limit": limit},
+        ):
+            if isinstance(self.graph_store, ApacheAgeEvidenceGraphStore):
+                return self.graph_store.traverse(
+                    query,
+                    access_filter,
+                    limit=limit,
+                    metric_name=metric_name,
+                )
+            if isinstance(self.graph_store, InMemoryEvidenceGraphStore):
+                return self.graph_store.traverse(
+                    query,
+                    access_filter,
+                    limit=limit,
+                    metric_name=metric_name,
+                )
+            paths = self.graph_store.traverse(
                 query,
                 access_filter,
                 limit=limit,
-                metric_name=metric_name,
             )
-        if isinstance(self.graph_store, InMemoryEvidenceGraphStore):
-            return self.graph_store.traverse(
-                query,
-                access_filter,
-                limit=limit,
-                metric_name=metric_name,
-            )
-        paths = self.graph_store.traverse(
-            query,
-            access_filter,
-            limit=limit,
-        )
-        return [path for path in paths if _path_matches_metric(path, metric_name)]
+            return [path for path in paths if _path_matches_metric(path, metric_name)]
 
     def _traverse_graph_for_evidence_tool(
         self, query: str, access_filter, metric_name: str, limit: int

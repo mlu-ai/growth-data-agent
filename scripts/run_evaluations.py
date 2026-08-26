@@ -221,7 +221,7 @@ def _record_evaluation_traces(
         trace_sink.record_evaluation(
             trace_id=result.trace_id,
             fixture_id=result.fixture_id,
-            category=result.category,
+            category=result.evaluation_category,
             model_name=model_name,
             passed=result.passed,
         )

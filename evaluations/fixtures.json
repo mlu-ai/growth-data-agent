@@ -4,6 +4,7 @@
     {
       "id": "definition",
       "category": "definition",
+      "evaluation_category": "answer_faithfulness",
       "request": {
         "agent_user_id": "data_analyst",
         "question": "What is Jira New PEU?"
@@ -22,6 +23,7 @@
     {
       "id": "driver-decomposition",
       "category": "driver_decomposition",
+      "evaluation_category": "answer_faithfulness",
       "request": {
         "agent_user_id": "data_analyst",
         "question": "Why did Jira New PEU fall from May to June?"
@@ -42,6 +44,7 @@
     {
       "id": "evidence-hypothesis",
       "category": "hypothesis",
+      "evaluation_category": "answer_faithfulness",
       "request": {
         "agent_user_id": "data_analyst",
         "question": "What evidence may explain the APAC 51–200-seat Tenant decline?"
