@@ -27,6 +27,7 @@ from .datahub import (
     DataHubCatalogUnavailableError,
 )
 from .evidence import QdrantEvidenceStore, VectorEvidenceStore, build_evidence_answer
+from .evidence_tools import BoundedEvidenceInvestigationTools
 from .execution import AuthorizedExecution, ExecutionGraph, RuleBasedIntentInterpreter
 from .graph import ApacheAgeEvidenceGraphStore, EvidenceGraphStore, InMemoryEvidenceGraphStore
 from .metric_definition_gaps import (
@@ -80,6 +81,10 @@ class AnswerQuestionService:
         )
         self.evidence_store = evidence_store or QdrantEvidenceStore(evidence_corpus())
         self.graph_store = graph_store or InMemoryEvidenceGraphStore(graph_corpus())
+        self.evidence_tools = BoundedEvidenceInvestigationTools(
+            self.evidence_store,
+            self._traverse_graph_for_evidence_tool,
+        )
         self.catalog_store = catalog_store
         self.direct_identifier_audit_recorder = (
             direct_identifier_audit_recorder or InMemoryDirectIdentifierAuditRecorder()
@@ -977,16 +982,6 @@ class AnswerQuestionService:
             region,
             seat_tier=segment_filter,
         )
-        graph_paths = [
-            path
-            for path in self._traverse_graph(
-                evidence_query,
-                graph_filter,
-                limit=3,
-                metric_name=metric_name,
-            )
-            if graph_filter.allows(path)
-        ][:3]
         access_filter = access_profile.evidence_filter(
             metric_product,
             region,
@@ -994,16 +989,13 @@ class AnswerQuestionService:
             metric_name=metric_name,
             agent_user_id=agent_user_id,
         )
-        documents = [
-            document
-            for document in self.evidence_store.retrieve(
-                evidence_query,
-                access_filter,
-                limit=3,
-            )
-            if access_filter.allows(document)
-        ]
-        evidence = build_evidence_answer(documents)
+        investigation = self.evidence_tools.investigate(
+            query=evidence_query,
+            evidence_filter=access_filter,
+            graph_filter=graph_filter,
+            metric_name=metric_name,
+        )
+        evidence = build_evidence_answer(investigation.documents)
         if evidence.support_status == EvidenceSupportStatus.SUPPORTS:
             classification = ResultClassification.HYPOTHESIS
             answer = supported_answer
@@ -1017,7 +1009,7 @@ class AnswerQuestionService:
             semantic_query_evidence=query_evidence,
             driver_decomposition=decomposition,
             evidence=evidence,
-            graph_paths=self._graph_path_citations(graph_paths),
+            graph_paths=self._graph_path_citations(investigation.graph_paths),
             source_freshness=freshness,
             effective_access_scope=scope,
             caveats=[
@@ -1154,6 +1146,14 @@ class AnswerQuestionService:
             limit=limit,
         )
         return [path for path in paths if _path_matches_metric(path, metric_name)]
+
+    def _traverse_graph_for_evidence_tool(self, query: str, access_filter, metric_name: str):
+        return self._traverse_graph(
+            query,
+            access_filter,
+            limit=3,
+            metric_name=metric_name,
+        )
 
     @staticmethod
     def _permitted_identifiers(*, graph_paths, documents, access_profile):
