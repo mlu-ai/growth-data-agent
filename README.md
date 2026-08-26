@@ -59,6 +59,18 @@ make evaluate
 make serve
 ```
 
+The governed local-model boundary is opt-in. To enable a small local Ollama
+model, set `OLLAMA_MODEL_NAME` (and optionally `OLLAMA_BASE_URL` or
+`OLLAMA_TIMEOUT_SECONDS`) before starting the service:
+
+```sh
+OLLAMA_MODEL_NAME=qwen3:8b make serve
+```
+
+Ollama receives only bounded intent input or redacted, already-authorized
+evidence citations. It cannot choose permissions, routes, tools, or SQL, and
+the deterministic interpreter remains the default when no model is configured.
+
 If port 5432 is already occupied, use the external-Postgres path below or set
 `POSTGRES_PORT` before starting Compose. Do not start both Postgres paths for
 the same run.

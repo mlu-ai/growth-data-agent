@@ -22,10 +22,17 @@ from growth_data_agent.evaluation import (
     load_fixture_catalog,
     record_baseline,
 )
-from growth_data_agent.local_model import OllamaLocalModel
+from growth_data_agent.local_model import (
+    OllamaBaselineModel,
+    build_local_model_baseline_context,
+)
 from growth_data_agent.main import create_app
 from growth_data_agent.metricflow_query import MetricFlowPlanner, PostgresMetricFlowExecutor
-from growth_data_agent.observability import MlflowTraceSink, TraceRecord, policy_fingerprint
+from growth_data_agent.observability import (
+    MlflowTraceSink,
+    TraceRecord,
+    policy_fingerprint,
+)
 from growth_data_agent.policy import resolve_access_profile
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
@@ -73,19 +80,19 @@ def main() -> int:
                 for result in generation_results
                 if result.fixture_id == fixture["id"]
             ),
-            "governed_context": json.dumps(
-                _stable_governed_context(governed_bodies[fixture["id"]]),
-                sort_keys=True,
+            "governed_context": build_local_model_baseline_context(
+                _stable_governed_context(governed_bodies[fixture["id"]])
             ),
         }
         for fixture in catalog["generation"]
     ]
+    local_model = OllamaBaselineModel(
+        model_name=model_name,
+        base_url=os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+    )
     model_results = evaluate_local_model_fixtures(
         model_fixtures,
-        OllamaLocalModel(
-            model_name=model_name,
-            base_url=os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-        ).generate,
+        lambda fixture: local_model.generate(fixture["governed_context"]),
     )
     report = build_evaluation_report(
         model_name=model_name,

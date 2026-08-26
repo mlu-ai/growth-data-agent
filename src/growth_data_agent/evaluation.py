@@ -11,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from .local_model import LocalModelUnavailable
+from .local_model import LocalModelOutputInvalid, LocalModelUnavailable
 from .observability import redact_identifiers
 
 _DEFAULT_FIXTURE_PATH = Path(__file__).resolve().parents[2] / "evaluations/fixtures.json"
@@ -228,6 +228,18 @@ def evaluate_local_model_fixtures(
                 LocalModelResult(
                     fixture_id=str(fixture["id"]),
                     status="unavailable",
+                    output_sha256=None,
+                    output_length=0,
+                    redacted_output="",
+                    trace_id=_fixture_trace_id(fixture),
+                )
+            )
+            continue
+        except LocalModelOutputInvalid:
+            results.append(
+                LocalModelResult(
+                    fixture_id=str(fixture["id"]),
+                    status="invalid",
                     output_sha256=None,
                     output_length=0,
                     redacted_output="",

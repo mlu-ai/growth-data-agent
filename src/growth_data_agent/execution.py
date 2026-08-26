@@ -17,6 +17,7 @@ from .contracts import (
     EffectiveAccessScope,
     GovernedAnalyticalResponse,
 )
+from .local_model import LocalModelError
 from .observability import trace_span
 from .policy import AccessProfile, resolve_access_profile
 
@@ -167,17 +168,17 @@ class ExecutionGraph:
             }
 
     def _interpret(self, state: _ExecutionState) -> dict[str, AnalyticalIntent]:
-        with trace_span("intent_interpretation", kind="node"):
-            proposed_intent = self._intent_interpreter.interpret(
-                state["authorized_execution"].request
-            )
-            if isinstance(proposed_intent, AnalyticalIntent):
-                proposed_intent = proposed_intent.model_dump(warnings=False)
-        with trace_span("intent_validation", kind="node"):
-            try:
+        try:
+            with trace_span("intent_interpretation", kind="node"):
+                proposed_intent = self._intent_interpreter.interpret(
+                    state["authorized_execution"].request
+                )
+                if isinstance(proposed_intent, AnalyticalIntent):
+                    proposed_intent = proposed_intent.model_dump(warnings=False)
+            with trace_span("intent_validation", kind="node"):
                 intent = AnalyticalIntent.model_validate(proposed_intent)
-            except ValidationError:
-                intent = AnalyticalIntent(route=AnalyticalRoute.CLARIFICATION)
+        except (LocalModelError, ValidationError):
+            intent = AnalyticalIntent(route=AnalyticalRoute.CLARIFICATION)
         return {"intent": intent}
 
     @staticmethod
