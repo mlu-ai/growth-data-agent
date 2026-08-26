@@ -1348,6 +1348,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "langgraph" },
     { name = "llama-index-core" },
+    { name = "llama-index-vector-stores-qdrant" },
     { name = "metricflow" },
     { name = "mlflow" },
     { name = "psycopg", extra = ["binary"] },
@@ -1371,6 +1372,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "langgraph", specifier = ">=1.0,<2" },
     { name = "llama-index-core", specifier = ">=0.12,<0.15" },
+    { name = "llama-index-vector-stores-qdrant", specifier = ">=0.6,<0.9" },
     { name = "metricflow", specifier = ">=0.212,<1" },
     { name = "mlflow", specifier = ">=2.17,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
@@ -1962,6 +1964,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4e/d0/671b23ccff255c9bce132a84ffd5a6f4541ceefdeab9c1786b08c9722f2e/llama_index_instrumentation-0.5.0.tar.gz", hash = "sha256:eeb724648b25d149de882a5ac9e21c5acb1ce780da214bda2b075341af29ad8e", size = 43831, upload-time = "2026-03-12T20:17:06.742Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c3/45/6dcaccef44e541ffa138e4b45e33e0d40ab2a7d845338483954fcf77bc75/llama_index_instrumentation-0.5.0-py3-none-any.whl", hash = "sha256:aaab83cddd9dd434278891012d8995f47a3bc7ed1736a371db90965348c56a21", size = 16444, upload-time = "2026-03-12T20:17:05.957Z" },
+]
+
+[[package]]
+name = "llama-index-vector-stores-qdrant"
+version = "0.8.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "llama-index-core" },
+    { name = "qdrant-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/03/5f/a0006f74554fff6313f6e3a89aa355233bb43d85889ca9b061726ae8fbaf/llama_index_vector_stores_qdrant-0.8.8.tar.gz", hash = "sha256:721a508e7bae9f6483f73124494764858a8024ca5aabe8947f240dbe8449d602", size = 14660, upload-time = "2025-11-19T00:49:33.546Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/40/8ce5b0c5799c6685272c91be1b29387bbe4b0988d1b5a8552d0e93cee459/llama_index_vector_stores_qdrant-0.8.8-py3-none-any.whl", hash = "sha256:1ce8c0ba3c0d69fd55963f8021e93b0eb9ce9b31a824a57a48c79d7ebf810c79", size = 14902, upload-time = "2025-11-19T00:49:32.449Z" },
 ]
 
 [[package]]
@@ -3604,7 +3620,7 @@ wheels = [
 
 [[package]]
 name = "qdrant-client"
-version = "1.19.0"
+version = "1.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
@@ -3616,9 +3632,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/33/c6e4ec45b4fca5a0b808e8804e60be54a6d7505b68b53c0b1d0d62ba86c1/qdrant_client-1.19.0.tar.gz", hash = "sha256:365395a04b0a26c309b25b7d8b1c99ef2071ec9a2b74bc8a5fd3b7a3642fe963", size = 350953, upload-time = "2026-08-04T14:32:56.923Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/8b/76c7d325e11d97cb8eb5e261c3759e9ed6664735afbf32fdded5b580690c/qdrant_client-1.15.1.tar.gz", hash = "sha256:631f1f3caebfad0fd0c1fba98f41be81d9962b7bf3ca653bed3b727c0e0cbe0e", size = 295297, upload-time = "2025-07-31T19:35:19.627Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fc/3c/480c61cc8d5a3e76bb44e86231f408c93643e5498beadbbeb381ab55d02b/qdrant_client-1.19.0-py3-none-any.whl", hash = "sha256:13602a2b3478a95ecdf42f97b93d7f703b63a3361cd912a04495a33a5ac14121", size = 396157, upload-time = "2026-08-04T14:32:55.734Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/33/d8df6a2b214ffbe4138db9a1efe3248f67dc3c671f82308bea1582ecbbb7/qdrant_client-1.15.1-py3-none-any.whl", hash = "sha256:2b975099b378382f6ca1cfb43f0d59e541be6e16a5892f282a4b8de7eff5cb63", size = 337331, upload-time = "2025-07-31T19:35:17.539Z" },
 ]
 
 [[package]]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import NAMESPACE_URL, uuid5
 
 from growth_data_agent.evidence import (
     EvidenceAccessFilter,
@@ -17,9 +18,11 @@ def test_synthetic_evidence_is_ingested_as_stable_llamaindex_nodes() -> None:
 
     assert len(store.nodes) == len(corpus)
     node = store.nodes[0]
-    assert node.node_id == "jira-apac-paid-provisioning-incident:chunk:0"
+    assert node.node_id == str(
+        uuid5(NAMESPACE_URL, "jira-apac-paid-provisioning-incident:chunk:0")
+    )
     assert node.metadata["source_document_id"] == "jira-apac-paid-provisioning-incident"
-    assert node.metadata["chunk_id"] == node.node_id
+    assert node.metadata["chunk_id"] == "jira-apac-paid-provisioning-incident:chunk:0"
     assert node.metadata["source_url"]
     assert node.metadata["source_revision"] == "synthetic-v1"
     assert node.metadata["freshness"] == "2026-06-13T00:00:00Z"
@@ -61,7 +64,6 @@ def test_expired_or_stale_policy_content_is_never_returned() -> None:
                     expires_at=datetime(2026, 8, 24, tzinfo=UTC),
                 )
             ],
-            "policy_expires_at": datetime(2026, 8, 24, tzinfo=UTC),
         }
     )
     store = QdrantEvidenceStore([expired])
@@ -75,6 +77,34 @@ def test_expired_or_stale_policy_content_is_never_returned() -> None:
     )
 
     assert store.retrieve("Jira APAC provisioning incident", access_filter, limit=3) == []
+    assert store.last_scores == ()
+
+
+def test_mixed_tenant_and_group_direct_policy_content_never_reaches_reranking() -> None:
+    document = evidence_corpus()[0].model_copy(
+        update={
+            "tenant_ids": ["tenant-0011", "tenant-0001"],
+            "access_groups": ["evidence-general"],
+            "direct_principal_grants": [
+                EvidencePrincipalGrant(
+                    principal_id="another_principal",
+                    expires_at=datetime(2099, 12, 31, tzinfo=UTC),
+                )
+            ],
+        }
+    )
+    store = QdrantEvidenceStore([document])
+    profile = resolve_access_profile("customer_success_manager")
+    access_filter = profile.evidence_filter(
+        "Jira",
+        "APAC",
+        metric_name="jira_new_peu",
+        agent_user_id="customer_success_manager",
+        as_of=datetime(2026, 8, 25, tzinfo=UTC),
+    )
+
+    assert store.retrieve("Jira APAC provisioning incident", access_filter, limit=3) == []
+    assert store.last_scores == ()
 
 
 def test_group_entitlement_is_required_without_per_user_vector_copies() -> None:

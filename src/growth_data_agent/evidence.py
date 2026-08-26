@@ -10,8 +10,11 @@ from datetime import UTC, date, datetime
 from hashlib import sha256
 from math import sqrt
 from typing import Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from llama_index.core.schema import TextNode
+from llama_index.core.vector_stores import VectorStoreQuery
+from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
 
@@ -205,24 +208,13 @@ class QdrantEvidenceStore:
         self._last_scores: ContextVar[tuple[float, ...]] = ContextVar(
             "growth_data_agent_last_retrieval_scores", default=()
         )
-        if not self._client.collection_exists(self._collection_name):
-            self._client.create_collection(
-                collection_name=self._collection_name,
-                vectors_config=models.VectorParams(
-                    size=_VECTOR_SIZE, distance=models.Distance.COSINE
-                ),
-            )
-        self._client.upsert(
+        self._vector_store = QdrantVectorStore(
+            client=self._client,
             collection_name=self._collection_name,
-            points=[
-                models.PointStruct(
-                    id=index,
-                    vector=_vectorize(f"{node.metadata['title']} {node.text}"),
-                    payload=node.metadata,
-                )
-                for index, node in enumerate(self._nodes, start=1)
-            ],
+            dense_config=models.VectorParams(size=_VECTOR_SIZE, distance=models.Distance.COSINE),
         )
+        if self._nodes:
+            self._vector_store.add(list(self._nodes))
 
     def retrieve(
         self,
@@ -236,20 +228,21 @@ class QdrantEvidenceStore:
         self._last_scores.set(())
         if not self._documents:
             return []
-        points = self._client.query_points(
-            collection_name=self._collection_name,
-            query=_vectorize(query),
-            query_filter=access_filter.as_qdrant_filter(),
-            limit=len(self._documents),
-            with_payload=True,
-        ).points
+        result = self._vector_store.query(
+            VectorStoreQuery(
+                query_embedding=_vectorize(query),
+                similarity_top_k=len(self._documents),
+            ),
+            qdrant_filters=access_filter.as_qdrant_filter(),
+        )
         candidates = [
             (
-                self._documents_by_id[str(point.payload["document_id"])],
-                float(point.score),
+                document,
+                float(score),
             )
-            for point in points
-            if point.payload is not None
+            for node, score in zip(result.nodes or [], result.similarities or [], strict=True)
+            if (document := self._documents_by_id[str(node.metadata["document_id"])])
+            and access_filter.allows(document)
         ]
         ranked = sorted(
             candidates,
@@ -360,7 +353,12 @@ def _evidence_node(document: EvidenceDocument) -> TextNode:
             ],
         }
     )
-    return TextNode(id_=chunk_id, text=document.text, metadata=metadata)
+    return TextNode(
+        id_=str(uuid5(NAMESPACE_URL, chunk_id)),
+        text=document.text,
+        metadata=metadata,
+        embedding=_vectorize(f"{document.title} {document.text}"),
+    )
 
 
 def _synthetic_source_url(document: EvidenceDocument) -> str:
