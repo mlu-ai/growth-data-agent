@@ -33,18 +33,14 @@ class RuleBasedIntentInterpreter:
         self,
         *,
         metric_name_resolver: Callable[[AnswerQuestionRequest], str | None],
-        is_canonical_definition_request: Callable[[AnswerQuestionRequest, str | None], bool],
+        route_resolver: Callable[[AnswerQuestionRequest, str | None], AnalyticalRoute],
     ) -> None:
         self._metric_name_resolver = metric_name_resolver
-        self._is_canonical_definition_request = is_canonical_definition_request
+        self._route_resolver = route_resolver
 
     def interpret(self, request: AnswerQuestionRequest) -> AnalyticalIntent:
         metric_name = self._metric_name_resolver(request)
-        route = (
-            AnalyticalRoute.CANONICAL_DEFINITION
-            if self._is_canonical_definition_request(request, metric_name)
-            else AnalyticalRoute.LEGACY
-        )
+        route = self._route_resolver(request, metric_name)
         return AnalyticalIntent(route=route, metric_name=metric_name)
 
 
@@ -64,6 +60,10 @@ CanonicalDefinitionHandler = Callable[
 ]
 LegacyHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
 ClarificationHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
+DriverDecompositionHandler = Callable[
+    [AuthorizedExecution, AnalyticalIntent], GovernedAnalyticalResponse
+]
+CausalAnalysisHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
 
 
 class _ExecutionState(TypedDict, total=False):
@@ -82,17 +82,23 @@ class ExecutionGraph:
         *,
         intent_interpreter: IntentInterpreter,
         canonical_definition_handler: CanonicalDefinitionHandler,
+        driver_decomposition_handler: DriverDecompositionHandler,
+        causal_analysis_handler: CausalAnalysisHandler,
         legacy_handler: LegacyHandler,
         clarification_handler: ClarificationHandler,
     ) -> None:
         self._intent_interpreter = intent_interpreter
         self._canonical_definition_handler = canonical_definition_handler
+        self._driver_decomposition_handler = driver_decomposition_handler
+        self._causal_analysis_handler = causal_analysis_handler
         self._legacy_handler = legacy_handler
         self._clarification_handler = clarification_handler
         graph = StateGraph(_ExecutionState)
         graph.add_node("authorize", self._authorize)
         graph.add_node("interpret", self._interpret)
         graph.add_node("canonical_definition", self._canonical_definition)
+        graph.add_node("driver_decomposition", self._driver_decomposition)
+        graph.add_node("causal_analysis", self._causal_analysis)
         graph.add_node("clarification", self._clarification)
         graph.add_node("legacy", self._legacy)
         graph.add_edge(START, "authorize")
@@ -103,10 +109,14 @@ class ExecutionGraph:
             {
                 AnalyticalRoute.CANONICAL_DEFINITION.value: "canonical_definition",
                 AnalyticalRoute.CLARIFICATION.value: "clarification",
+                AnalyticalRoute.DRIVER_DECOMPOSITION.value: "driver_decomposition",
+                AnalyticalRoute.CAUSAL_ANALYSIS.value: "causal_analysis",
                 AnalyticalRoute.LEGACY.value: "legacy",
             },
         )
         graph.add_edge("canonical_definition", END)
+        graph.add_edge("driver_decomposition", END)
+        graph.add_edge("causal_analysis", END)
         graph.add_edge("clarification", END)
         graph.add_edge("legacy", END)
         self._compiled = graph.compile()
@@ -158,6 +168,18 @@ class ExecutionGraph:
 
     def _legacy(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
         return {"response": self._legacy_handler(state["authorized_execution"])}
+
+    def _driver_decomposition(
+        self, state: _ExecutionState
+    ) -> dict[str, GovernedAnalyticalResponse]:
+        return {
+            "response": self._driver_decomposition_handler(
+                state["authorized_execution"], state["intent"]
+            )
+        }
+
+    def _causal_analysis(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
+        return {"response": self._causal_analysis_handler(state["authorized_execution"])}
 
     def _clarification(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
         return {"response": self._clarification_handler(state["authorized_execution"])}

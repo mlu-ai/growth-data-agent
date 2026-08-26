@@ -89,9 +89,11 @@ class AnswerQuestionService:
         self.execution_graph = execution_graph or ExecutionGraph(
             intent_interpreter=RuleBasedIntentInterpreter(
                 metric_name_resolver=self._requested_metric_name,
-                is_canonical_definition_request=self._is_canonical_definition_request,
+                route_resolver=self._route_for_intent,
             ),
             canonical_definition_handler=self._answer_canonical_definition,
+            driver_decomposition_handler=self._answer_driver_decomposition,
+            causal_analysis_handler=self._answer_causal_specialist,
             legacy_handler=self._answer_legacy_question,
             clarification_handler=self._answer_intent_clarification,
         )
@@ -296,6 +298,30 @@ class AnswerQuestionService:
             effective_access_scope=scope,
             caveats=caveats,
             trace_id=trace_id,
+        )
+
+    def _answer_driver_decomposition(
+        self, authorized_execution: AuthorizedExecution, intent: AnalyticalIntent
+    ) -> GovernedAnalyticalResponse:
+        metric_name = intent.metric_name
+        if metric_name is None:
+            raise ValueError("Driver-decomposition execution requires a metric name.")
+        return self._answer_metric_driver_decomposition(
+            metric_name=metric_name,
+            scope=authorized_execution.effective_scope,
+            access_profile=authorized_execution.access_profile,
+            trace_id=authorized_execution.trace_id,
+        )
+
+    def _answer_causal_specialist(
+        self, authorized_execution: AuthorizedExecution
+    ) -> GovernedAnalyticalResponse:
+        authorized_execution.access_profile.authorize_product("Jira")
+        return self._answer_causal_analysis(
+            request=authorized_execution.request,
+            scope=authorized_execution.effective_scope,
+            access_profile=authorized_execution.access_profile,
+            trace_id=authorized_execution.trace_id,
         )
 
     def _answer_intent_clarification(
@@ -1444,6 +1470,22 @@ class AnswerQuestionService:
         return metric_name is not None and not AnswerQuestionService._requires_specialist_dispatch(
             request, metric_name
         )
+
+    @staticmethod
+    def _route_for_intent(
+        request: AnswerQuestionRequest, metric_name: str | None
+    ) -> AnalyticalRoute:
+        if AnswerQuestionService._requests_causal_analysis(request):
+            return AnalyticalRoute.CAUSAL_ANALYSIS
+        if (
+            metric_name
+            in {"jira_new_peu", "confluence_new_peu", "jira_new_mau", "confluence_new_mau"}
+            and AnswerQuestionService._requests_may_to_june_driver_decomposition(request.question)
+        ):
+            return AnalyticalRoute.DRIVER_DECOMPOSITION
+        if AnswerQuestionService._is_canonical_definition_request(request, metric_name):
+            return AnalyticalRoute.CANONICAL_DEFINITION
+        return AnalyticalRoute.LEGACY
 
     @staticmethod
     def _requires_specialist_dispatch(
