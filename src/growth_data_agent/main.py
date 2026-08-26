@@ -16,6 +16,7 @@ from .graph import (
     PsycopgAgeGraphQueryExecutor,
     apache_age_preloaded_from_environment,
 )
+from .local_model import OllamaLocalModel
 from .metricflow_query import (
     MetricFlowPlanner,
     PostgresMetricFlowExecutor,
@@ -35,6 +36,7 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
     app = FastAPI(title="Growth Data Agent", version="0.1.0")
     datahub_gms_url = os.environ.get("DATAHUB_GMS_URL")
     age_database_url = os.environ.get("APACHE_AGE_DATABASE_URL")
+    local_model = None if service is not None else OllamaLocalModel.from_environment()
     app.state.answer_service = service or AnswerQuestionService(
         ValidatedMetricFlowGateway(
             SemanticArtifactStore(
@@ -74,6 +76,7 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
             else None
         ),
         trace_sink=MlflowTraceSink.from_environment(),
+        local_model=local_model,
     )
 
     @app.get("/health")

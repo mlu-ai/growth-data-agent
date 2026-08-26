@@ -28,8 +28,21 @@ from .datahub import (
 )
 from .evidence import QdrantEvidenceStore, VectorEvidenceStore, build_evidence_answer
 from .evidence_tools import BoundedEvidenceInvestigationTools
-from .execution import AuthorizedExecution, ExecutionGraph, RuleBasedIntentInterpreter
+from .execution import (
+    AuthorizedExecution,
+    ExecutionGraph,
+    IntentInterpreter,
+    RuleBasedIntentInterpreter,
+)
 from .graph import ApacheAgeEvidenceGraphStore, EvidenceGraphStore, InMemoryEvidenceGraphStore
+from .local_model import (
+    EvidenceDraftingAdapter,
+    LocalModelError,
+    LocalModelEvidenceDraftingAdapter,
+    LocalModelIntentInterpreter,
+    LocalModelTransport,
+    validate_local_model_draft,
+)
 from .metric_definition_gaps import (
     DataTeamVerificationRequestRecorder,
     InMemoryDataTeamVerificationRequestRecorder,
@@ -76,6 +89,9 @@ class AnswerQuestionService:
         causal_pipeline: CausalAnalysisPipeline | None = None,
         trace_sink: TraceSink | None = None,
         execution_graph: ExecutionGraph | None = None,
+        local_model: LocalModelTransport | None = None,
+        intent_interpreter: IntentInterpreter | None = None,
+        evidence_drafting_adapter: EvidenceDraftingAdapter | None = None,
     ):
         self.semantic_gateway = semantic_gateway
         self.provisional_metric_calculator = (
@@ -99,11 +115,24 @@ class AnswerQuestionService:
         )
         self.causal_pipeline = causal_pipeline or default_causal_pipeline()
         self.trace_sink = trace_sink or NoOpTraceSink()
-        self.execution_graph = execution_graph or ExecutionGraph(
-            intent_interpreter=RuleBasedIntentInterpreter(
+        self.evidence_drafting_adapter = evidence_drafting_adapter or (
+            LocalModelEvidenceDraftingAdapter(local_model) if local_model is not None else None
+        )
+        if intent_interpreter is not None:
+            configured_intent_interpreter = intent_interpreter
+        elif local_model is not None:
+            configured_intent_interpreter = LocalModelIntentInterpreter(
+                local_model,
                 metric_name_resolver=self._requested_metric_name,
                 route_resolver=self._route_for_intent,
-            ),
+            )
+        else:
+            configured_intent_interpreter = RuleBasedIntentInterpreter(
+                metric_name_resolver=self._requested_metric_name,
+                route_resolver=self._route_for_intent,
+            )
+        self.execution_graph = execution_graph or ExecutionGraph(
+            intent_interpreter=configured_intent_interpreter,
             canonical_definition_handler=self._answer_canonical_definition,
             driver_decomposition_handler=self._answer_driver_decomposition,
             causal_analysis_handler=self._answer_causal_specialist,
@@ -119,6 +148,7 @@ class AnswerQuestionService:
         with capture_trace() as trace_context:
             try:
                 response = self.execution_graph.answer_question(request)
+                response = self._draft_evidence_response(response)
             except (AccessDeniedError, UnknownAgentUserError) as error:
                 error.trace_id = self._record_authorization_denial(request, trace_context)
                 raise
@@ -127,6 +157,34 @@ class AnswerQuestionService:
                 raise
             self._record_trace(request, response, trace_context)
             return response
+
+    def _draft_evidence_response(
+        self, response: GovernedAnalyticalResponse
+    ) -> GovernedAnalyticalResponse:
+        """Let an optional model rewrite only prose backed by safe citations."""
+        if self.evidence_drafting_adapter is None or response.evidence is None:
+            return response
+        if not response.evidence.citations:
+            return response
+        try:
+            draft = self.evidence_drafting_adapter.draft(response)
+            draft = validate_local_model_draft(response, draft)
+        except LocalModelError:
+            return GovernedAnalyticalResponse(
+                answer=(
+                    "The governed evidence response was withheld because the configured local "
+                    "drafting model output could not be validated."
+                ),
+                result_classification=ResultClassification.LIMITATION,
+                source_freshness=response.source_freshness,
+                effective_access_scope=response.effective_access_scope,
+                caveats=[
+                    "The local model failed closed; no model-generated prose or additional "
+                    "evidence was returned."
+                ],
+                trace_id=response.trace_id,
+            )
+        return response.model_copy(update={"answer": draft.answer})
 
     def _answer_legacy_question(
         self, authorized_execution: AuthorizedExecution
