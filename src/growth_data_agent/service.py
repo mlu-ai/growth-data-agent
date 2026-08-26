@@ -168,6 +168,7 @@ class AnswerQuestionService:
                 scope=scope,
                 access_profile=access_profile,
                 trace_id=trace_id,
+                agent_user_id=request.agent_user_id,
             )
 
         if metric_name == "confluence_new_peu" and self._requests_confluence_campaign_evidence(
@@ -177,6 +178,7 @@ class AnswerQuestionService:
                 scope=scope,
                 access_profile=access_profile,
                 trace_id=trace_id,
+                agent_user_id=request.agent_user_id,
             )
 
         if metric_name == "confluence_new_mau" and self._requests_confluence_emea_regression(
@@ -186,6 +188,7 @@ class AnswerQuestionService:
                 scope=scope,
                 access_profile=access_profile,
                 trace_id=trace_id,
+                agent_user_id=request.agent_user_id,
             )
 
         if metric_name in {
@@ -851,7 +854,9 @@ class AnswerQuestionService:
             trace_id=trace_id,
         )
 
-    def _answer_apac_decline_evidence(self, *, scope, access_profile, trace_id: str):
+    def _answer_apac_decline_evidence(
+        self, *, scope, access_profile, trace_id: str, agent_user_id: str
+    ):
         return self._answer_segment_evidence(
             metric_name="jira_new_peu",
             region="APAC",
@@ -859,6 +864,7 @@ class AnswerQuestionService:
             scope=scope,
             access_profile=access_profile,
             trace_id=trace_id,
+            agent_user_id=agent_user_id,
             evidence_query="Jira APAC 51-200 paid provisioning June 2026 decline",
             supported_answer=(
                 "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
@@ -871,7 +877,9 @@ class AnswerQuestionService:
             ),
         )
 
-    def _answer_confluence_campaign_evidence(self, *, scope, access_profile, trace_id: str):
+    def _answer_confluence_campaign_evidence(
+        self, *, scope, access_profile, trace_id: str, agent_user_id: str
+    ):
         return self._answer_segment_evidence(
             metric_name="confluence_new_peu",
             region="Americas",
@@ -879,6 +887,7 @@ class AnswerQuestionService:
             scope=scope,
             access_profile=access_profile,
             trace_id=trace_id,
+            agent_user_id=agent_user_id,
             evidence_query=(
                 "Confluence Americas 11-50 acquisition campaign June 2026 New PEU movement"
             ),
@@ -895,7 +904,7 @@ class AnswerQuestionService:
         )
 
     def _answer_confluence_emea_regression_evidence(
-        self, *, scope, access_profile, trace_id: str
+        self, *, scope, access_profile, trace_id: str, agent_user_id: str
     ):
         return self._answer_segment_evidence(
             metric_name="confluence_new_mau",
@@ -904,6 +913,7 @@ class AnswerQuestionService:
             scope=scope,
             access_profile=access_profile,
             trace_id=trace_id,
+            agent_user_id=agent_user_id,
             evidence_query=(
                 "Confluence EMEA 51-200 onboarding-email regression June 2026 New MAU decline"
             ),
@@ -928,6 +938,7 @@ class AnswerQuestionService:
         scope,
         access_profile,
         trace_id: str,
+        agent_user_id: str,
         evidence_query: str,
         supported_answer: str,
         inconclusive_answer: str,
@@ -981,6 +992,7 @@ class AnswerQuestionService:
             region,
             seat_tier=seat_tier if scope_evidence_to_seat_tier else None,
             metric_name=metric_name,
+            agent_user_id=agent_user_id,
         )
         documents = [
             document
@@ -1073,6 +1085,7 @@ class AnswerQuestionService:
             product,
             region,
             metric_name="confluence_new_peu" if product == "Confluence" else "jira_new_peu",
+            agent_user_id=request.agent_user_id,
         )
         documents = [
             document
