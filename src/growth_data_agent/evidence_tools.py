@@ -10,7 +10,7 @@ from .graph import GraphAccessFilter, GraphPath
 
 _MAX_EVIDENCE_TOOL_RESULTS = 3
 
-GraphTraversalTool = Callable[[str, GraphAccessFilter, str], list[GraphPath]]
+GraphTraversalTool = Callable[[str, GraphAccessFilter, str, int], list[GraphPath]]
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,12 @@ class BoundedEvidenceInvestigationTools:
         metric_name: str,
     ) -> EvidenceInvestigation:
         """Pass policy to each tool before it retrieves candidates or graph paths."""
-        graph_paths = self._graph_traversal_tool(query, graph_filter, metric_name)
+        graph_paths = self._graph_traversal_tool(
+            query,
+            graph_filter,
+            metric_name,
+            _MAX_EVIDENCE_TOOL_RESULTS,
+        )
         documents = self._evidence_store.retrieve(
             query,
             evidence_filter,

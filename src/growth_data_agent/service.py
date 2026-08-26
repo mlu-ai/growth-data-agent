@@ -1147,11 +1147,13 @@ class AnswerQuestionService:
         )
         return [path for path in paths if _path_matches_metric(path, metric_name)]
 
-    def _traverse_graph_for_evidence_tool(self, query: str, access_filter, metric_name: str):
+    def _traverse_graph_for_evidence_tool(
+        self, query: str, access_filter, metric_name: str, limit: int
+    ):
         return self._traverse_graph(
             query,
             access_filter,
-            limit=3,
+            limit=limit,
             metric_name=metric_name,
         )
 

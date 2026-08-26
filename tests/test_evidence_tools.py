@@ -22,6 +22,7 @@ def test_investigation_passes_policy_before_each_registered_tool_and_bounds_resu
     path = graph_corpus()[0]
     evidence_store = RecordingEvidenceStore()
     received_graph_filters: list[GraphAccessFilter] = []
+    received_graph_limits: list[int] = []
     evidence_filter = EvidenceAccessFilter(
         products=(document.product,),
         regions=(document.region,),
@@ -37,10 +38,15 @@ def test_investigation_passes_policy_before_each_registered_tool_and_bounds_resu
         classifications=("internal",),
         identifier_entitlements=("none",),
     )
+
+    def traverse(query, access_filter, metric_name, limit):
+        received_graph_filters.append(access_filter)
+        received_graph_limits.append(limit)
+        return [path] * 4
+
     tools = BoundedEvidenceInvestigationTools(
         evidence_store,
-        lambda query, access_filter, metric_name: received_graph_filters.append(access_filter)
-        or [path] * 4,
+        traverse,
     )
 
     investigation = tools.investigate(
@@ -53,5 +59,6 @@ def test_investigation_passes_policy_before_each_registered_tool_and_bounds_resu
     assert evidence_store.access_filter is evidence_filter
     assert evidence_store.limit == 3
     assert received_graph_filters == [graph_filter]
+    assert received_graph_limits == [3]
     assert len(investigation.documents) <= 3
     assert len(investigation.graph_paths) == 3
