@@ -14,6 +14,7 @@ from .graph import (
     ApacheAgeEvidenceGraphStore,
     EvidenceGraphUnavailableError,
     PsycopgAgeGraphQueryExecutor,
+    apache_age_preloaded_from_environment,
 )
 from .metricflow_query import (
     MetricFlowPlanner,
@@ -66,6 +67,7 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
                 PsycopgAgeGraphQueryExecutor(
                     age_database_url,
                     graph_name=os.environ.get("APACHE_AGE_GRAPH_NAME", "growth_evidence"),
+                    age_preloaded=apache_age_preloaded_from_environment(),
                 )
             )
             if age_database_url

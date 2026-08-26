@@ -99,4 +99,16 @@ the deployed DataHub dbt recipe uses another identity.
 `make materialize-age` replaces the namespaced Apache AGE evidence index with bounded
 metric-to-segment-to-Tenant-to-incident-or-team chains derived from that validated
 artifact and the approved document-ingestion corpus. Configure `APACHE_AGE_DATABASE_URL`
-and optionally `APACHE_AGE_GRAPH_NAME` before running it.
+and optionally `APACHE_AGE_GRAPH_NAME` before running it. For the deliberately
+non-superuser application role, the dedicated database administrator must set
+`session_preload_libraries = 'age'` and grant `USAGE ON SCHEMA ag_catalog`, for
+example:
+
+```sql
+ALTER DATABASE growth_data_agent_poc SET session_preload_libraries = 'age';
+GRANT USAGE ON SCHEMA ag_catalog TO growth_data_agent_poc;
+```
+
+Set `APACHE_AGE_PRELOADED=true` for the application and materializer sessions. The
+adapter never elevates the role and reports an actionable configuration error when
+AGE is not preloaded or available.
