@@ -196,6 +196,10 @@ class EvidenceCitation(BaseModel):
     freshness: datetime
     support_status: EvidenceSupportStatus
     support_explanation: str
+    source_document_id: str
+    source_url: str
+    source_revision: str
+    chunk_id: str
 
 
 class EvidenceAnswer(BaseModel):

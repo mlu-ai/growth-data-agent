@@ -5,12 +5,16 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from hashlib import sha256
 from math import sqrt
 from typing import Protocol
+from uuid import NAMESPACE_URL, uuid5
 
+from llama_index.core.schema import TextNode
+from llama_index.core.vector_stores import VectorStoreQuery
+from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
 
@@ -24,6 +28,23 @@ from .contracts import (
 _VECTOR_SIZE = 32
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
+
+
+class EvidencePrincipalGrant(BaseModel):
+    """An opaque, expiring direct-principal grant held in source policy metadata."""
+
+    principal_id: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class EvidenceProvenance:
+    """Stable source and chunk identity shared by indexed nodes and citations."""
+
+    source_document_id: str
+    source_url: str
+    source_revision: str
+    chunk_id: str
 
 
 class EvidenceDocument(BaseModel):
@@ -45,6 +66,14 @@ class EvidenceDocument(BaseModel):
     support_explanation: str
     sensitive_identifiers: list[str] = Field(default_factory=list)
     accountable_team: str | None = None
+    source_document_id: str | None = None
+    source_url: str | None = None
+    source_revision: str = "synthetic-v1"
+    access_groups: list[str] = Field(default_factory=lambda: ["evidence-general"])
+    direct_principal_grants: list[EvidencePrincipalGrant] = Field(default_factory=list)
+    policy_expires_at: datetime = Field(
+        default_factory=lambda: datetime(2099, 12, 31, tzinfo=UTC)
+    )
 
 
 @dataclass(frozen=True)
@@ -59,10 +88,13 @@ class EvidenceAccessFilter:
     excluded_tenant_ids: tuple[str, ...] = ()
     seat_tiers: tuple[str, ...] = ()
     metric_names: tuple[str, ...] = ()
+    groups: tuple[str, ...] = ()
+    agent_user_id: str | None = None
+    as_of: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def allows(self, document: EvidenceDocument) -> bool:
         """Apply the same policy at the context boundary as a defensive second layer."""
-        return (
+        within_structured_scope = (
             document.product in self.products
             and document.region in self.regions
             and bool(document.tenant_ids)
@@ -70,6 +102,19 @@ class EvidenceAccessFilter:
             and document.classification in self.classifications
             and document.identifier_entitlement in self.identifier_entitlements
             and (not self.metric_names or document.metric_name in self.metric_names)
+        )
+        group_permitted = not self.groups or not document.access_groups or bool(
+            set(document.access_groups).intersection(self.groups)
+        )
+        direct_grant_permitted = not document.direct_principal_grants or any(
+            grant.principal_id == self.agent_user_id and grant.expires_at > self.as_of
+            for grant in document.direct_principal_grants
+        )
+        return (
+            within_structured_scope
+            and group_permitted
+            and direct_grant_permitted
+            and document.policy_expires_at > self.as_of
         )
 
     def as_qdrant_filter(self) -> models.Filter:
@@ -86,6 +131,10 @@ class EvidenceAccessFilter:
                 models.FieldCondition(
                     key="product",
                     match=models.MatchAny(any=list(self.products)),
+                ),
+                models.FieldCondition(
+                    key="policy_expires_at",
+                    range=models.DatetimeRange(gt=self.as_of),
                 ),
                 models.FieldCondition(
                     key="region",
@@ -115,6 +164,43 @@ class EvidenceAccessFilter:
                 ),
             ],
             must_not=must_not,
+            should=[
+                *(
+                    [
+                        models.FieldCondition(
+                            key="access_groups",
+                            match=models.MatchAny(any=list(self.groups)),
+                        )
+                    ]
+                    if self.groups
+                    else []
+                ),
+                *(
+                    [
+                        models.NestedCondition(
+                            nested=models.Nested(
+                                key="direct_principal_grants",
+                                filter=models.Filter(
+                                    must=[
+                                        models.FieldCondition(
+                                            key="principal_id",
+                                            match=models.MatchValue(
+                                                value=self.agent_user_id
+                                            ),
+                                        ),
+                                        models.FieldCondition(
+                                            key="expires_at",
+                                            range=models.DatetimeRange(gt=self.as_of),
+                                        ),
+                                    ]
+                                ),
+                            )
+                        )
+                    ]
+                    if self.agent_user_id
+                    else []
+                ),
+            ],
         )
 
 
@@ -129,7 +215,7 @@ class VectorEvidenceStore(Protocol):
 
 
 class QdrantEvidenceStore:
-    """Retrieve documents from Qdrant after applying the supplied payload filter."""
+    """Retrieve LlamaIndex evidence nodes from Qdrant after entitlement filtering."""
 
     def __init__(
         self,
@@ -140,30 +226,20 @@ class QdrantEvidenceStore:
     ):
         self._documents = tuple(documents)
         self._documents_by_id = {document.document_id: document for document in self._documents}
+        self._nodes = tuple(_evidence_node(document) for document in self._documents)
         self._client = client or QdrantClient(location=":memory:")
         self._collection_name = collection_name
         self.last_filter: EvidenceAccessFilter | None = None
         self._last_scores: ContextVar[tuple[float, ...]] = ContextVar(
             "growth_data_agent_last_retrieval_scores", default=()
         )
-        if not self._client.collection_exists(self._collection_name):
-            self._client.create_collection(
-                collection_name=self._collection_name,
-                vectors_config=models.VectorParams(
-                    size=_VECTOR_SIZE, distance=models.Distance.COSINE
-                ),
-            )
-        self._client.upsert(
+        self._vector_store = QdrantVectorStore(
+            client=self._client,
             collection_name=self._collection_name,
-            points=[
-                models.PointStruct(
-                    id=index,
-                    vector=_vectorize(f"{document.title} {document.text}"),
-                    payload=document.model_dump(mode="json"),
-                )
-                for index, document in enumerate(self._documents, start=1)
-            ],
+            dense_config=models.VectorParams(size=_VECTOR_SIZE, distance=models.Distance.COSINE),
         )
+        if self._nodes:
+            self._vector_store.add(list(self._nodes))
 
     def retrieve(
         self,
@@ -177,20 +253,21 @@ class QdrantEvidenceStore:
         self._last_scores.set(())
         if not self._documents:
             return []
-        points = self._client.query_points(
-            collection_name=self._collection_name,
-            query=_vectorize(query),
-            query_filter=access_filter.as_qdrant_filter(),
-            limit=len(self._documents),
-            with_payload=True,
-        ).points
+        result = self._vector_store.query(
+            VectorStoreQuery(
+                query_embedding=_vectorize(query),
+                similarity_top_k=len(self._documents),
+            ),
+            qdrant_filters=access_filter.as_qdrant_filter(),
+        )
         candidates = [
             (
-                self._documents_by_id[str(point.payload["document_id"])],
-                float(point.score),
+                document,
+                float(score),
             )
-            for point in points
-            if point.payload is not None
+            for node, score in zip(result.nodes or [], result.similarities or [], strict=True)
+            if (document := self._documents_by_id[str(node.metadata["document_id"])])
+            and access_filter.allows(document)
         ]
         ranked = sorted(
             candidates,
@@ -201,6 +278,11 @@ class QdrantEvidenceStore:
         )[:limit]
         self._last_scores.set(tuple(score for _, score in ranked))
         return [document for document, _ in ranked]
+
+    @property
+    def nodes(self) -> tuple[TextNode, ...]:
+        """Stable LlamaIndex nodes retained for ingestion and deterministic test inspection."""
+        return self._nodes
 
     @property
     def last_scores(self) -> tuple[float, ...]:
@@ -257,6 +339,7 @@ def build_evidence_answer(
 
 
 def _citation(document: EvidenceDocument) -> EvidenceCitation:
+    provenance = _provenance_for(document)
     return EvidenceCitation(
         document_id=_redact_identifiers(document.document_id),
         title=_redact_identifiers(document.title),
@@ -269,7 +352,46 @@ def _citation(document: EvidenceDocument) -> EvidenceCitation:
         freshness=document.freshness.astimezone(UTC),
         support_status=document.support_status,
         support_explanation=_redact_identifiers(document.support_explanation),
+        source_document_id=_redact_identifiers(provenance.source_document_id),
+        source_url=provenance.source_url,
+        source_revision=provenance.source_revision,
+        chunk_id=provenance.chunk_id,
     )
+
+
+def _evidence_node(document: EvidenceDocument) -> TextNode:
+    """Create one stable LlamaIndex chunk while preserving source and policy provenance."""
+    provenance = _provenance_for(document)
+    metadata = document.model_dump(mode="json")
+    metadata.update(
+        {
+            "document_id": document.document_id,
+            "source_document_id": provenance.source_document_id,
+            "source_url": provenance.source_url,
+            "source_revision": provenance.source_revision,
+            "chunk_id": provenance.chunk_id,
+            "chunk_index": 0,
+        }
+    )
+    return TextNode(
+        id_=str(uuid5(NAMESPACE_URL, provenance.chunk_id)),
+        text=document.text,
+        metadata=metadata,
+        embedding=_vectorize(f"{document.title} {document.text}"),
+    )
+
+
+def _provenance_for(document: EvidenceDocument) -> EvidenceProvenance:
+    return EvidenceProvenance(
+        source_document_id=document.source_document_id or document.document_id,
+        source_url=document.source_url or _synthetic_source_url(document),
+        source_revision=document.source_revision,
+        chunk_id=f"{document.document_id}:chunk:0",
+    )
+
+
+def _synthetic_source_url(document: EvidenceDocument) -> str:
+    return f"https://evidence.local/synthetic/{document.document_id}"
 
 
 def _redact_identifiers(value: str) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from .contracts import EffectiveAccessScope, ProvisionalMetricInput
 from .evidence import EvidenceAccessFilter
@@ -71,6 +72,7 @@ class AccessProfile:
         "tenant_id",
         "metric_month",
     )
+    evidence_groups: tuple[str, ...] = ("evidence-general",)
 
     def metricflow_where_constraints(
         self, metric_product: str, *, entity_name: str = "product_user"
@@ -134,6 +136,8 @@ class AccessProfile:
         *,
         seat_tier: str | None = None,
         metric_name: str | None = None,
+        agent_user_id: str | None = None,
+        as_of: datetime | None = None,
     ) -> EvidenceAccessFilter:
         """Derive every document filter before the vector store is queried."""
         if product not in self.products:
@@ -162,6 +166,9 @@ class AccessProfile:
             ),
             seat_tiers=(seat_tier,) if seat_tier is not None else (),
             metric_names=(metric_name,) if metric_name is not None else (),
+            groups=self.evidence_groups,
+            agent_user_id=agent_user_id,
+            as_of=as_of or datetime.now(UTC),
         )
 
     def graph_filter(
@@ -225,6 +232,7 @@ _PROFILES = {
         tenant_scope="all permitted Tenants",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
         permitted_tenant_ids=_ALL_TENANT_IDS,
+        evidence_groups=("evidence-general", "analytics-readers"),
     ),
     "apac_regional_manager": AccessProfile(
         products=("Jira", "Confluence"),
@@ -232,6 +240,7 @@ _PROFILES = {
         tenant_scope="APAC Tenants only",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
         permitted_tenant_ids=tenant_ids_for_region("APAC"),
+        evidence_groups=("evidence-general", "regional-managers"),
     ),
     "jira_product_manager": AccessProfile(
         products=("Jira",),
@@ -239,6 +248,7 @@ _PROFILES = {
         tenant_scope="All permitted Jira Tenants",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
         permitted_tenant_ids=_ALL_TENANT_IDS,
+        evidence_groups=("evidence-general", "product-managers"),
     ),
     "confluence_product_manager": AccessProfile(
         products=("Confluence",),
@@ -246,6 +256,7 @@ _PROFILES = {
         tenant_scope="All permitted Confluence Tenants",
         permitted_columns=_CANONICAL_DEFINITION_COLUMNS,
         permitted_tenant_ids=_ALL_TENANT_IDS,
+        evidence_groups=("evidence-general", "product-managers"),
     ),
     "customer_success_manager": AccessProfile(
         products=("Jira", "Confluence"),
@@ -260,6 +271,7 @@ _PROFILES = {
         permitted_classifications=("internal", "restricted"),
         permitted_identifiers=("tenant_id",),
         permitted_query_columns=("product", "region"),
+        evidence_groups=("evidence-general", "customer-success"),
     ),
 }
 

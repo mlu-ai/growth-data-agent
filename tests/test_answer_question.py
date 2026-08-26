@@ -96,11 +96,15 @@ def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClien
         "relevant_date": "2026-06-12",
         "freshness": "2026-06-13T00:00:00Z",
         "support_status": "supports",
-        "support_explanation": (
-            "The incident overlaps the APAC 51-200 Seat Tier Tenant scope and the June 2026 "
-            "decline period."
-        ),
-    }
+            "support_explanation": (
+                "The incident overlaps the APAC 51-200 Seat Tier Tenant scope and the June 2026 "
+                "decline period."
+            ),
+            "source_document_id": "jira-apac-paid-provisioning-incident",
+            "source_url": "https://evidence.local/synthetic/jira-apac-paid-provisioning-incident",
+            "source_revision": "synthetic-v1",
+            "chunk_id": "jira-apac-paid-provisioning-incident:chunk:0",
+        }
     citation_ids = [citation["document_id"] for citation in body["evidence"]["citations"]]
     assert citation_ids[0] == "jira-apac-paid-provisioning-incident"
     assert set(citation_ids[1:]) == {

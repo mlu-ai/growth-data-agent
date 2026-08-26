@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .contracts import EvidenceSupportStatus
 from .datahub import DataHubEntityMetadata
-from .evidence import EvidenceDocument
+from .evidence import EvidenceDocument, EvidencePrincipalGrant
 from .graph import DerivedEvidenceGraphBuilder, GraphPath
 from .policy import tenant_ids_for_segment
 
@@ -139,6 +139,13 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             ),
             sensitive_identifiers=["tenant-0011"],
             accountable_team="Jira Platform Provisioning Team",
+            access_groups=[],
+            direct_principal_grants=[
+                EvidencePrincipalGrant(
+                    principal_id="customer_success_manager",
+                    expires_at=datetime(2099, 12, 31, tzinfo=UTC),
+                )
+            ],
         ),
         EvidenceDocument(
             document_id="confluence-americas-acquisition-campaign",
@@ -230,6 +237,13 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             ),
             sensitive_identifiers=["tenant-0002"],
             accountable_team="Confluence Growth Acquisition Team",
+            access_groups=[],
+            direct_principal_grants=[
+                EvidencePrincipalGrant(
+                    principal_id="customer_success_manager",
+                    expires_at=datetime(2099, 12, 31, tzinfo=UTC),
+                )
+            ],
         ),
         EvidenceDocument(
             document_id="confluence-emea-onboarding-email-regression",
@@ -322,6 +336,13 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
             ),
             sensitive_identifiers=["tenant-0003"],
             accountable_team="Confluence Growth Activation Team",
+            access_groups=[],
+            direct_principal_grants=[
+                EvidencePrincipalGrant(
+                    principal_id="customer_success_manager",
+                    expires_at=datetime(2099, 12, 31, tzinfo=UTC),
+                )
+            ],
         ),
     )
 
