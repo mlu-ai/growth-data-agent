@@ -64,6 +64,12 @@ DriverDecompositionHandler = Callable[
     [AuthorizedExecution, AnalyticalIntent], GovernedAnalyticalResponse
 ]
 CausalAnalysisHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
+CatalogOwnershipHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
+DirectIdentifierHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
+LimitationHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
+MetricDefinitionGapHandler = Callable[
+    [AuthorizedExecution, AnalyticalIntent], GovernedAnalyticalResponse
+]
 
 
 class _ExecutionState(TypedDict, total=False):
@@ -84,6 +90,10 @@ class ExecutionGraph:
         canonical_definition_handler: CanonicalDefinitionHandler,
         driver_decomposition_handler: DriverDecompositionHandler,
         causal_analysis_handler: CausalAnalysisHandler,
+        catalog_ownership_handler: CatalogOwnershipHandler,
+        direct_identifier_handler: DirectIdentifierHandler,
+        limitation_handler: LimitationHandler,
+        metric_definition_gap_handler: MetricDefinitionGapHandler,
         legacy_handler: LegacyHandler,
         clarification_handler: ClarificationHandler,
     ) -> None:
@@ -91,6 +101,10 @@ class ExecutionGraph:
         self._canonical_definition_handler = canonical_definition_handler
         self._driver_decomposition_handler = driver_decomposition_handler
         self._causal_analysis_handler = causal_analysis_handler
+        self._catalog_ownership_handler = catalog_ownership_handler
+        self._direct_identifier_handler = direct_identifier_handler
+        self._limitation_handler = limitation_handler
+        self._metric_definition_gap_handler = metric_definition_gap_handler
         self._legacy_handler = legacy_handler
         self._clarification_handler = clarification_handler
         graph = StateGraph(_ExecutionState)
@@ -99,6 +113,10 @@ class ExecutionGraph:
         graph.add_node("canonical_definition", self._canonical_definition)
         graph.add_node("driver_decomposition", self._driver_decomposition)
         graph.add_node("causal_analysis", self._causal_analysis)
+        graph.add_node("catalog_ownership", self._catalog_ownership)
+        graph.add_node("direct_identifier", self._direct_identifier)
+        graph.add_node("limitation", self._limitation)
+        graph.add_node("metric_definition_gap", self._metric_definition_gap)
         graph.add_node("clarification", self._clarification)
         graph.add_node("legacy", self._legacy)
         graph.add_edge(START, "authorize")
@@ -111,12 +129,20 @@ class ExecutionGraph:
                 AnalyticalRoute.CLARIFICATION.value: "clarification",
                 AnalyticalRoute.DRIVER_DECOMPOSITION.value: "driver_decomposition",
                 AnalyticalRoute.CAUSAL_ANALYSIS.value: "causal_analysis",
+                AnalyticalRoute.CATALOG_OWNERSHIP.value: "catalog_ownership",
+                AnalyticalRoute.DIRECT_IDENTIFIER.value: "direct_identifier",
+                AnalyticalRoute.LIMITATION.value: "limitation",
+                AnalyticalRoute.METRIC_DEFINITION_GAP.value: "metric_definition_gap",
                 AnalyticalRoute.LEGACY.value: "legacy",
             },
         )
         graph.add_edge("canonical_definition", END)
         graph.add_edge("driver_decomposition", END)
         graph.add_edge("causal_analysis", END)
+        graph.add_edge("catalog_ownership", END)
+        graph.add_edge("direct_identifier", END)
+        graph.add_edge("limitation", END)
+        graph.add_edge("metric_definition_gap", END)
         graph.add_edge("clarification", END)
         graph.add_edge("legacy", END)
         self._compiled = graph.compile()
@@ -180,6 +206,24 @@ class ExecutionGraph:
 
     def _causal_analysis(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
         return {"response": self._causal_analysis_handler(state["authorized_execution"])}
+
+    def _catalog_ownership(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
+        return {"response": self._catalog_ownership_handler(state["authorized_execution"])}
+
+    def _direct_identifier(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
+        return {"response": self._direct_identifier_handler(state["authorized_execution"])}
+
+    def _limitation(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
+        return {"response": self._limitation_handler(state["authorized_execution"])}
+
+    def _metric_definition_gap(
+        self, state: _ExecutionState
+    ) -> dict[str, GovernedAnalyticalResponse]:
+        return {
+            "response": self._metric_definition_gap_handler(
+                state["authorized_execution"], state["intent"]
+            )
+        }
 
     def _clarification(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
         return {"response": self._clarification_handler(state["authorized_execution"])}

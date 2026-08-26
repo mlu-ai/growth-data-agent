@@ -32,6 +32,10 @@ class AnalyticalRoute(StrEnum):
     CLARIFICATION = "clarification"
     DRIVER_DECOMPOSITION = "driver_decomposition"
     CAUSAL_ANALYSIS = "causal_analysis"
+    CATALOG_OWNERSHIP = "catalog_ownership"
+    DIRECT_IDENTIFIER = "direct_identifier"
+    LIMITATION = "limitation"
+    METRIC_DEFINITION_GAP = "metric_definition_gap"
     LEGACY = "legacy"
 
 
