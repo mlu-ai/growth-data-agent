@@ -55,6 +55,7 @@ def test_generation_evaluation_checks_observable_governed_response_fields() -> N
 
     assert results[0].passed is True
     assert results[0].category == "definition"
+    assert results[0].evaluation_category == "governed_response"
     assert results[0].failures == ()
 
 
@@ -177,6 +178,10 @@ def test_fixture_catalog_covers_issue_6_contract() -> None:
     }
     assert catalog["retrieval"][0]["expected_first_document_id"] == (
         "jira-apac-paid-provisioning-incident"
+    )
+    assert any(
+        fixture.get("evaluation_category") == "answer_faithfulness"
+        for fixture in catalog["generation"]
     )
 
 

@@ -30,6 +30,7 @@ class FixtureResult:
     passed: bool
     failures: tuple[str, ...]
     trace_id: str | None = None
+    evaluation_category: str = "governed_response"
 
 
 @dataclass(frozen=True)
@@ -205,6 +206,9 @@ def evaluate_generation_fixtures(
                 passed=not failures,
                 failures=tuple(failures),
                 trace_id=_response_trace_id(response.body),
+                evaluation_category=str(
+                    fixture.get("evaluation_category", "governed_response")
+                ),
             )
         )
     return results
@@ -410,10 +414,13 @@ def load_fixture_catalog(path: Path | None = None) -> dict[str, Any]:
     missing_categories = required_categories - {
         str(fixture.get("category")) for fixture in generation
     }
-    if not generation or not retrieval or missing_categories:
+    missing_evaluation_categories = {"answer_faithfulness"} - {
+        str(fixture.get("evaluation_category")) for fixture in generation
+    }
+    if not generation or not retrieval or missing_categories or missing_evaluation_categories:
         raise ValueError(
             "Evaluation catalog must contain generation and retrieval fixtures plus categories: "
-            f"{sorted(missing_categories)}"
+            f"{sorted(missing_categories | missing_evaluation_categories)}"
         )
     return catalog
 

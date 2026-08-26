@@ -17,6 +17,7 @@ from .contracts import (
     EffectiveAccessScope,
     GovernedAnalyticalResponse,
 )
+from .observability import trace_span
 from .policy import AccessProfile, resolve_access_profile
 
 
@@ -153,29 +154,30 @@ class ExecutionGraph:
 
     @staticmethod
     def _authorize(state: _ExecutionState) -> dict[str, object]:
-        request = state["request"]
-        access_profile = resolve_access_profile(request.agent_user_id)
-        return {
-            "authorized_execution": AuthorizedExecution(
-                request=request,
-                access_profile=access_profile,
-                effective_scope=access_profile.as_effective_scope(),
-                trace_id=str(uuid4()),
-            ),
-        }
+        with trace_span("authorize", kind="node"):
+            request = state["request"]
+            access_profile = resolve_access_profile(request.agent_user_id)
+            return {
+                "authorized_execution": AuthorizedExecution(
+                    request=request,
+                    access_profile=access_profile,
+                    effective_scope=access_profile.as_effective_scope(),
+                    trace_id=str(uuid4()),
+                ),
+            }
 
     def _interpret(self, state: _ExecutionState) -> dict[str, AnalyticalIntent]:
-        try:
+        with trace_span("intent_interpretation", kind="node"):
             proposed_intent = self._intent_interpreter.interpret(
                 state["authorized_execution"].request
             )
             if isinstance(proposed_intent, AnalyticalIntent):
                 proposed_intent = proposed_intent.model_dump(warnings=False)
-            intent = AnalyticalIntent.model_validate(
-                proposed_intent
-            )
-        except ValidationError:
-            intent = AnalyticalIntent(route=AnalyticalRoute.CLARIFICATION)
+        with trace_span("intent_validation", kind="node"):
+            try:
+                intent = AnalyticalIntent.model_validate(proposed_intent)
+            except ValidationError:
+                intent = AnalyticalIntent(route=AnalyticalRoute.CLARIFICATION)
         return {"intent": intent}
 
     @staticmethod
@@ -185,45 +187,54 @@ class ExecutionGraph:
     def _canonical_definition(
         self, state: _ExecutionState
     ) -> dict[str, GovernedAnalyticalResponse]:
-        return {
-            "response": self._canonical_definition_handler(
-                state["authorized_execution"],
-                state["intent"],
-            )
-        }
+        with trace_span("canonical_definition", kind="node"):
+            return {
+                "response": self._canonical_definition_handler(
+                    state["authorized_execution"],
+                    state["intent"],
+                )
+            }
 
     def _legacy(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
-        return {"response": self._legacy_handler(state["authorized_execution"])}
+        with trace_span("legacy", kind="node"):
+            return {"response": self._legacy_handler(state["authorized_execution"])}
 
     def _driver_decomposition(
         self, state: _ExecutionState
     ) -> dict[str, GovernedAnalyticalResponse]:
-        return {
-            "response": self._driver_decomposition_handler(
-                state["authorized_execution"], state["intent"]
-            )
-        }
+        with trace_span("driver_decomposition", kind="node"):
+            return {
+                "response": self._driver_decomposition_handler(
+                    state["authorized_execution"], state["intent"]
+                )
+            }
 
     def _causal_analysis(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
-        return {"response": self._causal_analysis_handler(state["authorized_execution"])}
+        with trace_span("causal_analysis", kind="node"):
+            return {"response": self._causal_analysis_handler(state["authorized_execution"])}
 
     def _catalog_ownership(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
-        return {"response": self._catalog_ownership_handler(state["authorized_execution"])}
+        with trace_span("catalog_ownership", kind="node"):
+            return {"response": self._catalog_ownership_handler(state["authorized_execution"])}
 
     def _direct_identifier(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
-        return {"response": self._direct_identifier_handler(state["authorized_execution"])}
+        with trace_span("direct_identifier", kind="node"):
+            return {"response": self._direct_identifier_handler(state["authorized_execution"])}
 
     def _limitation(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
-        return {"response": self._limitation_handler(state["authorized_execution"])}
+        with trace_span("limitation", kind="node"):
+            return {"response": self._limitation_handler(state["authorized_execution"])}
 
     def _metric_definition_gap(
         self, state: _ExecutionState
     ) -> dict[str, GovernedAnalyticalResponse]:
-        return {
-            "response": self._metric_definition_gap_handler(
-                state["authorized_execution"], state["intent"]
-            )
-        }
+        with trace_span("metric_definition_gap", kind="node"):
+            return {
+                "response": self._metric_definition_gap_handler(
+                    state["authorized_execution"], state["intent"]
+                )
+            }
 
     def _clarification(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
-        return {"response": self._clarification_handler(state["authorized_execution"])}
+        with trace_span("clarification", kind="node"):
+            return {"response": self._clarification_handler(state["authorized_execution"])}
