@@ -16,9 +16,13 @@ class RecordingEvidenceStore:
     def __init__(self, documents: list[EvidenceDocument] | None = None) -> None:
         self.documents = documents or []
         self.calls = 0
+        self.last_filter = None
+        self.last_limit = None
 
     def retrieve(self, query, access_filter, *, limit):
         self.calls += 1
+        self.last_filter = access_filter
+        self.last_limit = limit
         return self.documents[:limit]
 
 
@@ -26,9 +30,13 @@ class RecordingGraphStore:
     def __init__(self, paths: list[GraphPath] | None = None) -> None:
         self.paths = paths or []
         self.calls = 0
+        self.last_filter = None
+        self.last_limit = None
 
     def traverse(self, query, access_filter: GraphAccessFilter, *, limit):
         self.calls += 1
+        self.last_filter = access_filter
+        self.last_limit = limit
         return self.paths[:limit]
 
 
@@ -75,6 +83,28 @@ def test_evidence_response_contains_only_authorized_graph_paths(client: TestClie
     assert all("APAC" in label for path in body["graph_paths"] for label in path["node_labels"])
     assert "Americas" not in response.text
     assert "EMEA" not in response.text
+
+
+def test_answer_question_invokes_each_bounded_evidence_tool_with_profile_policy(
+    tmp_path: Path,
+) -> None:
+    evidence_store = RecordingEvidenceStore(list(evidence_corpus()))
+    graph_store = RecordingGraphStore()
+    client, evidence_store, graph_store = _client(tmp_path, evidence_store, graph_store)
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "apac_regional_manager",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert evidence_store.calls == graph_store.calls == 1
+    assert evidence_store.last_limit == graph_store.last_limit == 3
+    assert evidence_store.last_filter.regions == graph_store.last_filter.regions == ("APAC",)
+    assert evidence_store.last_filter.tenant_ids == graph_store.last_filter.tenant_ids
 
 
 def test_apac_manager_cannot_expand_scope_through_broad_evidence_wording(
