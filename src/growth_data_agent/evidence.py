@@ -37,6 +37,16 @@ class EvidencePrincipalGrant(BaseModel):
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class EvidenceProvenance:
+    """Stable source and chunk identity shared by indexed nodes and citations."""
+
+    source_document_id: str
+    source_url: str
+    source_revision: str
+    chunk_id: str
+
+
 class EvidenceDocument(BaseModel):
     """A document and the metadata needed for pre-retrieval authorization."""
 
@@ -167,9 +177,24 @@ class EvidenceAccessFilter:
                 ),
                 *(
                     [
-                        models.FieldCondition(
-                            key="direct_principal_ids",
-                            match=models.MatchValue(value=self.agent_user_id),
+                        models.NestedCondition(
+                            nested=models.Nested(
+                                key="direct_principal_grants",
+                                filter=models.Filter(
+                                    must=[
+                                        models.FieldCondition(
+                                            key="principal_id",
+                                            match=models.MatchValue(
+                                                value=self.agent_user_id
+                                            ),
+                                        ),
+                                        models.FieldCondition(
+                                            key="expires_at",
+                                            range=models.DatetimeRange(gt=self.as_of),
+                                        ),
+                                    ]
+                                ),
+                            )
                         )
                     ]
                     if self.agent_user_id
@@ -314,6 +339,7 @@ def build_evidence_answer(
 
 
 def _citation(document: EvidenceDocument) -> EvidenceCitation:
+    provenance = _provenance_for(document)
     return EvidenceCitation(
         document_id=_redact_identifiers(document.document_id),
         title=_redact_identifiers(document.title),
@@ -326,38 +352,41 @@ def _citation(document: EvidenceDocument) -> EvidenceCitation:
         freshness=document.freshness.astimezone(UTC),
         support_status=document.support_status,
         support_explanation=_redact_identifiers(document.support_explanation),
-        source_document_id=_redact_identifiers(
-            document.source_document_id or document.document_id
-        ),
-        source_url=document.source_url or _synthetic_source_url(document),
-        source_revision=document.source_revision,
-        chunk_id=f"{document.document_id}:chunk:0",
+        source_document_id=_redact_identifiers(provenance.source_document_id),
+        source_url=provenance.source_url,
+        source_revision=provenance.source_revision,
+        chunk_id=provenance.chunk_id,
     )
 
 
 def _evidence_node(document: EvidenceDocument) -> TextNode:
     """Create one stable LlamaIndex chunk while preserving source and policy provenance."""
-    source_document_id = document.source_document_id or document.document_id
-    chunk_id = f"{document.document_id}:chunk:0"
+    provenance = _provenance_for(document)
     metadata = document.model_dump(mode="json")
     metadata.update(
         {
             "document_id": document.document_id,
-            "source_document_id": source_document_id,
-            "source_url": document.source_url or _synthetic_source_url(document),
-            "source_revision": document.source_revision,
-            "chunk_id": chunk_id,
+            "source_document_id": provenance.source_document_id,
+            "source_url": provenance.source_url,
+            "source_revision": provenance.source_revision,
+            "chunk_id": provenance.chunk_id,
             "chunk_index": 0,
-            "direct_principal_ids": [
-                grant.principal_id for grant in document.direct_principal_grants
-            ],
         }
     )
     return TextNode(
-        id_=str(uuid5(NAMESPACE_URL, chunk_id)),
+        id_=str(uuid5(NAMESPACE_URL, provenance.chunk_id)),
         text=document.text,
         metadata=metadata,
         embedding=_vectorize(f"{document.title} {document.text}"),
+    )
+
+
+def _provenance_for(document: EvidenceDocument) -> EvidenceProvenance:
+    return EvidenceProvenance(
+        source_document_id=document.source_document_id or document.document_id,
+        source_url=document.source_url or _synthetic_source_url(document),
+        source_revision=document.source_revision,
+        chunk_id=f"{document.document_id}:chunk:0",
     )
 
 

@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid5
 
+from llama_index.core.vector_stores import VectorStoreQuery
+
 from growth_data_agent.evidence import (
     EvidenceAccessFilter,
     EvidencePrincipalGrant,
     QdrantEvidenceStore,
+    _vectorize,
 )
 from growth_data_agent.policy import resolve_access_profile
 from growth_data_agent.synthetic import evidence_corpus
@@ -78,6 +81,14 @@ def test_expired_or_stale_policy_content_is_never_returned() -> None:
 
     assert store.retrieve("Jira APAC provisioning incident", access_filter, limit=3) == []
     assert store.last_scores == ()
+    raw_result = store._vector_store.query(
+        VectorStoreQuery(
+            query_embedding=_vectorize("Jira APAC provisioning incident"),
+            similarity_top_k=3,
+        ),
+        qdrant_filters=access_filter.as_qdrant_filter(),
+    )
+    assert raw_result.nodes == []
 
 
 def test_mixed_tenant_and_group_direct_policy_content_never_reaches_reranking() -> None:
