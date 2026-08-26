@@ -30,6 +30,8 @@ class AnalyticalRoute(StrEnum):
 
     CANONICAL_DEFINITION = "canonical_definition"
     CLARIFICATION = "clarification"
+    DRIVER_DECOMPOSITION = "driver_decomposition"
+    CAUSAL_ANALYSIS = "causal_analysis"
     LEGACY = "legacy"
 
 
@@ -41,8 +43,11 @@ class AnalyticalIntent(BaseModel):
 
     @model_validator(mode="after")
     def require_metric_for_canonical_definition(self) -> AnalyticalIntent:
-        if self.route is AnalyticalRoute.CANONICAL_DEFINITION and self.metric_name is None:
-            raise ValueError("Canonical-definition intent requires a metric name.")
+        if self.route in {
+            AnalyticalRoute.CANONICAL_DEFINITION,
+            AnalyticalRoute.DRIVER_DECOMPOSITION,
+        } and self.metric_name is None:
+            raise ValueError(f"{self.route.value} intent requires a metric name.")
         return self
 
 

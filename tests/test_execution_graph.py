@@ -34,6 +34,8 @@ def test_unknown_user_is_denied_before_question_interpretation() -> None:
     graph = ExecutionGraph(
         intent_interpreter=Interpreter(),
         canonical_definition_handler=lambda *_: None,
+        driver_decomposition_handler=lambda *_: None,
+        causal_analysis_handler=lambda _: None,
         legacy_handler=lambda _: None,
         clarification_handler=lambda _: None,
     )
@@ -51,6 +53,11 @@ def test_unknown_user_is_denied_before_question_interpretation() -> None:
 def test_canonical_intent_requires_a_metric_name() -> None:
     with pytest.raises(ValidationError):
         AnalyticalIntent(route=AnalyticalRoute.CANONICAL_DEFINITION)
+
+
+def test_driver_intent_requires_a_metric_name() -> None:
+    with pytest.raises(ValidationError):
+        AnalyticalIntent(route=AnalyticalRoute.DRIVER_DECOMPOSITION)
 
 
 def test_blank_requested_metric_returns_a_governed_limitation(client) -> None:
@@ -78,6 +85,8 @@ def test_malformed_interpreter_output_uses_the_clarification_handler() -> None:
     graph = ExecutionGraph(
         intent_interpreter=MalformedInterpreter(),
         canonical_definition_handler=lambda *_: pytest.fail("canonical handler must not run"),
+        driver_decomposition_handler=lambda *_: pytest.fail("driver handler must not run"),
+        causal_analysis_handler=lambda _: pytest.fail("causal handler must not run"),
         legacy_handler=lambda _: pytest.fail("legacy handler must not run"),
         clarification_handler=lambda _: _mark_clarification(),
     )
@@ -104,6 +113,8 @@ def test_constructed_invalid_intent_uses_the_clarification_handler() -> None:
     graph = ExecutionGraph(
         intent_interpreter=ConstructedInvalidInterpreter(),
         canonical_definition_handler=lambda *_: pytest.fail("canonical handler must not run"),
+        driver_decomposition_handler=lambda *_: pytest.fail("driver handler must not run"),
+        causal_analysis_handler=lambda _: pytest.fail("causal handler must not run"),
         legacy_handler=lambda _: pytest.fail("legacy handler must not run"),
         clarification_handler=lambda _: _mark_clarification(),
     )
@@ -123,7 +134,7 @@ def test_constructed_invalid_intent_uses_the_clarification_handler() -> None:
 def test_unhandled_specialist_phrase_keeps_its_metric_on_the_canonical_route() -> None:
     interpreter = RuleBasedIntentInterpreter(
         metric_name_resolver=AnswerQuestionService._requested_metric_name,
-        is_canonical_definition_request=AnswerQuestionService._is_canonical_definition_request,
+        route_resolver=AnswerQuestionService._route_for_intent,
     )
 
     intent = interpreter.interpret(
@@ -135,3 +146,27 @@ def test_unhandled_specialist_phrase_keeps_its_metric_on_the_canonical_route() -
     )
 
     assert intent.route is AnalyticalRoute.CANONICAL_DEFINITION
+
+
+def test_driver_and_causal_requests_have_explicit_specialist_routes() -> None:
+    driver_request = AnswerQuestionRequest(
+        agent_user_id="data_analyst",
+        question="Why did Jira New PEU fall from May to June?",
+    )
+    causal_request = AnswerQuestionRequest(
+        agent_user_id="data_analyst",
+        question="Estimate the causal effect of the Jira New MAU experiment.",
+    )
+
+    assert (
+        AnswerQuestionService._route_for_intent(
+            driver_request, AnswerQuestionService._requested_metric_name(driver_request)
+        )
+        is AnalyticalRoute.DRIVER_DECOMPOSITION
+    )
+    assert (
+        AnswerQuestionService._route_for_intent(
+            causal_request, AnswerQuestionService._requested_metric_name(causal_request)
+        )
+        is AnalyticalRoute.CAUSAL_ANALYSIS
+    )
