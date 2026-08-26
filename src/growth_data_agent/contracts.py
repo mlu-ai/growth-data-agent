@@ -6,7 +6,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ResultClassification(StrEnum):
@@ -23,6 +23,27 @@ class ResultClassification(StrEnum):
     METRIC_DEFINITION_GAP = "metric_definition_gap"
     PROVISIONAL_METRIC = "provisional_metric"
     LIMITATION = "limitation"
+
+
+class AnalyticalRoute(StrEnum):
+    """The bounded execution route selected from a validated Analytical Intent."""
+
+    CANONICAL_DEFINITION = "canonical_definition"
+    CLARIFICATION = "clarification"
+    LEGACY = "legacy"
+
+
+class AnalyticalIntent(BaseModel):
+    """A validated interpretation of the request before specialist execution."""
+
+    route: AnalyticalRoute
+    metric_name: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def require_metric_for_canonical_definition(self) -> AnalyticalIntent:
+        if self.route is AnalyticalRoute.CANONICAL_DEFINITION and self.metric_name is None:
+            raise ValueError("Canonical-definition intent requires a metric name.")
+        return self
 
 
 class AnswerQuestionRequest(BaseModel):

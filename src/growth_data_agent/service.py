@@ -9,6 +9,8 @@ from uuid import uuid4
 from .audit import DirectIdentifierAuditRecorder, InMemoryDirectIdentifierAuditRecorder
 from .causal import CausalAnalysisPipeline, default_causal_pipeline
 from .contracts import (
+    AnalyticalIntent,
+    AnalyticalRoute,
     AnswerQuestionRequest,
     CatalogFreshness,
     CatalogMetadata,
@@ -25,6 +27,7 @@ from .datahub import (
     DataHubCatalogUnavailableError,
 )
 from .evidence import QdrantEvidenceStore, VectorEvidenceStore, build_evidence_answer
+from .execution import AuthorizedExecution, ExecutionGraph, RuleBasedIntentInterpreter
 from .graph import ApacheAgeEvidenceGraphStore, EvidenceGraphStore, InMemoryEvidenceGraphStore
 from .metric_definition_gaps import (
     DataTeamVerificationRequestRecorder,
@@ -63,6 +66,7 @@ class AnswerQuestionService:
         direct_identifier_audit_recorder: DirectIdentifierAuditRecorder | None = None,
         causal_pipeline: CausalAnalysisPipeline | None = None,
         trace_sink: TraceSink | None = None,
+        execution_graph: ExecutionGraph | None = None,
     ):
         self.semantic_gateway = semantic_gateway
         self.provisional_metric_calculator = (
@@ -82,20 +86,32 @@ class AnswerQuestionService:
         )
         self.causal_pipeline = causal_pipeline or default_causal_pipeline()
         self.trace_sink = trace_sink or NoOpTraceSink()
+        self.execution_graph = execution_graph or ExecutionGraph(
+            intent_interpreter=RuleBasedIntentInterpreter(
+                metric_name_resolver=self._requested_metric_name,
+                is_canonical_definition_request=self._is_canonical_definition_request,
+            ),
+            canonical_definition_handler=self._answer_canonical_definition,
+            legacy_handler=self._answer_legacy_question,
+            clarification_handler=self._answer_intent_clarification,
+        )
 
     def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
         try:
-            response = self._answer_question(request)
+            response = self.execution_graph.answer_question(request)
         except (AccessDeniedError, UnknownAgentUserError) as error:
             error.trace_id = self._record_authorization_denial(request)
             raise
         self._record_trace(request, response)
         return response
 
-    def _answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
-        access_profile = resolve_access_profile(request.agent_user_id)
-        scope = access_profile.as_effective_scope()
-        trace_id = str(uuid4())
+    def _answer_legacy_question(
+        self, authorized_execution: AuthorizedExecution
+    ) -> GovernedAnalyticalResponse:
+        request = authorized_execution.request
+        access_profile = authorized_execution.access_profile
+        scope = authorized_execution.effective_scope
+        trace_id = authorized_execution.trace_id
 
         if self._requests_direct_identifier(request.question):
             return self._answer_direct_identifier_request(
@@ -181,6 +197,26 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
+        return self._answer_canonical_definition(
+            authorized_execution,
+            AnalyticalIntent(
+                route=AnalyticalRoute.CANONICAL_DEFINITION,
+                metric_name=metric_name,
+            ),
+        )
+
+    def _answer_canonical_definition(
+        self,
+        authorized_execution: AuthorizedExecution,
+        intent: AnalyticalIntent,
+    ) -> GovernedAnalyticalResponse:
+        request = authorized_execution.request
+        scope = authorized_execution.effective_scope
+        access_profile = authorized_execution.access_profile
+        trace_id = authorized_execution.trace_id
+        metric_name = intent.metric_name
+        if metric_name is None:
+            raise ValueError("Canonical-definition execution requires a metric name.")
         metric_product = self._metric_product(metric_name)
         if metric_product is not None:
             access_profile.authorize_product(metric_product)
@@ -260,6 +296,25 @@ class AnswerQuestionService:
             effective_access_scope=scope,
             caveats=caveats,
             trace_id=trace_id,
+        )
+
+    def _answer_intent_clarification(
+        self, authorized_execution: AuthorizedExecution
+    ) -> GovernedAnalyticalResponse:
+        artifact = self.semantic_gateway.artifact_store.load()
+        return GovernedAnalyticalResponse(
+            answer=(
+                "I could not validate the requested metric or analysis type. Name a governed "
+                "metric to check its semantic status."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            source_freshness=self.semantic_gateway.freshness(artifact),
+            effective_access_scope=authorized_execution.effective_scope,
+            caveats=[
+                "The request was not sent to a semantic query, evidence retrieval, graph "
+                "traversal, or direct-identifier handler."
+            ],
+            trace_id=authorized_execution.trace_id,
         )
 
     def _record_trace(
@@ -1358,7 +1413,8 @@ class AnswerQuestionService:
     @staticmethod
     def _requested_metric_name(request: AnswerQuestionRequest) -> str | None:
         if request.requested_metric_name is not None:
-            return _metric_identifier(request.requested_metric_name)
+            normalized_requested_metric = _metric_identifier(request.requested_metric_name)
+            return normalized_requested_metric or None
 
         normalized = " ".join(request.question.casefold().split())
         if _requests_outside_analytical_scope(normalized):
@@ -1379,6 +1435,50 @@ class AnswerQuestionService:
         if named_metric is not None:
             return _metric_identifier(named_metric)
         return None
+
+    @staticmethod
+    def _is_canonical_definition_request(
+        request: AnswerQuestionRequest, metric_name: str | None
+    ) -> bool:
+        """Keep specialist routes out of the canonical-definition node until migrated."""
+        return metric_name is not None and not AnswerQuestionService._requires_specialist_dispatch(
+            request, metric_name
+        )
+
+    @staticmethod
+    def _requires_specialist_dispatch(
+        request: AnswerQuestionRequest, metric_name: str
+    ) -> bool:
+        """Route only requests the current specialist dispatcher can complete."""
+        return (
+            AnswerQuestionService._requests_direct_identifier(request.question)
+            or AnswerQuestionService._requested_catalog_entity(request) is not None
+            or AnswerQuestionService._requests_causal_analysis(request)
+            or (
+                metric_name == "jira_new_peu"
+                and AnswerQuestionService._requests_apac_decline_evidence(request.question)
+            )
+            or (
+                metric_name == "confluence_new_peu"
+                and AnswerQuestionService._requests_confluence_campaign_evidence(request.question)
+            )
+            or (
+                metric_name == "confluence_new_mau"
+                and AnswerQuestionService._requests_confluence_emea_regression(request.question)
+            )
+            or (
+                metric_name
+                in {
+                    "jira_new_peu",
+                    "confluence_new_peu",
+                    "jira_new_mau",
+                    "confluence_new_mau",
+                }
+                and AnswerQuestionService._requests_may_to_june_driver_decomposition(
+                    request.question
+                )
+            )
+        )
 
 
 def _metric_identifier(value: str) -> str:
