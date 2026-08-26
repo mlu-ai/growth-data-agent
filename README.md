@@ -39,6 +39,13 @@ labelled onboarding-email regression Hypothesis.
 
 ## Local run
 
+Choose one Postgres setup before running the data and application commands.
+
+### Option A: Docker Compose
+
+This is the zero-configuration quick start. It creates the repository's local
+Apache AGE/Postgres container on host port 5432.
+
 ```sh
 uv sync --all-groups
 make generate-data
@@ -51,6 +58,49 @@ APACHE_AGE_DATABASE_URL=postgresql://growth_data:growth_data@127.0.0.1:5432/grow
 make evaluate
 make serve
 ```
+
+If port 5432 is already occupied, use the external-Postgres path below or set
+`POSTGRES_PORT` before starting Compose. Do not start both Postgres paths for
+the same run.
+
+### Option B: Existing or pre-provisioned Postgres
+
+Use this path when Postgres is already running locally or is provided by your
+development environment. It avoids the Compose host-port collision, but the
+database must be a dedicated, disposable POC database. `make load-data` creates
+the synthetic source tables and can replace their contents; never point it at a
+shared, staging, or production database.
+
+Copy the tracked example, then set the connection values for that dedicated
+database:
+
+```sh
+cp .env.example .env
+# Edit .env with your local host, port, database, role, and password.
+set -a
+source .env
+set +a
+```
+
+`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, and
+`POSTGRES_PASSWORD` configure dbt. `DATABASE_URL` configures the synthetic
+loader and the API. Keep both pointing to the same database and role. A
+successful external-Postgres run is:
+
+```sh
+uv sync --all-groups
+make generate-data
+make load-data
+make dbt-build
+make semantic-artifact
+make serve
+```
+
+Skip `docker compose up -d postgres` when using this path. The optional
+`publish-datahub`, `evaluate`, and `materialize-age` commands can be run after
+the same environment has been loaded. Apache AGE runtime requirements for a
+least-privileged application role are tracked separately in [issue #27](https://github.com/mlu-ai/growth-data-agent/issues/27);
+this setup does not elevate the role or bypass those requirements.
 
 ```sh
 curl -X POST http://127.0.0.1:8000/answer_question \
