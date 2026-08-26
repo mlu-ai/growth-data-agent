@@ -36,6 +36,10 @@ def test_unknown_user_is_denied_before_question_interpretation() -> None:
         canonical_definition_handler=lambda *_: None,
         driver_decomposition_handler=lambda *_: None,
         causal_analysis_handler=lambda _: None,
+        catalog_ownership_handler=lambda _: None,
+        direct_identifier_handler=lambda _: None,
+        limitation_handler=lambda _: None,
+        metric_definition_gap_handler=lambda *_: None,
         legacy_handler=lambda _: None,
         clarification_handler=lambda _: None,
     )
@@ -87,6 +91,10 @@ def test_malformed_interpreter_output_uses_the_clarification_handler() -> None:
         canonical_definition_handler=lambda *_: pytest.fail("canonical handler must not run"),
         driver_decomposition_handler=lambda *_: pytest.fail("driver handler must not run"),
         causal_analysis_handler=lambda _: pytest.fail("causal handler must not run"),
+        catalog_ownership_handler=lambda _: pytest.fail("catalog handler must not run"),
+        direct_identifier_handler=lambda _: pytest.fail("identifier handler must not run"),
+        limitation_handler=lambda _: pytest.fail("limitation handler must not run"),
+        metric_definition_gap_handler=lambda *_: pytest.fail("gap handler must not run"),
         legacy_handler=lambda _: pytest.fail("legacy handler must not run"),
         clarification_handler=lambda _: _mark_clarification(),
     )
@@ -115,6 +123,10 @@ def test_constructed_invalid_intent_uses_the_clarification_handler() -> None:
         canonical_definition_handler=lambda *_: pytest.fail("canonical handler must not run"),
         driver_decomposition_handler=lambda *_: pytest.fail("driver handler must not run"),
         causal_analysis_handler=lambda _: pytest.fail("causal handler must not run"),
+        catalog_ownership_handler=lambda _: pytest.fail("catalog handler must not run"),
+        direct_identifier_handler=lambda _: pytest.fail("identifier handler must not run"),
+        limitation_handler=lambda _: pytest.fail("limitation handler must not run"),
+        metric_definition_gap_handler=lambda *_: pytest.fail("gap handler must not run"),
         legacy_handler=lambda _: pytest.fail("legacy handler must not run"),
         clarification_handler=lambda _: _mark_clarification(),
     )
@@ -131,7 +143,7 @@ def test_constructed_invalid_intent_uses_the_clarification_handler() -> None:
     assert clarification_called is True
 
 
-def test_unhandled_specialist_phrase_keeps_its_metric_on_the_canonical_route() -> None:
+def test_unhandled_specialist_phrase_keeps_unknown_metric_on_gap_route() -> None:
     interpreter = RuleBasedIntentInterpreter(
         metric_name_resolver=AnswerQuestionService._requested_metric_name,
         route_resolver=AnswerQuestionService._route_for_intent,
@@ -145,7 +157,7 @@ def test_unhandled_specialist_phrase_keeps_its_metric_on_the_canonical_route() -
         )
     )
 
-    assert intent.route is AnalyticalRoute.CANONICAL_DEFINITION
+    assert intent.route is AnalyticalRoute.METRIC_DEFINITION_GAP
 
 
 def test_driver_and_causal_requests_have_explicit_specialist_routes() -> None:
@@ -156,6 +168,11 @@ def test_driver_and_causal_requests_have_explicit_specialist_routes() -> None:
     causal_request = AnswerQuestionRequest(
         agent_user_id="data_analyst",
         question="Estimate the causal effect of the Jira New MAU experiment.",
+    )
+    explicit_experiment_request = AnswerQuestionRequest(
+        agent_user_id="data_analyst",
+        question="Estimate the causal effect.",
+        experiment_id="jira-new-mau-onboarding-experiment",
     )
 
     assert (
@@ -170,3 +187,69 @@ def test_driver_and_causal_requests_have_explicit_specialist_routes() -> None:
         )
         is AnalyticalRoute.CAUSAL_ANALYSIS
     )
+    assert (
+        AnswerQuestionService._route_for_intent(
+            explicit_experiment_request,
+            AnswerQuestionService._requested_metric_name(explicit_experiment_request),
+        )
+        is AnalyticalRoute.CAUSAL_ANALYSIS
+    )
+
+
+def test_catalog_identifier_and_unsupported_requests_have_explicit_routes() -> None:
+    catalog_request = AnswerQuestionRequest(
+        agent_user_id="data_analyst", question="Who owns the Jira New PEU metric?"
+    )
+    identifier_request = AnswerQuestionRequest(
+        agent_user_id="data_analyst", question="List affected tenant IDs"
+    )
+    unsupported_request = AnswerQuestionRequest(
+        agent_user_id="data_analyst", question="Tell me a joke"
+    )
+
+    assert (
+        AnswerQuestionService._route_for_intent(
+            catalog_request, AnswerQuestionService._requested_metric_name(catalog_request)
+        )
+        is AnalyticalRoute.CATALOG_OWNERSHIP
+    )
+    assert (
+        AnswerQuestionService._route_for_intent(
+            identifier_request, AnswerQuestionService._requested_metric_name(identifier_request)
+        )
+        is AnalyticalRoute.DIRECT_IDENTIFIER
+    )
+    assert (
+        AnswerQuestionService._route_for_intent(
+            unsupported_request, AnswerQuestionService._requested_metric_name(unsupported_request)
+        )
+        is AnalyticalRoute.LIMITATION
+    )
+
+
+def test_unknown_metric_uses_the_metric_definition_gap_route() -> None:
+    request = AnswerQuestionRequest(
+        agent_user_id="data_analyst",
+        question="Define New Trials",
+        requested_metric_name="new_trials",
+    )
+
+    assert (
+        AnswerQuestionService._route_for_intent(
+            request, AnswerQuestionService._requested_metric_name(request)
+        )
+        is AnalyticalRoute.METRIC_DEFINITION_GAP
+    )
+
+
+def test_product_scoped_user_cannot_request_an_unknown_metric_for_another_product(client) -> None:
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "confluence_product_manager",
+            "question": "Define Jira New Trials",
+            "requested_metric_name": "jira_new_trials",
+        },
+    )
+
+    assert response.status_code == 403

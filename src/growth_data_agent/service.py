@@ -94,6 +94,10 @@ class AnswerQuestionService:
             canonical_definition_handler=self._answer_canonical_definition,
             driver_decomposition_handler=self._answer_driver_decomposition,
             causal_analysis_handler=self._answer_causal_specialist,
+            catalog_ownership_handler=self._answer_catalog_specialist,
+            direct_identifier_handler=self._answer_direct_identifier_specialist,
+            limitation_handler=self._answer_limitation_specialist,
+            metric_definition_gap_handler=self._answer_metric_definition_gap_specialist,
             legacy_handler=self._answer_legacy_question,
             clarification_handler=self._answer_intent_clarification,
         )
@@ -322,6 +326,79 @@ class AnswerQuestionService:
             scope=authorized_execution.effective_scope,
             access_profile=authorized_execution.access_profile,
             trace_id=authorized_execution.trace_id,
+        )
+
+    def _answer_catalog_specialist(
+        self, authorized_execution: AuthorizedExecution
+    ) -> GovernedAnalyticalResponse:
+        entity_name = self._requested_catalog_entity(authorized_execution.request)
+        if entity_name is None:
+            return self._answer_limitation_specialist(authorized_execution)
+        return self._answer_catalog_ownership(
+            entity_name=entity_name,
+            scope=authorized_execution.effective_scope,
+            access_profile=authorized_execution.access_profile,
+            trace_id=authorized_execution.trace_id,
+        )
+
+    def _answer_direct_identifier_specialist(
+        self, authorized_execution: AuthorizedExecution
+    ) -> GovernedAnalyticalResponse:
+        return self._answer_direct_identifier_request(
+            request=authorized_execution.request,
+            scope=authorized_execution.effective_scope,
+            access_profile=authorized_execution.access_profile,
+            trace_id=authorized_execution.trace_id,
+        )
+
+    def _answer_limitation_specialist(
+        self, authorized_execution: AuthorizedExecution
+    ) -> GovernedAnalyticalResponse:
+        artifact = self.semantic_gateway.artifact_store.load()
+        return GovernedAnalyticalResponse(
+            answer=(
+                "This first delivery supports governed metric-definition questions, starting "
+                "with Jira and Confluence New PEU and New MAU. Name a metric to check its "
+                "semantic status."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            source_freshness=self.semantic_gateway.freshness(artifact),
+            effective_access_scope=authorized_execution.effective_scope,
+            caveats=["The request did not identify a governed metric."],
+            trace_id=authorized_execution.trace_id,
+        )
+
+    def _answer_metric_definition_gap_specialist(
+        self, authorized_execution: AuthorizedExecution, intent: AnalyticalIntent
+    ) -> GovernedAnalyticalResponse:
+        metric_name = intent.metric_name
+        if metric_name is None:
+            return self._answer_limitation_specialist(authorized_execution)
+        metric_product = self._metric_product(metric_name)
+        if metric_product is not None:
+            authorized_execution.access_profile.authorize_product(metric_product)
+        definition, freshness = self.semantic_gateway.canonical_definition(metric_name)
+        if definition is not None:
+            return self._answer_canonical_definition(authorized_execution, intent)
+        if not freshness.is_current:
+            return GovernedAnalyticalResponse(
+                answer=(
+                    f"{metric_name} cannot be returned as canonical because the dbt/MetricFlow "
+                    "semantic artifact is failed, stale, or unavailable."
+                ),
+                result_classification=ResultClassification.LIMITATION,
+                source_freshness=freshness,
+                effective_access_scope=authorized_execution.effective_scope,
+                caveats=["Run dbt validation and refresh the semantic artifact before using it."],
+                trace_id=authorized_execution.trace_id,
+            )
+        return self._metric_definition_gap_response(
+            request=authorized_execution.request,
+            metric_name=metric_name,
+            freshness=freshness,
+            scope=authorized_execution.effective_scope,
+            trace_id=authorized_execution.trace_id,
+            access_profile=authorized_execution.access_profile,
         )
 
     def _answer_intent_clarification(
@@ -1475,8 +1552,21 @@ class AnswerQuestionService:
     def _route_for_intent(
         request: AnswerQuestionRequest, metric_name: str | None
     ) -> AnalyticalRoute:
+        if AnswerQuestionService._requests_direct_identifier(request.question):
+            return AnalyticalRoute.DIRECT_IDENTIFIER
+        if AnswerQuestionService._requested_catalog_entity(request) is not None:
+            return AnalyticalRoute.CATALOG_OWNERSHIP
         if AnswerQuestionService._requests_causal_analysis(request):
             return AnalyticalRoute.CAUSAL_ANALYSIS
+        if metric_name is None:
+            return AnalyticalRoute.LIMITATION
+        if metric_name not in {
+            "jira_new_peu",
+            "confluence_new_peu",
+            "jira_new_mau",
+            "confluence_new_mau",
+        }:
+            return AnalyticalRoute.METRIC_DEFINITION_GAP
         if (
             metric_name
             in {"jira_new_peu", "confluence_new_peu", "jira_new_mau", "confluence_new_mau"}
