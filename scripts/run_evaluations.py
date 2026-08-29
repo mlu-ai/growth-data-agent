@@ -34,6 +34,7 @@ from growth_data_agent.observability import (
     policy_fingerprint,
 )
 from growth_data_agent.policy import resolve_access_profile
+from growth_data_agent.principal import development_token_environment_variable
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 
@@ -167,7 +168,19 @@ def _invoke(request: dict, base_client: TestClient, stale_client: TestClient) ->
     payload = {
         key: value for key, value in request.items() if key not in {"requires", "_fixture_id"}
     }
-    response = client.post("/answer_question", json=payload)
+    principal_id = payload.pop("agent_user_id", None)
+    if not isinstance(principal_id, str) or not principal_id:
+        raise SystemExit("Evaluation request is missing its development principal.")
+    token = os.environ.get(development_token_environment_variable(principal_id))
+    if not token:
+        raise SystemExit(
+            f"Missing development bearer token configuration for principal {principal_id}."
+        )
+    response = client.post(
+        "/answer_question",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload,
+    )
     return FixtureResponse(status_code=response.status_code, body=response.json())
 
 

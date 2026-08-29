@@ -54,13 +54,13 @@ def test_apac_manager_receives_only_apac_effective_scope(client: TestClient) -> 
     }
 
 
-def test_unknown_agent_user_is_refused(client: TestClient) -> None:
+def test_body_only_agent_user_is_rejected(client: TestClient) -> None:
     response = client.post(
         "/answer_question",
         json={"agent_user_id": "unknown", "question": "What is Jira New PEU?"},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClient) -> None:

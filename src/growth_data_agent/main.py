@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import ValidationError
 
-from .contracts import AnswerQuestionRequest, GovernedAnalyticalResponse
+from .contracts import AnswerQuestionPayload, AnswerQuestionRequest, GovernedAnalyticalResponse
 from .datahub import DataHubHttpCatalog
 from .graph import (
     ApacheAgeEvidenceGraphStore,
@@ -24,6 +24,11 @@ from .metricflow_query import (
 )
 from .observability import MlflowTraceSink
 from .policy import AccessDeniedError, UnknownAgentUserError
+from .principal import (
+    DevelopmentTokenPrincipalResolver,
+    PrincipalAuthenticationError,
+    PrincipalResolver,
+)
 from .semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from .service import AnswerQuestionService
 
@@ -32,8 +37,15 @@ _DEFAULT_ARTIFACT = _REPOSITORY_ROOT / "dbt/artifacts/last_validated_semantic.js
 _DEFAULT_SEMANTIC_MANIFEST = _REPOSITORY_ROOT / "dbt/target/semantic_manifest.json"
 
 
-def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
+def create_app(
+    service: AnswerQuestionService | None = None,
+    *,
+    principal_resolver: PrincipalResolver | None = None,
+) -> FastAPI:
     app = FastAPI(title="Growth Data Agent", version="0.1.0")
+    app.state.principal_resolver = (
+        principal_resolver or DevelopmentTokenPrincipalResolver.from_environment()
+    )
     datahub_gms_url = os.environ.get("DATAHUB_GMS_URL")
     age_database_url = os.environ.get("APACHE_AGE_DATABASE_URL")
     local_model = None if service is not None else OllamaLocalModel.from_environment()
@@ -84,7 +96,30 @@ def create_app(service: AnswerQuestionService | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/answer_question", response_model=GovernedAnalyticalResponse)
-    def answer_question(request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
+    def answer_question(
+        payload: AnswerQuestionPayload,
+        authorization: str | None = Header(default=None),
+    ) -> GovernedAnalyticalResponse:
+        try:
+            principal = app.state.principal_resolver.resolve(authorization)
+        except PrincipalAuthenticationError as error:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Authentication credentials are required."
+                    if authorization is None or not authorization.strip()
+                    else "Invalid authentication credentials."
+                ),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from error
+
+        request = AnswerQuestionRequest(
+            agent_user_id=principal.principal_id,
+            question=payload.question,
+            requested_metric_name=payload.requested_metric_name,
+            experiment_id=payload.experiment_id,
+            verification_request_confirmation=payload.verification_request_confirmation,
+        )
         try:
             return app.state.answer_service.answer_question(request)
         except UnknownAgentUserError as error:
