@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -288,7 +289,12 @@ def test_data_team_request_requires_explicit_confirmation_and_records_context(
         "requested_metric_name": "jira_activation",
         "requested_by_agent_user_id": "data_analyst",
         "approval_context": "The Agent User approved review of the Jira Activation definition.",
+        "approval_context_sha256": hashlib.sha256(
+            b"The Agent User approved review of the Jira Activation definition."
+        ).hexdigest(),
         "approved_at": "2026-08-25T02:00:00Z",
+        "decision_outcome": "approved",
+        "trace_id": body["trace_id"],
     }
 
 

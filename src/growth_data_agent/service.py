@@ -771,6 +771,9 @@ class AnswerQuestionService:
         *,
         trace_id: str,
         agent_user_id: str,
+        scope,
+        access_profile,
+        outcome: str,
         returned_count: int,
         maximum_results: int,
     ):
@@ -782,6 +785,9 @@ class AnswerQuestionService:
             return self.direct_identifier_audit_recorder.record(
                 trace_id=trace_id,
                 agent_user_id=agent_user_id,
+                scope=scope,
+                policy_fingerprint=policy_fingerprint(access_profile),
+                outcome=outcome,
                 returned_count=returned_count,
                 maximum_results=maximum_results,
             )
@@ -1336,6 +1342,9 @@ class AnswerQuestionService:
         audit = self._audit_direct_identifiers(
             trace_id=trace_id,
             agent_user_id=request.agent_user_id,
+            scope=scope,
+            access_profile=access_profile,
+            outcome="released" if identifiers else "no_identifiers_found",
             returned_count=len(identifiers),
             maximum_results=_DIRECT_IDENTIFIER_RESULT_LIMIT,
         )
@@ -1704,6 +1713,7 @@ class AnswerQuestionService:
             verification_request = self.verification_request_recorder.record(
                 metric_name=metric_name,
                 agent_user_id=request.agent_user_id,
+                trace_id=trace_id,
                 confirmation=confirmation,
             )
 

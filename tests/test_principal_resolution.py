@@ -5,6 +5,7 @@ import secrets
 from fastapi.testclient import TestClient
 from starlette.testclient import TestClient as RawTestClient
 
+from growth_data_agent.audit import SQLiteDirectIdentifierAuditRecorder
 from growth_data_agent.main import create_app
 from growth_data_agent.principal import (
     DEVELOPMENT_PRINCIPAL_IDS,
@@ -118,6 +119,32 @@ def test_authenticated_answer_uses_verified_principal_not_body_identity(client) 
         "APAC",
         "EMEA",
     ]
+
+
+def test_durable_audit_uses_verified_principal_not_body_identity(client, tmp_path) -> None:
+    token, resolver = _development_resolver("customer_success_manager")
+    recorder = SQLiteDirectIdentifierAuditRecorder(tmp_path / "decision-records.sqlite3")
+    service = client.app.state.answer_service
+    service.direct_identifier_audit_recorder = recorder
+    authenticated_client = TestClient(
+        create_app(service, principal_resolver=resolver)
+    )
+
+    response = authenticated_client.post(
+        "/answer_question",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "Which Tenant IDs were affected by the Jira APAC incident?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["direct_identifier_audit"]["agent_user_id"] == (
+        "customer_success_manager"
+    )
+    restarted = SQLiteDirectIdentifierAuditRecorder(tmp_path / "decision-records.sqlite3")
+    assert restarted.events[0].agent_user_id == "customer_success_manager"
 
 
 def test_authenticated_answer_can_use_a_future_oidc_shaped_resolver(client) -> None:
