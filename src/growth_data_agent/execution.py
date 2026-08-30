@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast
 from uuid import uuid4
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
@@ -14,6 +15,7 @@ from .contracts import (
     AnalyticalIntent,
     AnalyticalRoute,
     AnswerQuestionRequest,
+    ConversationContext,
     EffectiveAccessScope,
     GovernedAnalyticalResponse,
 )
@@ -76,6 +78,7 @@ MetricDefinitionGapHandler = Callable[
 
 class _ExecutionState(TypedDict, total=False):
     request: AnswerQuestionRequest
+    conversation_context: ConversationContext | None
     authorized_execution: AuthorizedExecution
     intent: AnalyticalIntent
     trace_id: str
@@ -98,6 +101,7 @@ class ExecutionGraph:
         metric_definition_gap_handler: MetricDefinitionGapHandler,
         legacy_handler: LegacyHandler,
         clarification_handler: ClarificationHandler,
+        checkpointer=None,
     ) -> None:
         self._intent_interpreter = intent_interpreter
         self._canonical_definition_handler = canonical_definition_handler
@@ -147,11 +151,32 @@ class ExecutionGraph:
         graph.add_edge("metric_definition_gap", END)
         graph.add_edge("clarification", END)
         graph.add_edge("legacy", END)
-        self._compiled = graph.compile()
+        self._compiled = graph.compile(checkpointer=checkpointer)
 
-    def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
-        state = self._compiled.invoke({"request": request})
+    def answer_question(
+        self,
+        request: AnswerQuestionRequest,
+        *,
+        conversation_id: str | None = None,
+    ) -> GovernedAnalyticalResponse:
+        input_state: _ExecutionState = {
+            "request": request,
+            "conversation_context": request.conversation_context,
+        }
+        config: RunnableConfig | None = (
+            {"configurable": {"thread_id": conversation_id}}
+            if conversation_id is not None
+            else None
+        )
+        state = self._compiled.invoke(input_state, config=config)
         return cast(GovernedAnalyticalResponse, state["response"])
+
+    def update_conversation_context(
+        self, conversation_id: str, conversation_context: ConversationContext
+    ) -> None:
+        """Persist the post-Turn context in the native LangGraph checkpoint."""
+        config: RunnableConfig = {"configurable": {"thread_id": conversation_id}}
+        self._compiled.update_state(config, {"conversation_context": conversation_context})
 
     @staticmethod
     def _authorize(state: _ExecutionState) -> dict[str, object]:

@@ -11,6 +11,10 @@ from pydantic import ValidationError
 
 from .audit import SQLiteDirectIdentifierAuditRecorder
 from .contracts import AnswerQuestionPayload, AnswerQuestionRequest, GovernedAnalyticalResponse
+from .conversations import (
+    PostgresConversationCheckpointStore,
+    conversation_retention_from_environment,
+)
 from .datahub import DataHubHttpCatalog
 from .graph import (
     ApacheAgeEvidenceGraphStore,
@@ -60,6 +64,13 @@ def create_app(
     evidence_model = None if service is not None else OllamaLocalModel.from_environment()
     decision_records_path = decision_record_path_from_environment(_DEFAULT_DECISION_RECORDS)
     decision_record_retention = decision_record_retention_from_environment()
+    conversation_database_url = os.environ.get(
+        "CONVERSATION_DATABASE_URL",
+        os.environ.get(
+            "DATABASE_URL",
+            "postgresql://growth_data:growth_data@127.0.0.1:5432/growth_data",
+        ),
+    )
     app.state.answer_service = service or AnswerQuestionService(
         ValidatedMetricFlowGateway(
             SemanticArtifactStore(
@@ -80,9 +91,7 @@ def create_app(
                 datahub_gms_url,
                 token=os.environ.get("DATAHUB_TOKEN"),
                 platform=os.environ.get("DATAHUB_TARGET_PLATFORM", "postgres"),
-                dataset_prefix=os.environ.get(
-                    "DATAHUB_DATASET_PREFIX", "growth_data.analytics"
-                ),
+                dataset_prefix=os.environ.get("DATAHUB_DATASET_PREFIX", "growth_data.analytics"),
             )
             if datahub_gms_url
             else None
@@ -109,6 +118,10 @@ def create_app(
         trace_sink=MlflowTraceSink.from_environment(),
         local_model=intent_model,
         evidence_model=evidence_model,
+        conversation_store=PostgresConversationCheckpointStore(
+            conversation_database_url,
+            retention=conversation_retention_from_environment(),
+        ),
     )
 
     @app.get("/health")
@@ -146,7 +159,9 @@ def create_app(
             question=payload.question,
             requested_metric_name=payload.requested_metric_name,
             experiment_id=payload.experiment_id,
+            conversation_id=payload.conversation_id,
             verification_request_confirmation=payload.verification_request_confirmation,
+            verified_principal=principal,
         )
         try:
             return app.state.answer_service.answer_question(request)

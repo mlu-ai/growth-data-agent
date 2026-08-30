@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .principal import VerifiedPrincipal
+
 
 class ResultClassification(StrEnum):
     CANONICAL_DEFINITION = "canonical_definition"
@@ -47,12 +49,59 @@ class AnalyticalIntent(BaseModel):
 
     @model_validator(mode="after")
     def require_metric_for_canonical_definition(self) -> AnalyticalIntent:
-        if self.route in {
-            AnalyticalRoute.CANONICAL_DEFINITION,
-            AnalyticalRoute.DRIVER_DECOMPOSITION,
-        } and self.metric_name is None:
+        if (
+            self.route
+            in {
+                AnalyticalRoute.CANONICAL_DEFINITION,
+                AnalyticalRoute.DRIVER_DECOMPOSITION,
+            }
+            and self.metric_name is None
+        ):
             raise ValueError(f"{self.route.value} intent requires a metric name.")
         return self
+
+
+class EffectiveAccessScope(BaseModel):
+    products: list[str]
+    regions: list[str]
+    tenant_scope: str
+    permitted_columns: list[str]
+
+
+class ConversationSummary(BaseModel):
+    """Structured working context; it is never a source or authorization authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_user_goal: str = Field(default="", max_length=256)
+    resolved_scope: EffectiveAccessScope | None = None
+    metric_name: str | None = Field(default=None, min_length=1, max_length=128)
+    evidence_revision_ids: list[str] = Field(default_factory=list, max_length=32)
+    qualified_conclusions: list[str] = Field(default_factory=list, max_length=32)
+    open_questions: list[str] = Field(default_factory=list, max_length=16)
+    workflow_state: str = Field(default="active", min_length=1, max_length=64)
+
+
+class ConversationTurn(BaseModel):
+    """Bounded turn metadata retained for conversational context, without evidence chunks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=2_000)
+    result_classification: ResultClassification
+    metric_name: str | None = Field(default=None, min_length=1, max_length=128)
+    trace_id: str = Field(min_length=1, max_length=128)
+    created_at: datetime
+
+
+class ConversationContext(BaseModel):
+    """The only prior context injected into a turn's governed execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: ConversationSummary
+    recent_turns: list[ConversationTurn] = Field(default_factory=list, max_length=32)
 
 
 class AnswerQuestionPayload(BaseModel):
@@ -63,6 +112,7 @@ class AnswerQuestionPayload(BaseModel):
     question: str = Field(min_length=1)
     requested_metric_name: str | None = Field(default=None, min_length=1)
     experiment_id: str | None = Field(default=None, min_length=1)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
     verification_request_confirmation: VerificationRequestConfirmation | None = None
 
 
@@ -70,13 +120,8 @@ class AnswerQuestionRequest(AnswerQuestionPayload):
     """Internal request after the HTTP boundary has verified a Principal."""
 
     agent_user_id: str = Field(min_length=1)
-
-
-class EffectiveAccessScope(BaseModel):
-    products: list[str]
-    regions: list[str]
-    tenant_scope: str
-    permitted_columns: list[str]
+    verified_principal: VerifiedPrincipal | None = Field(default=None, exclude=True, repr=False)
+    conversation_context: ConversationContext | None = Field(default=None, exclude=True)
 
 
 class SourceFreshness(BaseModel):
@@ -303,6 +348,7 @@ class GovernedAnalyticalResponse(BaseModel):
     effective_access_scope: EffectiveAccessScope
     caveats: list[str]
     trace_id: str
+    conversation_id: str | None = None
 
 
 class CausalDesignType(StrEnum):

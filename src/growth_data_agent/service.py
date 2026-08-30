@@ -15,6 +15,8 @@ from .contracts import (
     AnswerQuestionRequest,
     CatalogFreshness,
     CatalogMetadata,
+    ConversationSummary,
+    ConversationTurn,
     DirectIdentifierAnswer,
     EvidenceSupportStatus,
     GovernedAnalyticalResponse,
@@ -22,6 +24,12 @@ from .contracts import (
     ResultClassification,
     SensitiveIdentifier,
     SourceFreshness,
+)
+from .conversations import (
+    ConversationAccessDeniedError,
+    ConversationCheckpointStore,
+    ConversationNotFoundError,
+    InMemoryConversationCheckpointStore,
 )
 from .datahub import (
     DataHubCatalogStore,
@@ -95,6 +103,7 @@ class AnswerQuestionService:
         evidence_model: LocalModelTransport | None = None,
         intent_interpreter: IntentInterpreter | None = None,
         evidence_drafting_adapter: EvidenceDraftingAdapter | None = None,
+        conversation_store: ConversationCheckpointStore | None = None,
     ):
         self.semantic_gateway = semantic_gateway
         self.provisional_metric_calculator = (
@@ -118,6 +127,7 @@ class AnswerQuestionService:
         )
         self.causal_pipeline = causal_pipeline or default_causal_pipeline()
         self.trace_sink = trace_sink or NoOpTraceSink()
+        self.conversation_store = conversation_store or InMemoryConversationCheckpointStore()
         self.local_model = local_model
         evidence_model = evidence_model if evidence_model is not None else local_model
         self.evidence_drafting_adapter = evidence_drafting_adapter or (
@@ -149,21 +159,137 @@ class AnswerQuestionService:
             metric_definition_gap_handler=self._answer_metric_definition_gap_specialist,
             legacy_handler=self._answer_legacy_question,
             clarification_handler=self._answer_intent_clarification,
+            checkpointer=getattr(self.conversation_store, "checkpointer", None),
         )
 
     def answer_question(self, request: AnswerQuestionRequest) -> GovernedAnalyticalResponse:
         with capture_trace() as trace_context:
             try:
-                response = self.execution_graph.answer_question(request)
+                principal = request.verified_principal
+                if principal is None:
+                    raise AccessDeniedError("A verified Principal is required.")
+                request = request.model_copy(
+                    update={
+                        "agent_user_id": principal.principal_id,
+                        "verified_principal": principal,
+                    }
+                )
+                access_profile = resolve_access_profile(principal.principal_id)
+                checkpoint = self._conversation_checkpoint(request, principal)
+                trace_context.conversation_id = checkpoint.conversation_id
+                request = request.model_copy(
+                    update={
+                        "conversation_context": checkpoint.context(
+                            effective_scope=access_profile.as_effective_scope()
+                        )
+                    }
+                )
+                response = self.execution_graph.answer_question(
+                    request,
+                    conversation_id=checkpoint.conversation_id,
+                )
                 response = self._draft_evidence_response(response)
+                response = response.model_copy(
+                    update={"conversation_id": checkpoint.conversation_id}
+                )
+                updated_checkpoint = self.conversation_store.append(
+                    checkpoint.conversation_id,
+                    principal,
+                    turn=self._conversation_turn(request, response),
+                    summary=self._conversation_summary(request, response),
+                )
+                if getattr(self.conversation_store, "checkpointer", None) is not None:
+                    self.execution_graph.update_conversation_context(
+                        checkpoint.conversation_id,
+                        updated_checkpoint.context(
+                            effective_scope=access_profile.as_effective_scope()
+                        ),
+                    )
             except (AccessDeniedError, UnknownAgentUserError) as error:
                 error.trace_id = self._record_authorization_denial(request, trace_context)
                 raise
+            except (ConversationAccessDeniedError, ConversationNotFoundError) as error:
+                denied = AccessDeniedError("Conversation is not available to this Agent User.")
+                denied.trace_id = self._record_authorization_denial(request, trace_context)
+                raise denied from error
             except Exception as error:
                 error.trace_id = self._record_dependency_failure(request, trace_context)
                 raise
             self._record_trace(request, response, trace_context)
             return response
+
+    def _conversation_checkpoint(self, request, principal):
+        if request.conversation_id is None:
+            return self.conversation_store.create(principal)
+        return self.conversation_store.load(request.conversation_id, principal)
+
+    @staticmethod
+    def _conversation_metric_name(response: GovernedAnalyticalResponse) -> str | None:
+        for value in (
+            response.canonical_definition.name if response.canonical_definition else None,
+            response.semantic_query_evidence.metric_name
+            if response.semantic_query_evidence
+            else None,
+            response.driver_decomposition.metric_name if response.driver_decomposition else None,
+            response.metric_definition_gap.requested_metric_name
+            if response.metric_definition_gap
+            else None,
+        ):
+            if value:
+                return value
+        return None
+
+    @classmethod
+    def _conversation_turn(
+        cls, request: AnswerQuestionRequest, response: GovernedAnalyticalResponse
+    ) -> ConversationTurn:
+        return ConversationTurn(
+            turn_id=str(uuid4()),
+            question=request.question,
+            result_classification=response.result_classification,
+            metric_name=cls._conversation_metric_name(response),
+            trace_id=response.trace_id,
+            created_at=datetime.now(UTC),
+        )
+
+    @classmethod
+    def _conversation_summary(
+        cls, request: AnswerQuestionRequest, response: GovernedAnalyticalResponse
+    ) -> ConversationSummary:
+        prior = request.conversation_context.summary if request.conversation_context else None
+        metric_name = cls._conversation_metric_name(response) or (
+            prior.metric_name if prior else None
+        )
+        revision_ids = list(prior.evidence_revision_ids) if prior else []
+        if response.evidence is not None:
+            revision_ids.extend(
+                f"{citation.source_document_id}@{citation.source_revision}"
+                for citation in response.evidence.citations
+            )
+        conclusions = list(prior.qualified_conclusions) if prior else []
+        conclusion = response.result_classification.value
+        if response.evidence is not None:
+            conclusion = f"{conclusion}:{response.evidence.support_status.value}"
+        conclusions.append(conclusion)
+        return ConversationSummary(
+            agent_user_goal=(
+                prior.agent_user_goal
+                if prior and prior.agent_user_goal
+                else cls._conversation_goal(response, metric_name)
+            ),
+            resolved_scope=response.effective_access_scope,
+            metric_name=metric_name,
+            evidence_revision_ids=list(dict.fromkeys(revision_ids))[-32:],
+            qualified_conclusions=list(dict.fromkeys(conclusions))[-32:],
+            open_questions=list(prior.open_questions) if prior else [],
+            workflow_state=response.result_classification.value,
+        )
+
+    @staticmethod
+    def _conversation_goal(response: GovernedAnalyticalResponse, metric_name: str | None) -> str:
+        if metric_name is not None:
+            return f"Resolve governed metric {metric_name}."
+        return f"Resolve governed {response.result_classification.value} analysis."
 
     def readiness(self) -> dict[str, object]:
         """Expose model dependency state without exposing request or credential data."""
@@ -271,9 +397,7 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        if metric_name == "jira_new_peu" and self._requests_apac_decline_evidence(
-            request.question
-        ):
+        if metric_name == "jira_new_peu" and self._requests_apac_decline_evidence(request.question):
             return self._answer_apac_decline_evidence(
                 scope=scope,
                 access_profile=access_profile,
@@ -306,9 +430,7 @@ class AnswerQuestionService:
             "confluence_new_peu",
             "jira_new_mau",
             "confluence_new_mau",
-        } and (
-            self._requests_may_to_june_driver_decomposition(request.question)
-        ):
+        } and (self._requests_may_to_june_driver_decomposition(request.question)):
             return self._answer_metric_driver_decomposition(
                 metric_name=metric_name,
                 scope=scope,
@@ -600,6 +722,7 @@ class AnswerQuestionService:
                 else "not_evaluated"
             ),
             response=response.model_dump(mode="json"),
+            conversation_id=response.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
         )
@@ -649,6 +772,7 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "access_denied",
             },
+            conversation_id=trace_context.conversation_id or request.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
         )
@@ -687,6 +811,7 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "dependency_unavailable",
             },
+            conversation_id=trace_context.conversation_id or request.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
         )
@@ -710,9 +835,7 @@ class AnswerQuestionService:
         ):
             return self.semantic_gateway.canonical_definition(metric_name)
 
-    def _semantic_execute_scoped_metric(
-        self, metric_name: str, access_profile, **scope_kwargs
-    ):
+    def _semantic_execute_scoped_metric(self, metric_name: str, access_profile, **scope_kwargs):
         with trace_span(
             "semantic_query",
             kind="tool",
@@ -795,13 +918,11 @@ class AnswerQuestionService:
     def _answer_metric_driver_decomposition(
         self, *, metric_name: str, scope, access_profile, trace_id: str
     ):
-        definition, decomposition, query_evidence, freshness = (
-            self._semantic_driver_decomposition(
-                metric_name,
-                access_profile,
-                baseline_period="2026-05",
-                comparison_period="2026-06",
-            )
+        definition, decomposition, query_evidence, freshness = self._semantic_driver_decomposition(
+            metric_name,
+            access_profile,
+            baseline_period="2026-05",
+            comparison_period="2026-06",
         )
         if definition is None or decomposition is None or query_evidence is None:
             return GovernedAnalyticalResponse(
@@ -982,9 +1103,7 @@ class AnswerQuestionService:
                 if evaluation.registration.seat_tier is None:
                     access_profile.authorize_region(region)
                 else:
-                    access_profile.authorize_tenant_scope(
-                        region, evaluation.registration.seat_tier
-                    )
+                    access_profile.authorize_tenant_scope(region, evaluation.registration.seat_tier)
         definition = None
         query_evidence = None
         if evaluation.outcome == "causal_estimate":
@@ -1198,13 +1317,11 @@ class AnswerQuestionService:
         metric_product = self._metric_product(metric_name)
         access_profile.authorize_product(metric_product)
         access_profile.authorize_region(region)
-        definition, decomposition, query_evidence, freshness = (
-            self._semantic_driver_decomposition(
-                metric_name,
-                access_profile,
-                baseline_period="2026-05",
-                comparison_period="2026-06",
-            )
+        definition, decomposition, query_evidence, freshness = self._semantic_driver_decomposition(
+            metric_name,
+            access_profile,
+            baseline_period="2026-05",
+            comparison_period="2026-06",
         )
         if definition is None or decomposition is None or query_evidence is None:
             return GovernedAnalyticalResponse(
@@ -1313,9 +1430,7 @@ class AnswerQuestionService:
                 f"{product} {region} direct identifiers",
                 graph_filter,
                 limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
-                metric_name=(
-                    "confluence_new_peu" if product == "Confluence" else "jira_new_peu"
-                ),
+                metric_name=("confluence_new_peu" if product == "Confluence" else "jira_new_peu"),
             )
             if graph_filter.allows(path)
         ][:_DIRECT_IDENTIFIER_RESULT_LIMIT]
@@ -1350,8 +1465,7 @@ class AnswerQuestionService:
         )
         identifier_text = ", ".join(identifier.value for identifier in identifiers)
         answer = (
-            "Bounded, audited direct-identifier response: "
-            f"{identifier_text}."
+            f"Bounded, audited direct-identifier response: {identifier_text}."
             if identifier_text
             else "No permitted direct identifiers were found in the requested scope."
         )
@@ -1428,15 +1542,11 @@ class AnswerQuestionService:
                 continue
             for value in document.sensitive_identifiers:
                 candidates.extend(
-                    AnswerQuestionService._identifier_values(
-                        value, "tenant", access_profile
-                    )
+                    AnswerQuestionService._identifier_values(value, "tenant", access_profile)
                 )
             for value in _IDENTIFIER_PATTERN.findall(document.text):
                 candidates.extend(
-                    AnswerQuestionService._identifier_values(
-                        value, "tenant", access_profile
-                    )
+                    AnswerQuestionService._identifier_values(value, "tenant", access_profile)
                 )
         unique: dict[tuple[str, str], SensitiveIdentifier] = {}
         for candidate in candidates:
@@ -1526,10 +1636,7 @@ class AnswerQuestionService:
             and "decline" in normalized
             and "onboarding" in normalized
             and "regression" in normalized
-            and (
-                "51–200" in question
-                or "51-200" in normalized
-            )
+            and ("51–200" in question or "51-200" in normalized)
         )
 
     @staticmethod
@@ -1792,6 +1899,12 @@ class AnswerQuestionService:
         normalized = " ".join(request.question.casefold().split())
         if _requests_outside_analytical_scope(normalized):
             return None
+        if (
+            request.conversation_context is not None
+            and request.conversation_context.summary.metric_name is not None
+            and _requests_conversational_metric_follow_up(normalized)
+        ):
+            return request.conversation_context.summary.metric_name
         if "jira" in normalized and ("new peu" in normalized or "new paid enabled" in normalized):
             return "jira_new_peu"
         if "jira" in normalized and "new mau" in normalized:
@@ -1845,20 +1958,19 @@ class AnswerQuestionService:
         )
         if metric_name not in known_metric_names:
             return AnalyticalRoute.METRIC_DEFINITION_GAP
-        if (
-            metric_name
-            in {"jira_new_peu", "confluence_new_peu", "jira_new_mau", "confluence_new_mau"}
-            and AnswerQuestionService._requests_may_to_june_driver_decomposition(request.question)
-        ):
+        if metric_name in {
+            "jira_new_peu",
+            "confluence_new_peu",
+            "jira_new_mau",
+            "confluence_new_mau",
+        } and AnswerQuestionService._requests_may_to_june_driver_decomposition(request.question):
             return AnalyticalRoute.DRIVER_DECOMPOSITION
         if AnswerQuestionService._is_canonical_definition_request(request, metric_name):
             return AnalyticalRoute.CANONICAL_DEFINITION
         return AnalyticalRoute.LEGACY
 
     @staticmethod
-    def _requires_specialist_dispatch(
-        request: AnswerQuestionRequest, metric_name: str
-    ) -> bool:
+    def _requires_specialist_dispatch(request: AnswerQuestionRequest, metric_name: str) -> bool:
         """Route only requests the current specialist dispatcher can complete."""
         return (
             AnswerQuestionService._requests_direct_identifier(request.question)
@@ -1893,6 +2005,13 @@ class AnswerQuestionService:
 
 def _metric_identifier(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+
+def _requests_conversational_metric_follow_up(normalized_question: str) -> bool:
+    return (
+        any(phrase in normalized_question for phrase in ("that metric", "this metric"))
+        and any(term in normalized_question for term in ("mean", "definition", "defined"))
+    ) or "what does it mean" in normalized_question
 
 
 def _path_matches_metric(path, metric_name: str) -> bool:
