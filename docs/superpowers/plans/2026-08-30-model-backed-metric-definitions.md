@@ -4,7 +4,7 @@
 
 **Goal:** Let an authenticated Agent User ask a paraphrased Canonical Metric definition question through the bounded Ollama intent provider while keeping dbt/MetricFlow, authorization, and route selection deterministic.
 
-**Architecture:** The local model will classify only against the metric names exposed by the current validated semantic artifact. It will never produce a definition, route, scope, tool choice, or SQL; the service will retrieve the canonical definition and run the existing MetricFlow query after deterministic policy routing. A readiness endpoint will expose whether the opt-in Ollama dependency is configured, while model failures remain fail-closed clarification outcomes.
+**Architecture:** The local intent model will classify only against the metric names exposed by the current validated semantic artifact. It will never produce a definition, route, scope, tool choice, or SQL; the service will retrieve the canonical definition and run the existing MetricFlow query after deterministic policy routing. The agreed `qwen3:4b` transport is isolated from the generic Ollama transport retained by the existing evidence-drafting adapter. A readiness endpoint will expose whether the opt-in Ollama intent dependency is configured, while model failures remain fail-closed clarification outcomes.
 
 **Tech Stack:** Python 3.11+, FastAPI, Pydantic, LangGraph, MetricFlow/dbt semantic artifacts, Ollama HTTP API, pytest, Ruff, uv.
 
@@ -15,9 +15,9 @@
 - dbt and MetricFlow remain the only canonical metric-definition authority.
 - LLM output is a schema-validated metric proposal only; it may not define metrics, permissions, routes, tools, SQL, or scope.
 - Only metric names from a current, successfully validated semantic artifact may be offered as canonical candidates.
-- Ambiguous, invalid, unavailable, or out-of-catalog model output must route to clarification or an explicit unavailable/limitation response.
+- The intent proposal must explicitly declare itself unambiguous; ambiguous, invalid, unavailable, or out-of-catalog model output must route to clarification or an explicit unavailable/limitation response.
 - Do not implement issue #52 authentication changes or any later ticket.
-- Preserve the existing deterministic interpreter when Ollama is not configured.
+- Preserve the existing deterministic interpreter when Ollama intent is not configured, and preserve generic Ollama model compatibility for evidence drafting.
 
 ---
 

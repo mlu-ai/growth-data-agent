@@ -92,6 +92,7 @@ class AnswerQuestionService:
         trace_sink: TraceSink | None = None,
         execution_graph: ExecutionGraph | None = None,
         local_model: LocalModelTransport | None = None,
+        evidence_model: LocalModelTransport | None = None,
         intent_interpreter: IntentInterpreter | None = None,
         evidence_drafting_adapter: EvidenceDraftingAdapter | None = None,
     ):
@@ -118,8 +119,11 @@ class AnswerQuestionService:
         self.causal_pipeline = causal_pipeline or default_causal_pipeline()
         self.trace_sink = trace_sink or NoOpTraceSink()
         self.local_model = local_model
+        evidence_model = evidence_model if evidence_model is not None else local_model
         self.evidence_drafting_adapter = evidence_drafting_adapter or (
-            LocalModelEvidenceDraftingAdapter(local_model) if local_model is not None else None
+            LocalModelEvidenceDraftingAdapter(evidence_model)
+            if evidence_model is not None
+            else None
         )
         if intent_interpreter is not None:
             configured_intent_interpreter = intent_interpreter

@@ -77,6 +77,7 @@ class LocalModelIntentProposal(BaseModel):
         max_length=128,
         pattern=r"^[a-z0-9_]+$",
     )
+    ambiguity: Literal["unambiguous", "ambiguous"]
 
 
 class CitedEvidenceCitation(BaseModel):
@@ -234,6 +235,17 @@ class LocalModelDraftProposal(BaseModel):
     )
 
 
+def _ollama_timeout_from_environment() -> float:
+    timeout_text = os.environ.get("OLLAMA_TIMEOUT_SECONDS", "60")
+    try:
+        timeout = float(timeout_text)
+    except ValueError as error:
+        raise ValueError("OLLAMA_TIMEOUT_SECONDS must be a positive number.") from error
+    if timeout <= 0:
+        raise ValueError("OLLAMA_TIMEOUT_SECONDS must be a positive number.")
+    return timeout
+
+
 class _OllamaHttpClient:
     """Shared local HTTP mechanics for the constrained and evaluator-only clients."""
 
@@ -277,68 +289,19 @@ class _OllamaHttpClient:
 
 
 class OllamaLocalModel(_OllamaHttpClient):
-    """Constrained Ollama transport used by the intent and evidence adapters."""
-
-    def __init__(
-        self,
-        *,
-        model_name: str,
-        base_url: str = "http://127.0.0.1:11434",
-        timeout: float = 60.0,
-    ) -> None:
-        if model_name != OLLAMA_INTENT_MODEL_NAME:
-            raise ValueError(
-                f"The governed intent provider requires {OLLAMA_INTENT_MODEL_NAME}."
-            )
-        super().__init__(model_name=model_name, base_url=base_url, timeout=timeout)
+    """Generic Ollama transport retained for evidence drafting compatibility."""
 
     @classmethod
     def from_environment(cls) -> OllamaLocalModel | None:
-        """Build the adapter only when the local intent model is explicitly configured."""
+        """Build the generic local model adapter when explicitly configured."""
         model_name = os.environ.get("OLLAMA_MODEL_NAME")
         if not model_name:
             return None
-        timeout_text = os.environ.get("OLLAMA_TIMEOUT_SECONDS", "60")
-        try:
-            timeout = float(timeout_text)
-        except ValueError as error:
-            raise ValueError("OLLAMA_TIMEOUT_SECONDS must be a positive number.") from error
-        if timeout <= 0:
-            raise ValueError("OLLAMA_TIMEOUT_SECONDS must be a positive number.")
         return cls(
             model_name=model_name,
             base_url=os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            timeout=timeout,
+            timeout=_ollama_timeout_from_environment(),
         )
-
-    def readiness(self) -> dict[str, str]:
-        """Check that Ollama responds for the configured intent model."""
-        request = urllib.request.Request(
-            f"{self.base_url}/api/show",
-            data=json.dumps({"name": self.model_name}).encode(),
-            headers={"content-type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                payload = json.loads(response.read())
-        except (OSError, urllib.error.URLError, TimeoutError, ValueError):
-            return {
-                "provider": "ollama",
-                "status": "unavailable",
-                "model": self.model_name,
-            }
-        if not isinstance(payload, dict):
-            return {
-                "provider": "ollama",
-                "status": "unavailable",
-                "model": self.model_name,
-            }
-        return {
-            "provider": "ollama",
-            "status": "ready",
-            "model": self.model_name,
-        }
 
     def generate(self, request: LocalModelCall) -> str:
         return self._send(self._request_data(request))
@@ -359,7 +322,9 @@ class OllamaLocalModel(_OllamaHttpClient):
                 "Return only one JSON object matching the requested bounded schema. "
                 "Never decide permissions, routes, tools, SQL, or add citations not in the input.\n"
                 f"Task: {call.task}\n"
-                "For intent_proposal return only metric_name. For evidence_draft return only "
+                "For intent_proposal return only metric_name and ambiguity. Set ambiguity to "
+                "ambiguous and metric_name to null unless the question clearly selects exactly "
+                "one listed metric. For evidence_draft return only "
                 "answer, citation_document_ids, support_status, and cited_claims. The answer "
                 "must copy the supplied support_explanation exactly, and every claim must be "
                 "copied exactly from supplied support text.\n"
@@ -369,6 +334,57 @@ class OllamaLocalModel(_OllamaHttpClient):
             "format": "json",
             "options": {"temperature": 0},
         }
+
+    def readiness(self) -> dict[str, str]:
+        """Check that Ollama responds for the configured model."""
+        request = urllib.request.Request(
+            f"{self.base_url}/api/show",
+            data=json.dumps({"name": self.model_name}).encode(),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = json.loads(response.read())
+        except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+            status = "unavailable"
+        else:
+            status = "ready" if isinstance(payload, dict) else "unavailable"
+        return {
+            "provider": "ollama",
+            "status": status,
+            "model": self.model_name,
+        }
+
+
+class OllamaIntentModel(OllamaLocalModel):
+    """Ollama transport restricted to the agreed request-time intent model."""
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        base_url: str = "http://127.0.0.1:11434",
+        timeout: float = 60.0,
+    ) -> None:
+        if model_name != OLLAMA_INTENT_MODEL_NAME:
+            raise ValueError(
+                f"The governed intent provider requires {OLLAMA_INTENT_MODEL_NAME}."
+            )
+        super().__init__(model_name=model_name, base_url=base_url, timeout=timeout)
+
+    @classmethod
+    def from_environment(cls) -> OllamaIntentModel | None:
+        """Enable the intent provider only for the agreed model configuration."""
+        model_name = os.environ.get("OLLAMA_MODEL_NAME")
+        if not model_name or model_name != OLLAMA_INTENT_MODEL_NAME:
+            return None
+        return cls(
+            model_name=model_name,
+            base_url=os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+            timeout=_ollama_timeout_from_environment(),
+        )
+
 
 class OllamaBaselineModel(_OllamaHttpClient):
     """Evaluator-only client isolated from the constrained service transport."""
@@ -431,9 +447,14 @@ class LocalModelIntentInterpreter:
             model_input=model_request.model_dump(mode="json", exclude={"task"}),
             response_model=LocalModelIntentProposal,
         )
-        if proposal.metric_name is None or proposal.metric_name not in available_metric_names:
+        if (
+            proposal.ambiguity != "unambiguous"
+            or proposal.metric_name is None
+            or proposal.metric_name not in available_metric_names
+        ):
             raise LocalModelOutputInvalid(
-                "Local-model intent selected a metric outside the validated semantic artifact."
+                "Local-model intent was ambiguous or selected a metric outside the validated "
+                "semantic artifact."
             )
         route = self._route_resolver(request, proposal.metric_name)
         return AnalyticalIntent(route=route, metric_name=proposal.metric_name)

@@ -73,8 +73,9 @@ make serve
 ```
 
 The bounded local intent provider uses Ollama when explicitly enabled. Set
-`OLLAMA_MODEL_NAME=qwen3:4b` for the agreed initial model (other model names
-are rejected; optionally set `OLLAMA_BASE_URL` or `OLLAMA_TIMEOUT_SECONDS`):
+`OLLAMA_MODEL_NAME=qwen3:4b` for the agreed initial model (only this value
+enables intent interpretation; optionally set `OLLAMA_BASE_URL` or
+`OLLAMA_TIMEOUT_SECONDS`):
 
 ```sh
 OLLAMA_MODEL_NAME=qwen3:4b make serve
@@ -82,10 +83,13 @@ OLLAMA_MODEL_NAME=qwen3:4b make serve
 
 The intent model receives only the question and metric names from the current,
 successfully validated dbt/MetricFlow artifact. It emits a schema-validated
-metric proposal; it cannot define metrics, choose permissions, routes, tools,
-or SQL. Canonical definitions and MetricFlow queries remain deterministic and
-are loaded from the validated semantic artifact after routing. Invalid,
-ambiguous, or unavailable model output fails closed to clarification.
+metric proposal with an explicit ambiguity status; it cannot define metrics,
+choose permissions, routes, tools, or SQL. Canonical definitions and MetricFlow
+queries remain deterministic and are loaded from the validated semantic
+artifact after routing. Invalid, ambiguous, or unavailable model output fails
+closed to clarification. Other `OLLAMA_MODEL_NAME` values leave the intent
+provider disabled while remaining available to the existing evidence-drafting
+adapter.
 
 Check the model dependency before sending analytical requests:
 
