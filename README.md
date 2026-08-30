@@ -41,9 +41,22 @@ labelled onboarding-email regression Hypothesis.
 
 Choose one Postgres setup before running the data and application commands.
 
+Before starting either path, configure one locally generated opaque bearer
+token for each of the five development principals. The following commands
+generate values without printing them; keep them in the shell environment and
+never commit or log them:
+
+```sh
+export GROWTH_DATA_AGENT_DEV_TOKEN_DATA_ANALYST="$(openssl rand -hex 32)"
+export GROWTH_DATA_AGENT_DEV_TOKEN_APAC_REGIONAL_MANAGER="$(openssl rand -hex 32)"
+export GROWTH_DATA_AGENT_DEV_TOKEN_JIRA_PRODUCT_MANAGER="$(openssl rand -hex 32)"
+export GROWTH_DATA_AGENT_DEV_TOKEN_CONFLUENCE_PRODUCT_MANAGER="$(openssl rand -hex 32)"
+export GROWTH_DATA_AGENT_DEV_TOKEN_CUSTOMER_SUCCESS_MANAGER="$(openssl rand -hex 32)"
+```
+
 ### Option A: Docker Compose
 
-This is the zero-configuration quick start. It creates the repository's local
+This is the local-container quick start. It creates the repository's local
 Apache AGE/Postgres container on host port 5432.
 
 ```sh
@@ -115,9 +128,11 @@ least-privileged application role are tracked separately in [issue #27](https://
 this setup does not elevate the role or bypass those requirements.
 
 ```sh
+export GROWTH_DATA_AGENT_DEV_TOKEN_DATA_ANALYST='<locally-generated-opaque-token>'
 curl -X POST http://127.0.0.1:8000/answer_question \
   -H 'content-type: application/json' \
-  -d '{"agent_user_id":"data_analyst","question":"What is Jira New PEU?"}'
+  -H "Authorization: Bearer ${GROWTH_DATA_AGENT_DEV_TOKEN_DATA_ANALYST}" \
+  -d '{"question":"What is Jira New PEU?"}'
 ```
 
 The deterministic generator produces 1,000 Tenants, 10,000 Persons, 16,000

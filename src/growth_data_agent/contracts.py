@@ -6,7 +6,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ResultClassification(StrEnum):
@@ -55,12 +55,21 @@ class AnalyticalIntent(BaseModel):
         return self
 
 
-class AnswerQuestionRequest(BaseModel):
-    agent_user_id: str = Field(min_length=1)
+class AnswerQuestionPayload(BaseModel):
+    """Public answer payload; authentication is supplied by the HTTP header."""
+
+    model_config = ConfigDict(extra="ignore")
+
     question: str = Field(min_length=1)
     requested_metric_name: str | None = Field(default=None, min_length=1)
     experiment_id: str | None = Field(default=None, min_length=1)
     verification_request_confirmation: VerificationRequestConfirmation | None = None
+
+
+class AnswerQuestionRequest(AnswerQuestionPayload):
+    """Internal request after the HTTP boundary has verified a Principal."""
+
+    agent_user_id: str = Field(min_length=1)
 
 
 class EffectiveAccessScope(BaseModel):

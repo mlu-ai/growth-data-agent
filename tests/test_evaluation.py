@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
+from runpy import run_path
 
 import pytest
 from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, write_artifact
@@ -21,8 +23,11 @@ from growth_data_agent.evaluation import (
     record_baseline,
 )
 from growth_data_agent.main import create_app
+from growth_data_agent.principal import development_token_environment_variable
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
+
+_invoke = run_path(str(Path(__file__).parents[1] / "scripts/run_evaluations.py"))["_invoke"]
 
 
 def test_generation_evaluation_checks_observable_governed_response_fields() -> None:
@@ -57,6 +62,41 @@ def test_generation_evaluation_checks_observable_governed_response_fields() -> N
     assert results[0].category == "definition"
     assert results[0].evaluation_category == "governed_response"
     assert results[0].failures == ()
+
+
+def test_evaluation_invocation_authenticates_without_body_identity(monkeypatch) -> None:
+    token = "evaluation-token-" + secrets.token_urlsafe(16)
+    monkeypatch.setenv(development_token_environment_variable("data_analyst"), token)
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"result_classification": "canonical_definition"}
+
+    class RecordingClient:
+        def post(self, url, *, headers, json):
+            self.url = url
+            self.headers = headers
+            self.json = json
+            return Response()
+
+    client = RecordingClient()
+    result = _invoke(
+        {
+            "agent_user_id": "data_analyst",
+            "question": "Define Jira New PEU",
+            "_fixture_id": "definition",
+        },
+        client,
+        client,
+    )
+
+    assert result.status_code == 200
+    assert client.url == "/answer_question"
+    assert client.headers == {"Authorization": f"Bearer {token}"}
+    assert client.json == {"question": "Define Jira New PEU"}
 
 
 def test_retrieval_evaluation_reports_ranking_metrics_without_generation_judgement() -> None:

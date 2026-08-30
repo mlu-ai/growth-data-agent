@@ -1,17 +1,52 @@
 from __future__ import annotations
 
 import json
+import os
+import secrets
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import testclient as fastapi_testclient
+from fastapi.testclient import TestClient as _BaseTestClient
 
 from growth_data_agent.main import create_app
 from growth_data_agent.metricflow_query import PlannedMetricFlowQuery
+from growth_data_agent.principal import (
+    DEVELOPMENT_PRINCIPAL_IDS,
+    development_token_environment_variable,
+)
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
+
+_TEST_PRINCIPAL_IDS = DEVELOPMENT_PRINCIPAL_IDS
+_TEST_TOKENS = {
+    principal_id: secrets.token_urlsafe(32) for principal_id in _TEST_PRINCIPAL_IDS
+}
+def pytest_configure() -> None:
+    for principal_id, token in _TEST_TOKENS.items():
+        os.environ[development_token_environment_variable(principal_id)] = token
+
+
+class AuthenticatedTestClient(_BaseTestClient):
+    """Keep pre-authentication fixtures valid while sending real bearer headers."""
+
+    def post(self, url, *args, **kwargs):
+        if url == "/answer_question":
+            headers = dict(kwargs.get("headers") or {})
+            has_authorization = any(key.casefold() == "authorization" for key in headers)
+            payload = kwargs.get("json")
+            principal_id = payload.get("agent_user_id") if isinstance(payload, dict) else None
+            token = _TEST_TOKENS.get(principal_id)
+            if not has_authorization and token is not None:
+                headers["Authorization"] = f"Bearer {token}"
+                kwargs["headers"] = headers
+        return super().post(url, *args, **kwargs)
+
+
+fastapi_testclient.TestClient = AuthenticatedTestClient
+TestClient = AuthenticatedTestClient
 
 
 def write_artifact(path: Path, *, status: str = "success", hours_old: int = 0) -> Path:
