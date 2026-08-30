@@ -11,6 +11,7 @@ from growth_data_agent.contracts import EvidenceSupportStatus
 from growth_data_agent.evidence import EvidenceAccessFilter, EvidenceDocument
 from growth_data_agent.main import create_app
 from growth_data_agent.policy import AccessDeniedError, AccessProfile, tenant_ids_for_region
+from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 from growth_data_agent.synthetic import evidence_corpus
@@ -45,7 +46,15 @@ def _client(
         postgres_executor=executor,
         now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
-    return TestClient(create_app(AnswerQuestionService(gateway, evidence_store=evidence_store)))
+    return TestClient(
+        create_app(
+            AnswerQuestionService(
+                gateway,
+                evidence_store=evidence_store,
+                evidence_reranker=DeterministicCrossEncoderReranker(),
+            )
+        )
+    )
 
 
 def _evidence_question() -> str:
@@ -67,7 +76,7 @@ def test_evidence_filter_contains_all_entitlements_before_store_retrieval(tmp_pa
     assert access_filter.products == ("Jira",)
     assert access_filter.regions == ("APAC",)
     assert access_filter.tenant_ids
-    assert "tenant-0002" in access_filter.tenant_ids
+    assert "tenant-0011" in access_filter.tenant_ids
     assert "tenant-0001" not in access_filter.tenant_ids
     assert access_filter.classifications == ("internal",)
     assert access_filter.identifier_entitlements == ("none",)

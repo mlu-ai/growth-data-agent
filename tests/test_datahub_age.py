@@ -31,6 +31,7 @@ from growth_data_agent.graph import (
     apache_age_preloaded_from_environment,
 )
 from growth_data_agent.main import create_app
+from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 from growth_data_agent.synthetic import evidence_corpus, graph_corpus
@@ -955,7 +956,13 @@ def test_graph_filter_is_derived_before_traversal_and_restricted_paths_are_not_r
     executor = RecordingAgeQueryExecutor([restricted_path])
     graph_store = ApacheAgeEvidenceGraphStore(executor)
     client = TestClient(
-        create_app(AnswerQuestionService(gateway, graph_store=graph_store))
+        create_app(
+            AnswerQuestionService(
+                gateway,
+                graph_store=graph_store,
+                evidence_reranker=DeterministicCrossEncoderReranker(),
+            )
+        )
     )
 
     response = client.post(

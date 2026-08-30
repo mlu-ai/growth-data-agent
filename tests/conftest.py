@@ -17,6 +17,7 @@ from growth_data_agent.principal import (
     DEVELOPMENT_PRINCIPAL_IDS,
     development_token_environment_variable,
 )
+from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 
@@ -246,4 +247,11 @@ def client(tmp_path: Path) -> TestClient:
         postgres_executor=executor,
         now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
-    return TestClient(create_app(AnswerQuestionService(gateway)))
+    return TestClient(
+        create_app(
+            AnswerQuestionService(
+                gateway,
+                evidence_reranker=DeterministicCrossEncoderReranker(),
+            )
+        )
+    )

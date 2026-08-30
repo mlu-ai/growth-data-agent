@@ -18,6 +18,7 @@ from growth_data_agent.observability import (
     policy_fingerprint,
 )
 from growth_data_agent.policy import resolve_access_profile
+from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 
@@ -302,7 +303,15 @@ def test_each_supported_route_records_one_parent_trace(
         now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
     trace_sink = RecordingTraceSink()
-    client = TestClient(create_app(AnswerQuestionService(gateway, trace_sink=trace_sink)))
+    client = TestClient(
+        create_app(
+            AnswerQuestionService(
+                gateway,
+                trace_sink=trace_sink,
+                evidence_reranker=DeterministicCrossEncoderReranker(),
+            )
+        )
+    )
 
     response = client.post(
         "/answer_question",
@@ -435,7 +444,13 @@ def test_governed_response_records_route_tools_and_source_versions(
     )
     trace_sink = RecordingTraceSink()
     client = TestClient(
-        create_app(AnswerQuestionService(gateway, trace_sink=trace_sink))
+        create_app(
+            AnswerQuestionService(
+                gateway,
+                trace_sink=trace_sink,
+                evidence_reranker=DeterministicCrossEncoderReranker(),
+            )
+        )
     )
 
     response = client.post(
