@@ -252,6 +252,11 @@ def test_customer_success_manager_receives_bounded_audited_tenant_identifiers(
     assert body["direct_identifier_answer"]["audit_event_id"]
     assert body["direct_identifier_audit"]["returned_count"] == len(identifiers)
     assert body["direct_identifier_audit"]["maximum_results"] == 3
+    assert body["direct_identifier_audit"]["agent_user_id"] == "customer_success_manager"
+    assert body["direct_identifier_audit"]["scope"] == body["effective_access_scope"]
+    assert body["direct_identifier_audit"]["policy_fingerprint"]
+    assert body["direct_identifier_audit"]["outcome"] == "released"
+    assert body["direct_identifier_audit"]["trace_id"] == body["trace_id"]
     assert "tenant-0011" in body["answer"]
     assert "tenant-0002" not in response.text
 

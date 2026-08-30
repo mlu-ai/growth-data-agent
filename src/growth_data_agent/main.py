@@ -9,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from .audit import SQLiteDirectIdentifierAuditRecorder
 from .contracts import AnswerQuestionPayload, AnswerQuestionRequest, GovernedAnalyticalResponse
 from .datahub import DataHubHttpCatalog
 from .graph import (
@@ -18,12 +19,17 @@ from .graph import (
     apache_age_preloaded_from_environment,
 )
 from .local_model import OllamaIntentModel, OllamaLocalModel
+from .metric_definition_gaps import SQLiteDataTeamVerificationRequestRecorder
 from .metricflow_query import (
     MetricFlowPlanner,
     PostgresMetricFlowExecutor,
     SemanticQueryExecutionError,
 )
 from .observability import MlflowTraceSink
+from .persistence import (
+    decision_record_path_from_environment,
+    decision_record_retention_from_environment,
+)
 from .policy import AccessDeniedError, UnknownAgentUserError
 from .principal import (
     DevelopmentTokenPrincipalResolver,
@@ -36,6 +42,7 @@ from .service import AnswerQuestionService
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_ARTIFACT = _REPOSITORY_ROOT / "dbt/artifacts/last_validated_semantic.json"
 _DEFAULT_SEMANTIC_MANIFEST = _REPOSITORY_ROOT / "dbt/target/semantic_manifest.json"
+_DEFAULT_DECISION_RECORDS = _REPOSITORY_ROOT / "data/decision_records.sqlite3"
 
 
 def create_app(
@@ -51,6 +58,8 @@ def create_app(
     age_database_url = os.environ.get("APACHE_AGE_DATABASE_URL")
     intent_model = None if service is not None else OllamaIntentModel.from_environment()
     evidence_model = None if service is not None else OllamaLocalModel.from_environment()
+    decision_records_path = decision_record_path_from_environment(_DEFAULT_DECISION_RECORDS)
+    decision_record_retention = decision_record_retention_from_environment()
     app.state.answer_service = service or AnswerQuestionService(
         ValidatedMetricFlowGateway(
             SemanticArtifactStore(
@@ -88,6 +97,14 @@ def create_app(
             )
             if age_database_url
             else None
+        ),
+        verification_request_recorder=SQLiteDataTeamVerificationRequestRecorder(
+            decision_records_path,
+            retention=decision_record_retention,
+        ),
+        direct_identifier_audit_recorder=SQLiteDirectIdentifierAuditRecorder(
+            decision_records_path,
+            retention=decision_record_retention,
         ),
         trace_sink=MlflowTraceSink.from_environment(),
         local_model=intent_model,

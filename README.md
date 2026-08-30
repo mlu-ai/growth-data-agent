@@ -15,6 +15,14 @@ data-team verification request, but creates its local POC record only when the
 Agent User sends `verification_request_confirmation.approved: true` together
 with approval context. It never creates an external ticket.
 
+Authorized direct-identifier releases and explicitly approved Metric Definition
+Gap verification requests are persisted in a local SQLite decision-record
+database. Set `GROWTH_DATA_AGENT_DECISION_RECORDS_PATH` to choose its location
+and `GROWTH_DATA_AGENT_AUDIT_RETENTION_DAYS` to configure retention; the default
+is `data/decision_records.sqlite3` with twelve months (365 days). Only decision
+metadata is stored: identifier values, approval prose, and source-page bodies
+are excluded; a SHA-256 digest is retained for approval-context correlation.
+
 Evidence questions about the APAC Jira decline or the Confluence EMEA New MAU
 decline first run the validated Driver Decomposition, then query the synthetic
 Qdrant corpus with Access Profile-derived product, Region, Tenant,

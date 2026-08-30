@@ -126,7 +126,10 @@ class DataTeamVerificationRequest(BaseModel):
     requested_metric_name: str
     requested_by_agent_user_id: str
     approval_context: str
+    approval_context_sha256: str
     approved_at: datetime
+    decision_outcome: Literal["approved"]
+    trace_id: str
 
 
 class SemanticCitation(BaseModel):
@@ -269,6 +272,9 @@ class DirectIdentifierAudit(BaseModel):
     audit_event_id: str
     trace_id: str
     agent_user_id: str
+    scope: EffectiveAccessScope
+    policy_fingerprint: str
+    outcome: Literal["released", "no_identifiers_found"]
     recorded_at: datetime
     returned_count: int = Field(ge=0)
     maximum_results: int = Field(gt=0)

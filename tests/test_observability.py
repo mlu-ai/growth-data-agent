@@ -99,7 +99,7 @@ def test_mlflow_trace_is_redacted_and_contains_governance_fields() -> None:
     }
     payload = mlflow.artifacts["governed_trace.json"]
     assert "tenant-0011" not in str(payload)
-    assert "[redacted identifier]" in str(payload)
+    assert payload["response"]["has_direct_identifier_answer"] is True
     assert payload["trace_id"] == "trace-123"
     assert [span["name"] for span in mlflow.spans] == ["answer_question:trace-123"]
 
@@ -139,6 +139,77 @@ def test_mlflow_trace_redacts_span_payloads() -> None:
         "answer_question:trace-123",
         "evidence_retrieval",
     ]
+
+
+def test_mlflow_trace_does_not_persist_source_page_bodies() -> None:
+    mlflow = RecordingMlflow()
+    sink = MlflowTraceSink(mlflow_module=mlflow)
+    record = TraceRecord(
+        trace_id="trace-123",
+        request_route="answer_question",
+        response_classification="hypothesis",
+        policy_fingerprint="policy-abc",
+        source_versions={},
+        tool_outcomes={},
+        retrieval_scores=(),
+        evaluation_outcome="not_evaluated",
+        response={
+            "answer": "A safe summary",
+            "approval_context": "confidential source page body",
+            "source_page_body": "confidential source page body",
+            "evidence": {"text": "confidential source page body"},
+        },
+    )
+
+    sink.record(record)
+
+    payload = mlflow.artifacts["governed_trace.json"]
+    assert "confidential source page body" not in str(payload)
+
+
+def test_mlflow_trace_drops_unstructured_prose_and_arbitrary_identifier_values() -> None:
+    mlflow = RecordingMlflow()
+    sink = MlflowTraceSink(mlflow_module=mlflow)
+    raw_identifier = "customer-identity-ALPHA"
+    raw_source = "unstructured source-page content"
+    raw_span_value = "source-page body tenant-0099"
+    record = TraceRecord(
+        trace_id="trace-123",
+        request_route="answer_question",
+        response_classification="hypothesis",
+        policy_fingerprint="policy-abc",
+        source_versions={},
+        tool_outcomes={},
+        retrieval_scores=(),
+        evaluation_outcome="not_evaluated",
+        response={
+            "result_classification": "hypothesis",
+            "answer": raw_source,
+            "support_explanation": raw_source,
+            "page_content": raw_source,
+            "direct_identifier_answer": {
+                "identifiers": [
+                    {"identifier_type": "tenant_id", "value": raw_identifier}
+                ]
+            },
+        },
+        node_spans=(
+            TraceSpan(
+                name=raw_identifier,
+                kind="tool",
+                status="success",
+                attributes={"entity_name": raw_span_value},
+            ),
+        ),
+    )
+
+    sink.record(record)
+
+    assert raw_identifier not in str(mlflow.artifacts["governed_trace.json"])
+    assert raw_source not in str(mlflow.artifacts["governed_trace.json"])
+    assert raw_span_value not in str(mlflow.artifacts["governed_trace.json"])
+    assert raw_identifier not in str(mlflow.spans)
+    assert raw_span_value not in str(mlflow.spans)
 
 
 def test_mlflow_evaluation_hook_links_judgement_to_parent_trace() -> None:

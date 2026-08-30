@@ -22,11 +22,33 @@ _SAFE_SPAN_ATTRIBUTE_KEYS = frozenset(
         "experiment_id",
         "returned_count",
         "error_type",
-        "fallback",
     }
 )
-
-
+_SAFE_SPAN_NAMES = frozenset(
+    {
+        "answer_question",
+        "authorize",
+        "intent_interpretation",
+        "intent_validation",
+        "canonical_definition",
+        "legacy",
+        "driver_decomposition",
+        "causal_analysis",
+        "catalog_ownership",
+        "direct_identifier",
+        "limitation",
+        "metric_definition_gap",
+        "clarification",
+        "semantic_definition",
+        "semantic_query",
+        "semantic_driver_decomposition",
+        "evidence_retrieval",
+        "catalog_lookup",
+        "causal_evaluation",
+        "direct_identifier_audit",
+        "graph_traversal",
+    }
+)
 class TraceSink(Protocol):
     def record(self, trace: TraceRecord) -> None: ...
 
@@ -215,7 +237,7 @@ class MlflowTraceSink:
         ):
             for span in (*trace.node_spans, *trace.tool_spans):
                 with start_span(
-                    name=span.name,
+                    name=_safe_span_name(span.name),
                     span_type=span.kind.upper(),
                     attributes={
                         "status": span.status,
@@ -260,18 +282,73 @@ def redact_identifiers(value: Any) -> Any:
 
 
 def _redact_trace_payload(trace: TraceRecord) -> dict[str, Any]:
-    """Log only allowlisted span metadata; response fields still get identifier redaction."""
+    """Log metadata-only response details and allowlisted, sanitized span attributes."""
     payload = asdict(trace)
+    payload["response"] = _safe_response_payload(trace.response)
     for span_group in ("node_spans", "tool_spans"):
         for span in payload[span_group]:
+            span["name"] = _safe_span_name(span["name"])
             span["attributes"] = _safe_span_attributes(span["attributes"])
     return redact_identifiers(payload)
 
 
-def _safe_span_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
+def _safe_response_payload(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep response shape/count metadata while excluding all free-form response values."""
+    evidence = response.get("evidence")
+    evidence_citations = evidence.get("citations") if isinstance(evidence, Mapping) else ()
+    graph_paths = response.get("graph_paths")
+    caveats = response.get("caveats")
     return {
-        key: value for key, value in attributes.items() if key in _SAFE_SPAN_ATTRIBUTE_KEYS
+        "has_canonical_definition": response.get("canonical_definition") is not None,
+        "has_data_team_verification_request": (
+            response.get("data_team_verification_request") is not None
+        ),
+        "has_direct_identifier_answer": response.get("direct_identifier_answer") is not None,
+        "has_direct_identifier_audit": response.get("direct_identifier_audit") is not None,
+        "has_driver_decomposition": response.get("driver_decomposition") is not None,
+        "has_evidence": response.get("evidence") is not None,
+        "has_metric_definition_gap": response.get("metric_definition_gap") is not None,
+        "has_provisional_metric": response.get("provisional_metric") is not None,
+        "evidence_citation_count": _sequence_length(evidence_citations),
+        "graph_path_count": _sequence_length(graph_paths),
+        "caveat_count": _sequence_length(caveats),
     }
+
+
+def _sequence_length(value: Any) -> int:
+    return len(value) if isinstance(value, Sequence) and not isinstance(value, str) else 0
+
+
+def _safe_span_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in attributes.items():
+        if key not in _SAFE_SPAN_ATTRIBUTE_KEYS:
+            continue
+        if key == "entity_name" and isinstance(value, str):
+            safe[key] = (
+                "[redacted identifier]"
+                if _IDENTIFIER_PATTERN.search(value)
+                else f"[redacted entity {sha256(value.encode()).hexdigest()[:16]}]"
+            )
+            continue
+        if key in {"metric_name", "experiment_id"} and isinstance(value, str):
+            safe[f"{key}_fingerprint"] = sha256(value.encode()).hexdigest()[:16]
+            continue
+        if isinstance(value, str):
+            if key == "error_type" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+                safe[key] = value
+            else:
+                safe[f"{key}_fingerprint"] = sha256(value.encode()).hexdigest()[:16]
+            continue
+        safe[key] = value
+    return safe
+
+
+def _safe_span_name(name: str) -> str:
+    """Keep known operation names and hash arbitrary names before MLflow logging."""
+    if name in _SAFE_SPAN_NAMES:
+        return name
+    return f"span-{sha256(name.encode()).hexdigest()[:16]}"
 
 
 def policy_fingerprint(access_profile: Any) -> str:
