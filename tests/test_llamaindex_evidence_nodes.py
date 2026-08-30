@@ -22,7 +22,11 @@ def test_synthetic_evidence_is_ingested_as_stable_llamaindex_nodes() -> None:
     assert len(store.nodes) == len(corpus)
     node = store.nodes[0]
     assert node.node_id == str(
-        uuid5(NAMESPACE_URL, "jira-apac-paid-provisioning-incident:chunk:0")
+        uuid5(
+            NAMESPACE_URL,
+            "jira-apac-paid-provisioning-incident:synthetic-v1:"
+            "jira-apac-paid-provisioning-incident:chunk:0",
+        )
     )
     assert node.metadata["source_document_id"] == "jira-apac-paid-provisioning-incident"
     assert node.metadata["chunk_id"] == "jira-apac-paid-provisioning-incident:chunk:0"

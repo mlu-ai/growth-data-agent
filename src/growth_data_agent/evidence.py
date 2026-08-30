@@ -322,7 +322,9 @@ class QdrantEvidenceStore:
         embedding_provider: EmbeddingProvider | None = None,
     ):
         self._documents = tuple(documents)
-        self._documents_by_id = {document.document_id: document for document in self._documents}
+        self._documents_by_revision_key = {
+            _document_revision_key(document): document for document in self._documents
+        }
         self._nodes = tuple(_evidence_node(document) for document in self._documents)
         self._client = client or QdrantClient(location=":memory:")
         self._collection_name = collection_name
@@ -422,7 +424,7 @@ class QdrantEvidenceStore:
                 continue
             if access_filter.allows(document):
                 revisions.append(document)
-                self._documents_by_id[document.document_id] = document
+                self._documents_by_revision_key[_document_revision_key(document)] = document
         return revisions
 
     def _retrieve(
@@ -459,8 +461,12 @@ class QdrantEvidenceStore:
         candidates = []
         for point in result.points or []:
             metadata = _qdrant_point_metadata(point.payload or {})
-            document_id = str(metadata.get("document_id", ""))
-            document = self._documents_by_id.get(document_id)
+            revision_key = (
+                str(metadata.get("source_document_id", "")),
+                str(metadata.get("source_revision", "")),
+                str(metadata.get("chunk_id", "")),
+            )
+            document = self._documents_by_revision_key.get(revision_key)
             if document is None:
                 if not _has_explicit_active_revision_metadata(metadata):
                     continue
@@ -470,7 +476,7 @@ class QdrantEvidenceStore:
                     continue
                 if document.lifecycle_state is not EvidenceLifecycleState.ACTIVE:
                     continue
-                self._documents_by_id[document_id] = document
+                self._documents_by_revision_key[_document_revision_key(document)] = document
             if access_filter.allows(document):
                 candidates.append((document, float(point.score)))
         ranked = sorted(
@@ -622,7 +628,14 @@ def _evidence_node(
         }
     )
     return TextNode(
-        id_=str(uuid5(NAMESPACE_URL, node_identity or provenance.chunk_id)),
+        id_=str(
+            uuid5(
+                NAMESPACE_URL,
+                node_identity
+                or f"{provenance.source_document_id}:{provenance.source_revision}:"
+                f"{provenance.chunk_id}",
+            )
+        ),
         text=document.text,
         metadata=metadata,
         embedding=(
@@ -640,6 +653,11 @@ def _provenance_for(document: EvidenceDocument) -> EvidenceProvenance:
         source_revision=document.source_revision,
         chunk_id=document.chunk_id or f"{document.document_id}:chunk:0",
     )
+
+
+def _document_revision_key(document: EvidenceDocument) -> tuple[str, str, str]:
+    provenance = _provenance_for(document)
+    return (provenance.source_document_id, provenance.source_revision, provenance.chunk_id)
 
 
 def _has_explicit_active_revision_metadata(metadata: dict[str, object]) -> bool:

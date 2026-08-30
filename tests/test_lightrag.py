@@ -348,6 +348,64 @@ def test_concrete_qdrant_and_age_queries_receive_the_authorized_revision_scope()
     assert "$authorized_source_document_id_0" in age_executor.query_calls[0][0]
 
 
+def test_qdrant_keeps_same_chunk_id_revisions_independently_scoped() -> None:
+    base_document = evidence_corpus()[0]
+    revision_one = base_document.model_copy(
+        update={
+            "document_id": "jira-apac-paid-provisioning-incident",
+            "source_document_id": "jira-apac-paid-provisioning-incident",
+            "source_page_id": "jira-apac-paid-provisioning-incident",
+            "source_url": "https://evidence.local/jira-apac-paid-provisioning-incident",
+            "source_revision": "revision-1",
+            "chunk_id": "jira-apac-paid-provisioning-incident:chunk:0",
+            "revision_fingerprint": "fingerprint-1",
+            "text": "Revision one APAC provisioning evidence.",
+        }
+    )
+    revision_two = revision_one.model_copy(
+        update={
+            "source_revision": "revision-2",
+            "revision_fingerprint": "fingerprint-2",
+            "text": "Revision two APAC provisioning evidence.",
+        }
+    )
+    store = QdrantEvidenceStore([revision_one, revision_two])
+    access_filter = _access_filter()
+
+    assert len(store.nodes) == 2
+    assert len({node.node_id for node in store.nodes}) == 2
+
+    first = store.retrieve_scoped(
+        "APAC provisioning",
+        access_filter,
+        {"jira-apac-paid-provisioning-incident"},
+        limit=3,
+        authorized_revision_keys={
+            (
+                "jira-apac-paid-provisioning-incident",
+                "revision-1",
+                "jira-apac-paid-provisioning-incident:chunk:0",
+            )
+        },
+    )
+    second = store.retrieve_scoped(
+        "APAC provisioning",
+        access_filter,
+        {"jira-apac-paid-provisioning-incident"},
+        limit=3,
+        authorized_revision_keys={
+            (
+                "jira-apac-paid-provisioning-incident",
+                "revision-2",
+                "jira-apac-paid-provisioning-incident:chunk:0",
+            )
+        },
+    )
+
+    assert [document.source_revision for document in first] == ["revision-1"]
+    assert [document.source_revision for document in second] == ["revision-2"]
+
+
 def test_backend_retrieval_entrypoint_cannot_be_replaced_on_an_instance() -> None:
     backend = LightRAGBackend(_store(evidence_corpus()[0]))
 
