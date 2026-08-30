@@ -6,12 +6,24 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from growth_data_agent.evidence import EvidenceDocument, EvidencePrincipalGrant
+from growth_data_agent.evidence import (
+    EvidenceAccessFilter,
+    EvidenceDocument,
+    EvidenceLifecycleState,
+    EvidencePrincipalGrant,
+    QdrantEvidenceStore,
+)
+from growth_data_agent.graph import (
+    ApacheAgeEvidenceGraphStore,
+    GraphPath,
+    InMemoryEvidenceGraphStore,
+)
 from growth_data_agent.lightrag import (
     AuthorizedEvidenceRevisionSet,
     AuthorizedLightRAGIndex,
     InMemoryLightRAGStore,
     LightRAGAuthorizationError,
+    LightRAGAuthorizedView,
     LightRAGBackend,
     LightRAGChunkRecord,
     LightRAGEntityRecord,
@@ -19,23 +31,38 @@ from growth_data_agent.lightrag import (
     LightRAGEvidenceReference,
     LightRAGRelationRecord,
     LightRAGRetrievalStore,
+    QdrantAGELightRAGStore,
 )
 from growth_data_agent.policy import resolve_access_profile
-from growth_data_agent.synthetic import evidence_corpus
+from growth_data_agent.synthetic import evidence_corpus, graph_corpus
 
 
 class UnsupportedLightRAGBackend:
     def __init__(self) -> None:
         self.calls = 0
 
-    def retrieve(self, query: str, *, authorized_scope, access_filter, limit: int):
+    def retrieve(
+        self,
+        query: str,
+        *,
+        authorized_scope: AuthorizedEvidenceRevisionSet,
+        access_filter: EvidenceAccessFilter,
+        limit: int,
+    ) -> list[LightRAGEvidenceReference]:
         del query, authorized_scope, access_filter, limit
         self.calls += 1
         return []
 
 
 class UnsupportedLightRAGStore:
-    def retrieve_chunk_vectors(self, query, *, authorized_scope, access_filter, limit):
+    def retrieve_chunk_vectors(
+        self,
+        query: str,
+        *,
+        authorized_scope: AuthorizedEvidenceRevisionSet,
+        access_filter: EvidenceAccessFilter,
+        limit: int,
+    ) -> list[LightRAGChunkRecord]:
         del query, authorized_scope, access_filter, limit
         return []
 
@@ -44,20 +71,10 @@ class UnsafeAuthorizedViewStore(LightRAGRetrievalStore):
     def __init__(self) -> None:
         self.authorize_calls = 0
 
-    def authorized_view(self, authorized_scope, access_filter):
-        del authorized_scope, access_filter
+    def authorized_view(self, capability: object) -> LightRAGAuthorizedView:
+        del capability
         self.authorize_calls += 1
-        return cast(Any, object())
-
-
-class CompatibleLightRAGStore(LightRAGRetrievalStore):
-    """A Qdrant/AGE-style wrapper proving the store seam is structural."""
-
-    def __init__(self, store: InMemoryLightRAGStore) -> None:
-        self._store = store
-
-    def authorized_view(self, authorized_scope, access_filter):
-        return self._store.authorized_view(authorized_scope, access_filter)
+        return cast(LightRAGAuthorizedView, object())
 
 
 def _access_filter(
@@ -93,7 +110,11 @@ def _reference(
     return LightRAGEvidenceReference.from_document(
         document,
         reference_kind=reference_kind,
-        reference_id=f"{reference_kind}:{document.document_id}",
+        reference_id=(
+            f"chunk:{document.chunk_id or f'{document.document_id}:chunk:0'}"
+            if reference_kind == "chunk"
+            else f"{reference_kind}:{document.document_id}"
+        ),
     ).model_copy(update=updates)
 
 
@@ -160,7 +181,7 @@ def test_adapter_passes_authorized_active_scope_before_real_retrieval() -> None:
     assert [call.kind for call in store.calls] == ["chunk_vector", "entity_graph", "relation_graph"]
     assert all(call.authorized_reference_ids for call in store.calls)
     assert [call.authorized_reference_ids for call in store.calls] == [
-        frozenset({"chunk:jira-apac-paid-provisioning-incident"}),
+        frozenset({"chunk:jira-apac-paid-provisioning-incident:chunk:0"}),
         frozenset({"entity:jira-apac-paid-provisioning-incident"}),
         frozenset({"relation:jira-apac-paid-provisioning-incident"}),
     ]
@@ -237,20 +258,24 @@ def test_backend_rejects_an_authorized_view_without_typed_retrieval_operations()
     store = UnsafeAuthorizedViewStore()
     access_filter = _access_filter()
 
-    with pytest.raises(LightRAGAuthorizationError, match="authorized view"):
+    with pytest.raises(LightRAGAuthorizationError, match="graph/vector|authorized view"):
         LightRAGEvidenceAdapter(LightRAGBackend(store)).retrieve(
             "APAC provisioning",
             _authorized_scope(document, access_filter),
             access_filter,
         )
 
-    assert store.authorize_calls == 1
+    assert store.authorize_calls == 0
 
 
-def test_backend_accepts_a_store_adapter_with_an_explicit_authorized_view() -> None:
+def test_backend_accepts_the_concrete_qdrant_age_store() -> None:
     document = evidence_corpus()[0]
     access_filter = _access_filter()
-    store = CompatibleLightRAGStore(_store(document))
+    qdrant_store = QdrantEvidenceStore([document])
+    store = QdrantAGELightRAGStore(
+        qdrant_store,
+        InMemoryEvidenceGraphStore(graph_corpus()),
+    )
 
     references = LightRAGEvidenceAdapter(LightRAGBackend(store)).retrieve(
         "APAC provisioning",
@@ -263,6 +288,64 @@ def test_backend_accepts_a_store_adapter_with_an_explicit_authorized_view() -> N
         "entity",
         "relation",
     }
+
+
+def test_concrete_qdrant_and_age_queries_receive_the_authorized_revision_scope() -> None:
+    document = evidence_corpus()[0]
+    access_filter = _access_filter()
+    scope = _authorized_scope(document, access_filter)
+
+    class RecordingQdrantClient:
+        def __init__(self) -> None:
+            from qdrant_client import QdrantClient
+
+            self.inner = QdrantClient(location=":memory:")
+            self.query_calls: list[dict[str, object]] = []
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.inner, name)
+
+        def query_points(self, **kwargs: object):
+            self.query_calls.append(kwargs)
+            return cast(Any, self.inner).query_points(**kwargs)
+
+    class RecordingAgeExecutor:
+        def __init__(self, paths: list[GraphPath]) -> None:
+            self.paths = paths
+            self.query_calls: list[tuple[str, dict[str, object]]] = []
+
+        def query(self, cypher: str, parameters: dict[str, object]) -> list[GraphPath]:
+            self.query_calls.append((cypher, parameters))
+            return self.paths
+
+    qdrant_client = RecordingQdrantClient()
+    age_executor = RecordingAgeExecutor(
+        [next(path for path in graph_corpus() if path.path_id.startswith(document.document_id))]
+    )
+    qdrant_store = QdrantEvidenceStore([document], client=cast(Any, qdrant_client))
+    age_store = ApacheAgeEvidenceGraphStore(age_executor)
+    store = QdrantAGELightRAGStore(qdrant_store, age_store)
+
+    references = LightRAGEvidenceAdapter(LightRAGBackend(store)).retrieve(
+        "APAC provisioning",
+        scope,
+        access_filter,
+    )
+
+    assert {reference.reference_kind for reference in references} == {
+        "chunk",
+        "entity",
+        "relation",
+    }
+    assert len(qdrant_client.query_calls) == 1
+    query_filter = cast(Any, qdrant_client.query_calls[0]["query_filter"])
+    assert "source_document_id" in query_filter.model_dump_json()
+    assert qdrant_store.last_authorized_revision_keys == (
+        (document.document_id, document.source_revision, f"{document.document_id}:chunk:0"),
+    )
+    age_parameters = cast(Any, age_executor.query_calls[0][1])
+    assert document.document_id in age_parameters["authorized_document_ids"]
+    assert "$authorized_source_document_id_0" in age_executor.query_calls[0][0]
 
 
 def test_backend_retrieval_entrypoint_cannot_be_replaced_on_an_instance() -> None:
@@ -401,6 +484,29 @@ def test_expired_policy_revalidates_before_any_retrieval() -> None:
             "APAC provisioning",
             _authorized_scope(document, authorized_filter),
             expired_filter,
+        )
+
+    assert store.calls == []
+
+
+def test_current_revision_manifest_revocation_invalidates_a_previously_issued_scope() -> None:
+    document = evidence_corpus()[0]
+    access_filter = _access_filter()
+    revoked_document = document.model_copy(
+        update={"lifecycle_state": EvidenceLifecycleState.DELETED}
+    )
+    scope = AuthorizedEvidenceRevisionSet.from_documents(
+        [document],
+        access_filter,
+        revision_source=lambda _: [revoked_document],
+    )
+    store = _store(document)
+
+    with pytest.raises(LightRAGAuthorizationError, match="stale|revoked"):
+        LightRAGEvidenceAdapter(LightRAGBackend(store)).retrieve(
+            "APAC provisioning",
+            scope,
+            access_filter,
         )
 
     assert store.calls == []

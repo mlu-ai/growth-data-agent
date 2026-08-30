@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Iterable
+from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import uuid4
 
 from .audit import DirectIdentifierAuditRecorder, InMemoryDirectIdentifierAuditRecorder
@@ -36,6 +38,8 @@ from .datahub import (
     DataHubCatalogUnavailableError,
 )
 from .evidence import (
+    EvidenceAccessFilter,
+    EvidenceDocument,
     QdrantEvidenceStore,
     VectorEvidenceStore,
     build_evidence_answer,
@@ -49,6 +53,13 @@ from .execution import (
     RuleBasedIntentInterpreter,
 )
 from .graph import ApacheAgeEvidenceGraphStore, EvidenceGraphStore, InMemoryEvidenceGraphStore
+from .lightrag import (
+    AuthorizedEvidenceRevisionSet,
+    LightRAGAuthorizationError,
+    LightRAGBackend,
+    LightRAGEvidenceAdapter,
+    QdrantAGELightRAGStore,
+)
 from .local_model import (
     EvidenceDraftingAdapter,
     LocalModelError,
@@ -88,6 +99,7 @@ from .synthetic import evidence_corpus, graph_corpus
 
 _DIRECT_IDENTIFIER_RESULT_LIMIT = 3
 _IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
+RevisionReader = Callable[[EvidenceAccessFilter], Iterable[EvidenceDocument]]
 
 
 class AnswerQuestionService:
@@ -99,6 +111,7 @@ class AnswerQuestionService:
         provisional_metric_input_gateway: ProvisionalMetricInputGateway | None = None,
         verification_request_recorder: DataTeamVerificationRequestRecorder | None = None,
         evidence_store: VectorEvidenceStore | None = None,
+        lightrag_adapter: LightRAGEvidenceAdapter | None = None,
         evidence_reranker: EvidenceReranker | None = None,
         graph_store: EvidenceGraphStore | None = None,
         catalog_store: DataHubCatalogStore | None = None,
@@ -125,10 +138,27 @@ class AnswerQuestionService:
         self.evidence_store = evidence_store or QdrantEvidenceStore(evidence_corpus())
         self.evidence_reranker = evidence_reranker
         self.graph_store = graph_store or InMemoryEvidenceGraphStore(graph_corpus())
+        if lightrag_adapter is None:
+            if type(self.evidence_store) is QdrantEvidenceStore and type(
+                self.graph_store
+            ) in {InMemoryEvidenceGraphStore, ApacheAgeEvidenceGraphStore}:
+                lightrag_adapter = LightRAGEvidenceAdapter(
+                    LightRAGBackend(
+                        QdrantAGELightRAGStore(
+                            cast(QdrantEvidenceStore, self.evidence_store),
+                            cast(
+                                InMemoryEvidenceGraphStore | ApacheAgeEvidenceGraphStore,
+                                self.graph_store,
+                            ),
+                        )
+                    )
+                )
+        self.lightrag_adapter = lightrag_adapter
         self.evidence_tools = BoundedEvidenceInvestigationTools(
             self.evidence_store,
             self._traverse_graph_for_evidence_tool,
             self.evidence_reranker,
+            self.lightrag_adapter,
         )
         self.catalog_store = catalog_store
         self.direct_identifier_audit_recorder = (
@@ -903,7 +933,64 @@ class AnswerQuestionService:
             kind="tool",
             attributes={"result_limit": limit},
         ):
-            return self.evidence_store.retrieve(query, access_filter, limit=limit)
+            if self.lightrag_adapter is None:
+                return self.evidence_store.retrieve(query, access_filter, limit=limit)
+            source_documents = getattr(self.evidence_store, "documents", None)
+            revision_reader = getattr(self.evidence_store, "authorized_revisions", None)
+            if not source_documents and callable(revision_reader):
+                source_documents = revision_reader(access_filter)
+            if source_documents is None:
+                raise LightRAGAuthorizationError(
+                    "LightRAG requires an authoritative evidence revision source."
+                )
+            authorized_documents = [
+                document for document in source_documents if access_filter.allows(document)
+            ]
+            if not authorized_documents:
+                return []
+            authorized_scope = AuthorizedEvidenceRevisionSet.from_documents(
+                authorized_documents,
+                access_filter,
+                revision_source=revision_reader,
+            )
+            references = self.lightrag_adapter.retrieve(
+                query,
+                authorized_scope,
+                access_filter,
+                limit=limit,
+            )
+            allowed_document_ids = {
+                reference.source_document_id for reference in references
+            }
+            allowed_revision_keys = {
+                (
+                    reference.source_document_id,
+                    reference.source_revision,
+                    reference.chunk_id,
+                )
+                for reference in references
+            }
+            if not allowed_document_ids:
+                return []
+            scoped_retriever = getattr(self.evidence_store, "retrieve_scoped", None)
+            if callable(scoped_retriever):
+                documents = cast(Any, scoped_retriever)(
+                    query,
+                    access_filter,
+                    allowed_document_ids,
+                    limit=limit,
+                    authorized_revision_keys=allowed_revision_keys,
+                )
+            else:
+                raise LightRAGAuthorizationError(
+                    "LightRAG requires a backend-enforced scoped evidence retriever."
+                )
+            return [
+                document
+                for document in documents
+                if (document.source_document_id or document.document_id) in allowed_document_ids
+                and access_filter.allows(document)
+            ][:limit]
 
     def _catalog_get(self, entity_name: str):
         with trace_span(
@@ -1488,17 +1575,6 @@ class AnswerQuestionService:
         freshness = self.semantic_gateway.freshness(artifact)
         product = "Confluence" if "confluence" in request.question.casefold() else "Jira"
         region = self._requested_region(request.question, access_profile)
-        graph_filter = access_profile.graph_filter(product, region)
-        graph_paths = [
-            path
-            for path in self._traverse_graph(
-                f"{product} {region} direct identifiers",
-                graph_filter,
-                limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
-                metric_name=("confluence_new_peu" if product == "Confluence" else "jira_new_peu"),
-            )
-            if graph_filter.allows(path)
-        ][:_DIRECT_IDENTIFIER_RESULT_LIMIT]
         access_filter = access_profile.evidence_filter(
             product,
             region,
@@ -1514,6 +1590,40 @@ class AnswerQuestionService:
             )
             if access_filter.allows(document)
         ]
+        graph_filter = access_profile.graph_filter(product, region)
+        if documents:
+            graph_filter = replace(
+                graph_filter,
+                groups=access_filter.groups,
+                agent_user_id=access_filter.agent_user_id,
+                as_of=access_filter.as_of,
+                authorized_document_ids=tuple(
+                    sorted(
+                        document.source_document_id or document.document_id
+                        for document in documents
+                    )
+                ),
+                authorized_revision_keys=tuple(
+                    sorted(
+                        (
+                            document.source_document_id or document.document_id,
+                            document.source_revision,
+                            document.chunk_id or f"{document.document_id}:chunk:0",
+                        )
+                        for document in documents
+                    )
+                ),
+            )
+        graph_paths = [
+            path
+            for path in self._traverse_graph(
+                f"{product} {region} direct identifiers",
+                graph_filter,
+                limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
+                metric_name=("confluence_new_peu" if product == "Confluence" else "jira_new_peu"),
+            )
+            if graph_filter.allows(path)
+        ][:_DIRECT_IDENTIFIER_RESULT_LIMIT]
         identifiers = self._permitted_identifiers(
             graph_paths=graph_paths,
             documents=documents,

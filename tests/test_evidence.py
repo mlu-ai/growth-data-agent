@@ -8,7 +8,13 @@ from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, writ
 from fastapi.testclient import TestClient
 
 from growth_data_agent.contracts import EvidenceSupportStatus
-from growth_data_agent.evidence import EvidenceAccessFilter, EvidenceDocument
+from growth_data_agent.evidence import (
+    EvidenceAccessFilter,
+    EvidenceDocument,
+    QdrantEvidenceStore,
+    VectorEvidenceStore,
+)
+from growth_data_agent.lightrag import LightRAGEvidenceAdapter
 from growth_data_agent.main import create_app
 from growth_data_agent.policy import AccessDeniedError, AccessProfile, tenant_ids_for_region
 from growth_data_agent.reranking import DeterministicCrossEncoderReranker
@@ -35,7 +41,7 @@ class RecordingEvidenceStore:
 
 def _client(
     tmp_path: Path,
-    evidence_store: RecordingEvidenceStore,
+    evidence_store: VectorEvidenceStore,
 ) -> TestClient:
     artifact_path = write_artifact(tmp_path / "semantic.json")
     planner = RecordingMetricFlowPlanner(tmp_path / "semantic_manifest.json")
@@ -148,6 +154,23 @@ def test_apac_manager_receives_no_out_of_scope_or_restricted_documents(client: T
     )
 
 
+def test_answer_question_routes_evidence_through_the_governed_lightrag_adapter(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/answer_question",
+        json={"agent_user_id": "apac_regional_manager", "question": _evidence_question()},
+    )
+
+    assert response.status_code == 200
+    service = client.app.state.answer_service
+    assert isinstance(service.lightrag_adapter, LightRAGEvidenceAdapter)
+    assert service.evidence_store.last_authorized_document_ids == (
+        "jira-apac-paid-provisioning-incident",
+    )
+    assert "jira-apac-paid-provisioning-incident-restricted" not in response.text
+
+
 def test_retrieved_restricted_document_is_not_added_to_response_context(tmp_path: Path) -> None:
     restricted_document = next(
         document
@@ -166,6 +189,32 @@ def test_retrieved_restricted_document_is_not_added_to_response_context(tmp_path
     assert body["result_classification"] == "inconclusive"
     assert body["evidence"]["citations"] == []
     assert restricted_document.document_id not in response.text
+
+
+@pytest.mark.parametrize(
+    "document_update",
+    [
+        {"policy_expires_at": datetime(2026, 8, 24, tzinfo=UTC)},
+        {"access_groups": ["revoked-group"]},
+    ],
+    ids=["expired-policy", "revoked-group"],
+)
+def test_expired_or_revoked_evidence_never_reaches_answer_context(
+    tmp_path: Path,
+    document_update: dict[str, object],
+) -> None:
+    document = evidence_corpus()[0].model_copy(update=document_update)
+    client = _client(tmp_path, QdrantEvidenceStore([document]))
+
+    response = client.post(
+        "/answer_question",
+        json={"agent_user_id": "apac_regional_manager", "question": _evidence_question()},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["evidence"]["citations"] == []
+    assert document.document_id not in response.text
 
 
 def test_product_entitlement_is_checked_before_evidence_query() -> None:
