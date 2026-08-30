@@ -45,3 +45,23 @@ def test_stale_semantic_artifact_blocks_canonical_response(tmp_path) -> None:
     assert body["result_classification"] == "limitation"
     assert body["canonical_definition"] is None
     assert body["source_freshness"]["is_current"] is False
+
+
+def test_available_metric_names_only_exposes_a_current_validated_artifact(tmp_path) -> None:
+    validated_at = datetime(2026, 8, 25, tzinfo=UTC)
+    current_gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(write_artifact(tmp_path / "current.json")),
+        now=lambda: validated_at,
+    )
+    stale_gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(write_artifact(tmp_path / "stale-names.json")),
+        now=lambda: validated_at + timedelta(days=2),
+    )
+
+    assert current_gateway.available_metric_names() == (
+        "jira_new_peu",
+        "jira_new_mau",
+        "confluence_new_peu",
+        "confluence_new_mau",
+    )
+    assert stale_gateway.available_metric_names() == ()

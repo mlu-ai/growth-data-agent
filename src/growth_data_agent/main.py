@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from .contracts import AnswerQuestionPayload, AnswerQuestionRequest, GovernedAnalyticalResponse
@@ -16,7 +17,7 @@ from .graph import (
     PsycopgAgeGraphQueryExecutor,
     apache_age_preloaded_from_environment,
 )
-from .local_model import OllamaLocalModel
+from .local_model import OllamaIntentModel, OllamaLocalModel
 from .metricflow_query import (
     MetricFlowPlanner,
     PostgresMetricFlowExecutor,
@@ -48,7 +49,8 @@ def create_app(
     )
     datahub_gms_url = os.environ.get("DATAHUB_GMS_URL")
     age_database_url = os.environ.get("APACHE_AGE_DATABASE_URL")
-    local_model = None if service is not None else OllamaLocalModel.from_environment()
+    intent_model = None if service is not None else OllamaIntentModel.from_environment()
+    evidence_model = None if service is not None else OllamaLocalModel.from_environment()
     app.state.answer_service = service or AnswerQuestionService(
         ValidatedMetricFlowGateway(
             SemanticArtifactStore(
@@ -88,12 +90,21 @@ def create_app(
             else None
         ),
         trace_sink=MlflowTraceSink.from_environment(),
-        local_model=local_model,
+        local_model=intent_model,
+        evidence_model=evidence_model,
     )
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readiness")
+    def readiness() -> JSONResponse:
+        status = app.state.answer_service.readiness()
+        return JSONResponse(
+            status_code=503 if status["status"] == "unavailable" else 200,
+            content=status,
+        )
 
     @app.post("/answer_question", response_model=GovernedAnalyticalResponse)
     def answer_question(

@@ -104,6 +104,13 @@ class ValidatedMetricFlowGateway:
             is_current=is_current,
         )
 
+    def available_metric_names(self) -> tuple[str, ...]:
+        """Return only metric names from the current validated semantic artifact."""
+        artifact = self.artifact_store.load()
+        if not self.freshness(artifact).is_current:
+            return ()
+        return tuple(metric.name for metric in artifact.metrics)
+
     def canonical_definition(
         self, metric_name: str
     ) -> tuple[CanonicalMetricDefinition | None, SourceFreshness]:

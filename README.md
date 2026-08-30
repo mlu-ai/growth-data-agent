@@ -72,17 +72,35 @@ make evaluate
 make serve
 ```
 
-The governed local-model boundary is opt-in. To enable a small local Ollama
-model, set `OLLAMA_MODEL_NAME` (and optionally `OLLAMA_BASE_URL` or
-`OLLAMA_TIMEOUT_SECONDS`) before starting the service:
+The bounded local intent provider uses Ollama when explicitly enabled. Set
+`OLLAMA_MODEL_NAME=qwen3:4b` for the agreed initial model (only this value
+enables intent interpretation; optionally set `OLLAMA_BASE_URL` or
+`OLLAMA_TIMEOUT_SECONDS`):
 
 ```sh
-OLLAMA_MODEL_NAME=qwen3:8b make serve
+OLLAMA_MODEL_NAME=qwen3:4b make serve
 ```
 
-Ollama receives only bounded intent input or redacted, already-authorized
-evidence citations. It cannot choose permissions, routes, tools, or SQL, and
-the deterministic interpreter remains the default when no model is configured.
+The intent model receives only the question and metric names from the current,
+successfully validated dbt/MetricFlow artifact. It emits a schema-validated
+metric proposal with an explicit ambiguity status; it cannot define metrics,
+choose permissions, routes, tools, or SQL. Canonical definitions and MetricFlow
+queries remain deterministic and are loaded from the validated semantic
+artifact after routing. Invalid, ambiguous, or unavailable model output fails
+closed to clarification. Other `OLLAMA_MODEL_NAME` values leave the intent
+provider disabled while remaining available to the existing evidence-drafting
+adapter.
+
+Check the model dependency before sending analytical requests:
+
+```sh
+curl http://127.0.0.1:8000/readiness
+```
+
+Readiness reports the selected provider and model without exposing credentials;
+an unavailable configured Ollama model returns HTTP 503. When Ollama is not
+configured, readiness reports the deterministic interpreter as disabled and
+`GET /health` remains the liveness check.
 
 If port 5432 is already occupied, use the external-Postgres path below or set
 `POSTGRES_PORT` before starting Compose. Do not start both Postgres paths for

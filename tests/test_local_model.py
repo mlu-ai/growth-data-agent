@@ -20,10 +20,12 @@ from growth_data_agent.contracts import (
     SourceFreshness,
 )
 from growth_data_agent.local_model import (
+    OLLAMA_INTENT_MODEL_NAME,
     LocalModelEvidenceDraftingAdapter,
     LocalModelIntentInterpreter,
     LocalModelOutputInvalid,
     OllamaBaselineModel,
+    OllamaIntentModel,
     OllamaLocalModel,
     build_local_model_baseline_context,
 )
@@ -71,7 +73,7 @@ def test_ollama_local_model_records_non_streaming_generation_request(monkeypatch
 
 
 def test_ollama_local_model_rejects_untyped_raw_context_requests() -> None:
-    model = OllamaLocalModel(model_name="qwen3:8b")
+    model = OllamaLocalModel(model_name=OLLAMA_INTENT_MODEL_NAME)
 
     with pytest.raises(LocalModelOutputInvalid):
         model.generate({"governed_context": '{"answer":"Do not bypass the adapter"}'})
@@ -85,7 +87,7 @@ def test_ollama_local_model_rejects_untyped_raw_context_requests() -> None:
 
 
 def test_ollama_local_model_rejects_unbounded_structured_input() -> None:
-    model = OllamaLocalModel(model_name="qwen3:8b")
+    model = OllamaLocalModel(model_name=OLLAMA_INTENT_MODEL_NAME)
 
     with pytest.raises(LocalModelOutputInvalid):
         model.generate(
@@ -184,10 +186,10 @@ class SequencedModel(RecordingModel):
 
 
 def test_local_model_intent_is_reduced_to_a_deterministic_analytical_intent() -> None:
-    model = RecordingModel('{"metric_name":"jira_new_peu"}')
+    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}')
     interpreter = LocalModelIntentInterpreter(
         model,
-        metric_name_resolver=lambda request: "jira_new_peu",
+        metric_names_provider=lambda request: ("jira_new_peu",),
         route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
     )
 
@@ -206,16 +208,76 @@ def test_local_model_intent_is_reduced_to_a_deterministic_analytical_intent() ->
                 "task": "intent_proposal",
                 "question": "What is Jira New PEU?",
                 "requested_metric_name": None,
+                "available_metric_names": ["jira_new_peu"],
             },
         }
     ]
 
 
-def test_local_model_intent_redacts_identifier_shaped_request_text() -> None:
-    model = RecordingModel('{"metric_name":"jira_new_peu"}')
+def test_local_model_intent_accepts_a_paraphrase_from_semantic_candidates() -> None:
+    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}')
     interpreter = LocalModelIntentInterpreter(
         model,
-        metric_name_resolver=lambda request: "jira_new_peu",
+        metric_names_provider=lambda request: ("jira_new_peu", "jira_new_mau"),
+        route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
+    )
+
+    intent = interpreter.interpret(
+        AnswerQuestionRequest(
+            agent_user_id="data_analyst",
+            question="How do we define first-time paid Jira access?",
+        )
+    )
+
+    assert intent == AnalyticalIntent(
+        route=AnalyticalRoute.CANONICAL_DEFINITION,
+        metric_name="jira_new_peu",
+    )
+    assert model.requests[0]["input"]["available_metric_names"] == [
+        "jira_new_peu",
+        "jira_new_mau",
+    ]
+
+
+def test_local_model_intent_rejects_an_ambiguous_candidate_proposal() -> None:
+    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"ambiguous"}')
+    interpreter = LocalModelIntentInterpreter(
+        model,
+        metric_names_provider=lambda request: ("jira_new_peu", "jira_new_mau"),
+        route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
+    )
+
+    with pytest.raises(LocalModelOutputInvalid):
+        interpreter.interpret(
+            AnswerQuestionRequest(
+                agent_user_id="data_analyst",
+                question="How did paid access change?",
+            )
+        )
+
+
+def test_local_model_intent_rejects_a_metric_not_in_the_validated_artifact() -> None:
+    model = RecordingModel('{"metric_name":"made_up_metric"}')
+    interpreter = LocalModelIntentInterpreter(
+        model,
+        metric_names_provider=lambda request: ("jira_new_peu",),
+        route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
+    )
+
+    with pytest.raises(LocalModelOutputInvalid):
+        interpreter.interpret(
+            AnswerQuestionRequest(
+                agent_user_id="data_analyst",
+                question="What is the made-up metric?",
+            )
+        )
+
+
+def test_local_model_intent_redacts_identifier_shaped_request_text() -> None:
+    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}')
+    interpreter = LocalModelIntentInterpreter(
+        model,
+        metric_names_provider=lambda request: ("jira_new_peu",),
         route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
     )
 
@@ -243,7 +305,7 @@ def test_local_model_intent_cannot_change_route_or_metric_scope(output: str) -> 
     model = RecordingModel(output)
     interpreter = LocalModelIntentInterpreter(
         model,
-        metric_name_resolver=lambda request: "jira_new_peu",
+        metric_names_provider=lambda request: ("jira_new_peu",),
         route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
     )
 
@@ -407,7 +469,7 @@ def test_configured_local_model_cannot_invoke_an_unallowlisted_route(
 def test_configured_local_model_preserves_the_deterministic_authorized_scope(
     client: TestClient,
 ) -> None:
-    model = RecordingModel('{"metric_name":"jira_new_peu"}')
+    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}')
     base_service = client.app.state.answer_service
     service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
     configured_client = TestClient(create_app(service))
@@ -430,12 +492,82 @@ def test_configured_local_model_preserves_the_deterministic_authorized_scope(
     assert "agent_user_id" not in json.dumps(model.requests[0])
 
 
+def test_configured_local_model_routes_a_paraphrased_definition_to_canonical_handler(
+    client: TestClient,
+) -> None:
+    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}')
+    base_service = client.app.state.answer_service
+    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    configured_client = TestClient(create_app(service))
+
+    response = configured_client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "How is first-time paid access to Jira counted?",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_classification"] == "canonical_definition"
+    assert body["canonical_definition"]["citation"]["authority"] == "dbt/MetricFlow"
+    assert body["canonical_definition"]["name"] == "jira_new_peu"
+
+
+def test_configured_local_model_clarifies_an_ambiguous_definition_question(
+    client: TestClient,
+) -> None:
+    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"ambiguous"}')
+    base_service = client.app.state.answer_service
+    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    configured_client = TestClient(create_app(service))
+
+    response = configured_client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "How did paid access change?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result_classification"] == "limitation"
+    assert base_service.semantic_gateway.postgres_executor.plans == []
+
+
+def test_configured_local_model_receives_only_entitled_metric_candidates(
+    client: TestClient,
+) -> None:
+    model = RecordingModel(
+        '{"metric_name":"confluence_new_peu","ambiguity":"unambiguous"}'
+    )
+    base_service = client.app.state.answer_service
+    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    configured_client = TestClient(create_app(service))
+
+    response = configured_client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "confluence_product_manager",
+            "question": "How is first-time paid access to Confluence counted?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result_classification"] == "canonical_definition"
+    assert model.requests[0]["input"]["available_metric_names"] == [
+        "confluence_new_peu",
+        "confluence_new_mau",
+    ]
+
+
 def test_configured_local_model_drafts_only_the_authorized_evidence_response(
     client: TestClient,
 ) -> None:
     model = SequencedModel(
         [
-            '{"metric_name":"jira_new_peu"}',
+            '{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}',
             '{"answer":"The incident overlaps the APAC 51-200 Seat Tier Tenant scope and '
             'the June 2026 decline period. It supports a possible Hypothesis but does not '
             'establish causation.",'
@@ -485,7 +617,7 @@ def test_configured_local_model_rejects_scope_expansion_at_service_boundary(
 ) -> None:
     model = SequencedModel(
         [
-            '{"metric_name":"jira_new_peu"}',
+            '{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}',
             f'{{"answer":"{malicious_answer}",'
             '"citation_document_ids":["jira-apac-paid-provisioning-incident"],'
             '"support_status":"supports",'
@@ -539,17 +671,84 @@ def test_unavailable_configured_local_model_fails_closed_before_semantic_query(
     assert executor.plans == []
 
 
-def test_ollama_configuration_is_opt_in(monkeypatch) -> None:
+def test_ollama_configuration_is_opt_in_with_the_agreed_intent_model(monkeypatch) -> None:
     monkeypatch.delenv("OLLAMA_MODEL_NAME", raising=False)
     monkeypatch.delenv("LOCAL_MODEL_NAME", raising=False)
-    assert OllamaLocalModel.from_environment() is None
+    assert OllamaIntentModel.from_environment() is None
 
-    monkeypatch.setenv("OLLAMA_MODEL_NAME", "qwen3:8b")
+    monkeypatch.setenv("OLLAMA_MODEL_NAME", "qwen3:4b")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/")
     monkeypatch.setenv("OLLAMA_TIMEOUT_SECONDS", "12.5")
-    model = OllamaLocalModel.from_environment()
+    model = OllamaIntentModel.from_environment()
 
     assert model is not None
-    assert model.model_name == "qwen3:8b"
+    assert model.model_name == "qwen3:4b"
     assert model.base_url == "http://127.0.0.1:11434"
     assert model.timeout == 12.5
+
+    monkeypatch.setenv("OLLAMA_MODEL_NAME", "")
+    assert OllamaIntentModel.from_environment() is None
+
+
+def test_ollama_intent_model_requires_the_agreed_model_without_restricting_generic_transport():
+    generic_model = OllamaLocalModel(model_name="llama3.1:8b")
+    assert generic_model.model_name == "llama3.1:8b"
+
+    with pytest.raises(ValueError, match="qwen3:4b"):
+        OllamaIntentModel(model_name="llama3.1:8b")
+
+
+def test_ollama_intent_provider_does_not_enable_an_unapproved_model(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_MODEL_NAME", "llama3.1:8b")
+
+    assert OllamaIntentModel.from_environment() is None
+
+
+def test_readiness_route_reports_deterministic_mode_when_ollama_is_disabled(client) -> None:
+    response = client.get("/readiness")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "local_model": {
+            "provider": "none",
+            "status": "disabled",
+            "model": None,
+        },
+    }
+
+
+def test_ollama_readiness_reports_unavailable_without_exposing_connection_details(
+    monkeypatch,
+) -> None:
+    def urlopen(request, *, timeout):
+        raise OSError("Ollama is not running")
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    model = OllamaLocalModel(model_name="qwen3:4b")
+
+    assert model.readiness() == {
+        "provider": "ollama",
+        "status": "unavailable",
+        "model": "qwen3:4b",
+    }
+
+
+def test_readiness_route_reports_the_available_ollama_model(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_MODEL_NAME", "qwen3:4b")
+
+    def urlopen(request, *, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    response = TestClient(create_app()).get("/readiness")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "local_model": {
+            "provider": "ollama",
+            "status": "ready",
+            "model": "qwen3:4b",
+        },
+    }

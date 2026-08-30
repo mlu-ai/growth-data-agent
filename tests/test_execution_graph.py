@@ -242,6 +242,21 @@ def test_unknown_metric_uses_the_metric_definition_gap_route() -> None:
     )
 
 
+def test_route_for_intent_accepts_a_metric_declared_by_the_semantic_artifact() -> None:
+    request = AnswerQuestionRequest(
+        agent_user_id="data_analyst", question="How is the custom metric defined?"
+    )
+
+    assert (
+        AnswerQuestionService._route_for_intent(
+            request,
+            "jira_custom_metric",
+            canonical_metric_names=("jira_custom_metric",),
+        )
+        is AnalyticalRoute.CANONICAL_DEFINITION
+    )
+
+
 def test_product_scoped_user_cannot_request_an_unknown_metric_for_another_product(client) -> None:
     response = client.post(
         "/answer_question",
