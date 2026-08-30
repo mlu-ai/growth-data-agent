@@ -107,10 +107,7 @@ def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClien
         }
     citation_ids = [citation["document_id"] for citation in body["evidence"]["citations"]]
     assert citation_ids[0] == "jira-apac-paid-provisioning-incident"
-    assert set(citation_ids[1:]) == {
-        "jira-apac-tenant-migration-notice",
-        "jira-apac-small-tenant-maintenance",
-    }
+    assert citation_ids[1:] == []
     assert all(
         citation["document_id"] != "jira-apac-paid-provisioning-incident-restricted"
         for citation in body["evidence"]["citations"]

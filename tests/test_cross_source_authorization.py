@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from growth_data_agent.evidence import EvidenceDocument
 from growth_data_agent.graph import GraphAccessFilter, GraphNode, GraphPath
 from growth_data_agent.main import create_app
+from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 from growth_data_agent.synthetic import evidence_corpus
@@ -61,6 +62,7 @@ def _client(
             AnswerQuestionService(
                 gateway,
                 evidence_store=evidence_store,
+                evidence_reranker=DeterministicCrossEncoderReranker(),
                 graph_store=graph_store,
             )
         )
@@ -267,11 +269,12 @@ def test_generated_response_redacts_identifiers_embedded_in_permitted_source_met
     leaked_identifier = "tenant-0099"
     document = EvidenceDocument(
         document_id=f"incident-{leaked_identifier}",
+        metric_name="jira_new_peu",
         title="Jira APAC incident review",
         text=f"Review references {leaked_identifier} but is classified as internal.",
         product="Jira",
         region="APAC",
-        tenant_ids=["tenant-0002"],
+        tenant_ids=["tenant-0011"],
         tenant_scope=f"APAC portfolio including {leaked_identifier}",
         classification="internal",
         identifier_entitlement="none",
@@ -289,7 +292,7 @@ def test_generated_response_redacts_identifiers_embedded_in_permitted_source_met
                 label=f"Incident involving {leaked_identifier}",
                 product="Jira",
                 region="APAC",
-                tenant_ids=["tenant-0002"],
+                tenant_ids=["tenant-0011"],
                 classification="internal",
                 identifier_entitlement="none",
             )

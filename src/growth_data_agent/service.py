@@ -82,6 +82,7 @@ from .policy import (
     resolve_access_profile,
     tenant_ids_for_segment,
 )
+from .reranking import EvidenceReranker, reranker_readiness
 from .semantic import ValidatedMetricFlowGateway
 from .synthetic import evidence_corpus, graph_corpus
 
@@ -98,6 +99,7 @@ class AnswerQuestionService:
         provisional_metric_input_gateway: ProvisionalMetricInputGateway | None = None,
         verification_request_recorder: DataTeamVerificationRequestRecorder | None = None,
         evidence_store: VectorEvidenceStore | None = None,
+        evidence_reranker: EvidenceReranker | None = None,
         graph_store: EvidenceGraphStore | None = None,
         catalog_store: DataHubCatalogStore | None = None,
         direct_identifier_audit_recorder: DirectIdentifierAuditRecorder | None = None,
@@ -121,10 +123,12 @@ class AnswerQuestionService:
             verification_request_recorder or InMemoryDataTeamVerificationRequestRecorder()
         )
         self.evidence_store = evidence_store or QdrantEvidenceStore(evidence_corpus())
+        self.evidence_reranker = evidence_reranker
         self.graph_store = graph_store or InMemoryEvidenceGraphStore(graph_corpus())
         self.evidence_tools = BoundedEvidenceInvestigationTools(
             self.evidence_store,
             self._traverse_graph_for_evidence_tool,
+            self.evidence_reranker,
         )
         self.catalog_store = catalog_store
         self.direct_identifier_audit_recorder = (
@@ -311,17 +315,20 @@ class AnswerQuestionService:
         )
         qdrant = {key: value for key, value in evidence.items() if key != "embedding"}
         embedding = evidence.get("embedding", embedding_readiness())
+        reranker = reranker_readiness(self.evidence_reranker)
         return {
             "status": (
                 "unavailable"
                 if local_model["status"] == "unavailable"
                 or qdrant["status"] == "unavailable"
                 or embedding["status"] == "unavailable"
+                or reranker["status"] not in {"ready", "configured"}
                 else "ready"
             ),
             "local_model": local_model,
             "qdrant": qdrant,
             "embedding": embedding,
+            "reranker": reranker,
         }
 
     def _available_metric_names_for_request(
@@ -1261,6 +1268,7 @@ class AnswerQuestionService:
             trace_id=trace_id,
             agent_user_id=agent_user_id,
             evidence_query="Jira APAC 51-200 paid provisioning June 2026 decline",
+            scope_evidence_to_seat_tier=True,
             supported_answer=(
                 "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
                 "part of the observed APAC 51-200 Seat Tier Tenant decline. "
@@ -1360,6 +1368,38 @@ class AnswerQuestionService:
                 caveats=[
                     "Run dbt validation and refresh the semantic artifact before retrieving "
                     "evidence."
+                ],
+                trace_id=trace_id,
+            )
+
+        matching_contribution = next(
+            (
+                contribution
+                for contribution in decomposition.contributions
+                if contribution.region == region and contribution.seat_tier == seat_tier
+            ),
+            None,
+        )
+        if (
+            matching_contribution is None
+            or decomposition.reconciled_change != decomposition.net_change
+            or decomposition.residual != 0
+        ):
+            return GovernedAnalyticalResponse(
+                answer=(
+                    f"Inconclusive: the validated Driver Decomposition does not resolve the "
+                    f"{region} {seat_tier} Seat Tier scope, so no evidence was retrieved."
+                ),
+                result_classification=ResultClassification.INCONCLUSIVE,
+                canonical_definition=definition,
+                semantic_query_evidence=query_evidence,
+                driver_decomposition=decomposition,
+                evidence=build_evidence_answer([]),
+                source_freshness=freshness,
+                effective_access_scope=scope,
+                caveats=[
+                    "Evidence retrieval requires a reconciled Driver Decomposition with a "
+                    "matching Region and Seat Tier contribution."
                 ],
                 trace_id=trace_id,
             )

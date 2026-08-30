@@ -3,6 +3,7 @@ from __future__ import annotations
 from growth_data_agent.evidence import EvidenceAccessFilter
 from growth_data_agent.evidence_tools import BoundedEvidenceInvestigationTools
 from growth_data_agent.graph import GraphAccessFilter
+from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.synthetic import evidence_corpus, graph_corpus
 
 
@@ -47,6 +48,7 @@ def test_investigation_passes_policy_before_each_registered_tool_and_bounds_resu
     tools = BoundedEvidenceInvestigationTools(
         evidence_store,
         traverse,
+        DeterministicCrossEncoderReranker(),
     )
 
     investigation = tools.investigate(

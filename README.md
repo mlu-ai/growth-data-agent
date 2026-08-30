@@ -40,7 +40,12 @@ Qdrant corpus with Access Profile-derived product, Region, Tenant,
 classification, and identifier filters. The response returns a cited
 `hypothesis` only when permitted evidence supports the explanation; insufficient
 or contradictory evidence is returned as `inconclusive`, without a causal
-claim.
+claim. Evidence candidates are then ordered by the required governed
+cross-encoder (`dengcao/Qwen3-Reranker-0.6B`); the reranker receives only the
+already-authorized active revisions and cannot add candidates. Missing Qdrant,
+embedding, or reranker readiness returns an explicit unavailable response
+instead of an unranked answer. Configure the reranker with the
+`OLLAMA_RERANKER_*` settings in `.env.example`.
 
 Causal questions for Jira New MAU run through the deterministic experiment
 registry. The registered onboarding treatment/control design returns a
@@ -191,7 +196,7 @@ The synchronizer skips unchanged page revisions, replaces updated revisions,
 and retains deleted or inaccessible revisions only as non-retrievable
 tombstones. Missing provenance, access policy, or embedding version metadata
 fails closed before the batch mutates Qdrant. The `/readiness` response reports
-Qdrant and embedding status without returning credentials.
+Qdrant, embedding, and required reranker status without returning credentials.
 
 ## Checks
 

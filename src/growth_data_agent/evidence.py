@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -14,7 +15,6 @@ from typing import Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from llama_index.core.schema import TextNode
-from llama_index.core.vector_stores import VectorStoreQuery
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
@@ -236,21 +236,50 @@ class VectorEvidenceStore(Protocol):
     ) -> list[EvidenceDocument]: ...
 
 
+class EvidenceStoreUnavailableError(OSError):
+    """Raised when the governed evidence store cannot retrieve current evidence."""
+
+
+class UnavailableEvidenceStore:
+    """Fail-closed store used when the configured external Qdrant cannot be built."""
+
+    def retrieve(
+        self,
+        query: str,
+        access_filter: EvidenceAccessFilter,
+        *,
+        limit: int,
+    ) -> list[EvidenceDocument]:
+        raise EvidenceStoreUnavailableError("The configured Qdrant evidence store is unavailable.")
+
+    def readiness(self) -> dict[str, object]:
+        return {
+            "status": "unavailable",
+            "detail": "The configured Qdrant evidence store is unavailable.",
+            "external": True,
+            "embedding": embedding_readiness(),
+        }
+
+
 class QdrantEvidenceStore:
     """Retrieve LlamaIndex evidence nodes from Qdrant after entitlement filtering."""
 
     def __init__(
         self,
-        documents: Iterable[EvidenceDocument],
+        documents: Iterable[EvidenceDocument] = (),
         *,
         client: QdrantClient | None = None,
         collection_name: str = "growth_evidence",
+        external: bool = False,
+        embedding_provider: EmbeddingProvider | None = None,
     ):
         self._documents = tuple(documents)
         self._documents_by_id = {document.document_id: document for document in self._documents}
         self._nodes = tuple(_evidence_node(document) for document in self._documents)
         self._client = client or QdrantClient(location=":memory:")
         self._collection_name = collection_name
+        self._external = external
+        self._embedding_provider = embedding_provider or HashEmbeddingProvider()
         self.last_filter: EvidenceAccessFilter | None = None
         self._last_scores: ContextVar[tuple[float, ...]] = ContextVar(
             "growth_data_agent_last_retrieval_scores", default=()
@@ -273,24 +302,38 @@ class QdrantEvidenceStore:
         """Return only filtered documents; ranking happens after Qdrant filtering."""
         self.last_filter = access_filter
         self._last_scores.set(())
-        if not self._documents:
+        if not self._documents and not self._external:
             return []
-        result = self._vector_store.query(
-            VectorStoreQuery(
-                query_embedding=_vectorize(query),
-                similarity_top_k=len(self._documents),
-            ),
-            qdrant_filters=access_filter.as_qdrant_filter(),
-        )
-        candidates = [
-            (
-                document,
-                float(score),
+        try:
+            result = self._client.query_points(
+                collection_name=self._collection_name,
+                query=self._embedding_provider.embed(query),
+                query_filter=access_filter.as_qdrant_filter(),
+                limit=max(limit, len(self._documents)),
+                with_payload=True,
+                with_vectors=False,
             )
-            for node, score in zip(result.nodes or [], result.similarities or [], strict=True)
-            if (document := self._documents_by_id[str(node.metadata["document_id"])])
-            and access_filter.allows(document)
-        ]
+        except Exception as error:
+            raise EvidenceStoreUnavailableError(
+                "Qdrant evidence retrieval is unavailable."
+            ) from error
+        candidates = []
+        for point in result.points or []:
+            metadata = _qdrant_point_metadata(point.payload or {})
+            document_id = str(metadata.get("document_id", ""))
+            document = self._documents_by_id.get(document_id)
+            if document is None:
+                if not _has_explicit_active_revision_metadata(metadata):
+                    continue
+                try:
+                    document = EvidenceDocument.model_validate(metadata)
+                except Exception:
+                    continue
+                if document.lifecycle_state is not EvidenceLifecycleState.ACTIVE:
+                    continue
+                self._documents_by_id[document_id] = document
+            if access_filter.allows(document):
+                candidates.append((document, float(point.score)))
         ranked = sorted(
             candidates,
             key=lambda candidate: (
@@ -319,13 +362,13 @@ class QdrantEvidenceStore:
             return {
                 "status": "unavailable",
                 "detail": "Qdrant is unavailable.",
-                "embedding": embedding_readiness(),
+                "embedding": embedding_readiness(self._embedding_provider),
             }
         return {
             "status": "ready",
             "collection": self._collection_name,
-            "external": False,
-            "embedding": embedding_readiness(),
+            "external": self._external,
+            "embedding": embedding_readiness(self._embedding_provider),
         }
 
 
@@ -392,9 +435,17 @@ def _citation(document: EvidenceDocument) -> EvidenceCitation:
         support_status=document.support_status,
         support_explanation=_redact_identifiers(document.support_explanation),
         source_document_id=_redact_identifiers(provenance.source_document_id),
-        source_url=provenance.source_url,
+        source_url=(
+            provenance.source_url
+            if document.source_url
+            else _redact_identifiers(provenance.source_url)
+        ),
         source_revision=provenance.source_revision,
-        chunk_id=provenance.chunk_id,
+        chunk_id=(
+            provenance.chunk_id
+            if document.chunk_id
+            else _redact_identifiers(provenance.chunk_id)
+        ),
     )
 
 
@@ -445,6 +496,47 @@ def _provenance_for(document: EvidenceDocument) -> EvidenceProvenance:
         source_revision=document.source_revision,
         chunk_id=document.chunk_id or f"{document.document_id}:chunk:0",
     )
+
+
+def _has_explicit_active_revision_metadata(metadata: dict[str, object]) -> bool:
+    """Reject external points that could acquire unsafe EvidenceDocument defaults."""
+    required_fields = (
+        "document_id",
+        "source_page_id",
+        "source_url",
+        "source_revision",
+        "chunk_id",
+        "revision_fingerprint",
+        "lifecycle_state",
+        "embedding_model",
+        "embedding_version",
+    )
+    return all(
+        isinstance(metadata.get(field), str) and bool(metadata[field])
+        for field in required_fields
+    ) and metadata["lifecycle_state"] == EvidenceLifecycleState.ACTIVE.value
+
+
+def _qdrant_point_metadata(payload: Mapping[str, object]) -> dict[str, object]:
+    """Use promoted Qdrant fields while retaining full metadata from the node payload."""
+    node_content = payload.get("_node_content")
+    if not isinstance(node_content, str):
+        return dict(payload)
+    try:
+        decoded = json.loads(node_content)
+    except (TypeError, ValueError):
+        return dict(payload)
+    nested_metadata = decoded.get("metadata") if isinstance(decoded, dict) else None
+    if not isinstance(nested_metadata, dict):
+        return dict(payload)
+    metadata = dict(nested_metadata)
+    for key, value in payload.items():
+        if key == "_node_content":
+            continue
+        if key == "document_id" and value in {None, "None"}:
+            continue
+        metadata[key] = value
+    return metadata
 
 
 def _synthetic_source_url(document: EvidenceDocument) -> str:

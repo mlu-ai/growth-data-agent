@@ -31,8 +31,9 @@ comparing another locally served model; candidate results are written under
 An existing canonical baseline is never overwritten by a candidate run; set
 `BASELINE_EVALUATION_PATH` explicitly when recording a new baseline.
 The governed response path remains deterministic: semantic truth,
-authorization, retrieval, and safety are evaluated independently of model
-wording.
+authorization, retrieval, reranking, and safety are evaluated independently of
+model wording. The evaluation runner uses an explicit deterministic reranker
+double; the production app requires the governed Ollama cross-encoder.
 
 The request-time intent provider is enabled only when `OLLAMA_MODEL_NAME` is
 `qwen3:4b`. It receives a paraphrased question plus only the current validated

@@ -35,6 +35,7 @@ from growth_data_agent.observability import (
 )
 from growth_data_agent.policy import resolve_access_profile
 from growth_data_agent.principal import development_token_environment_variable
+from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 
@@ -146,6 +147,9 @@ def _client(artifact_path: Path) -> tuple[TestClient, AnswerQuestionService]:
     )
     service = AnswerQuestionService(
         gateway,
+        # This runner is the deterministic local evaluation path. Production
+        # app construction uses the governed Ollama cross-encoder instead.
+        evidence_reranker=DeterministicCrossEncoderReranker(),
         trace_sink=MlflowTraceSink.from_environment(),
     )
     return TestClient(create_app(service)), service

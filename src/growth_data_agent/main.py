@@ -16,6 +16,7 @@ from .conversations import (
     conversation_retention_from_environment,
 )
 from .datahub import DataHubHttpCatalog
+from .evidence import EvidenceStoreUnavailableError, QdrantEvidenceStore, UnavailableEvidenceStore
 from .evidence_sync import (
     HashEmbeddingProvider,
     QdrantEvidenceSynchronizer,
@@ -46,6 +47,7 @@ from .principal import (
     PrincipalAuthenticationError,
     PrincipalResolver,
 )
+from .reranking import EvidenceRerankingError, OllamaCrossEncoderReranker
 from .semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from .service import AnswerQuestionService
 
@@ -68,6 +70,24 @@ def create_app(
     age_database_url = os.environ.get("APACHE_AGE_DATABASE_URL")
     intent_model = None if service is not None else OllamaIntentModel.from_environment()
     evidence_model = None if service is not None else OllamaLocalModel.from_environment()
+    evidence_store = None
+    evidence_reranker = None
+    external_evidence_client = None
+    external_evidence_sync_unavailable = False
+    external_evidence_sync_unconfigured = not os.environ.get("QDRANT_URL")
+    if service is None:
+        evidence_reranker = OllamaCrossEncoderReranker.from_environment()
+        if not external_evidence_sync_unconfigured:
+            try:
+                external_evidence_client = qdrant_client_from_environment()
+                evidence_store = QdrantEvidenceStore(
+                    client=external_evidence_client,
+                    collection_name=qdrant_collection_from_environment(),
+                    external=True,
+                )
+            except Exception:
+                evidence_store = UnavailableEvidenceStore()
+                external_evidence_sync_unavailable = True
     decision_records_path = decision_record_path_from_environment(_DEFAULT_DECISION_RECORDS)
     decision_record_retention = decision_record_retention_from_environment()
     conversation_database_url = os.environ.get(
@@ -124,18 +144,20 @@ def create_app(
         trace_sink=MlflowTraceSink.from_environment(),
         local_model=intent_model,
         evidence_model=evidence_model,
+        evidence_store=evidence_store,
+        evidence_reranker=evidence_reranker,
         conversation_store=PostgresConversationCheckpointStore(
             conversation_database_url,
             retention=conversation_retention_from_environment(),
         ),
     )
     app.state.external_evidence_synchronizer = None
-    app.state.external_evidence_sync_unavailable = False
-    app.state.external_evidence_sync_unconfigured = not os.environ.get("QDRANT_URL")
-    if not app.state.external_evidence_sync_unconfigured:
+    app.state.external_evidence_sync_unavailable = external_evidence_sync_unavailable
+    app.state.external_evidence_sync_unconfigured = external_evidence_sync_unconfigured
+    if not external_evidence_sync_unconfigured and not external_evidence_sync_unavailable:
         try:
             app.state.external_evidence_synchronizer = QdrantEvidenceSynchronizer(
-                client=qdrant_client_from_environment(),
+                client=external_evidence_client or qdrant_client_from_environment(),
                 collection_name=qdrant_collection_from_environment(),
             )
         except Exception:
@@ -241,6 +263,22 @@ def create_app(
                 status_code=503,
                 detail=(
                     "Evidence graph is unavailable. "
+                    f"(trace_id={getattr(error, 'trace_id', 'unavailable')})"
+                ),
+            ) from error
+        except EvidenceRerankingError as error:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Evidence reranker is unavailable. "
+                    f"(trace_id={getattr(error, 'trace_id', 'unavailable')})"
+                ),
+            ) from error
+        except EvidenceStoreUnavailableError as error:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Evidence store is unavailable. "
                     f"(trace_id={getattr(error, 'trace_id', 'unavailable')})"
                 ),
             ) from error

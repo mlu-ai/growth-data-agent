@@ -449,7 +449,11 @@ def test_configured_local_model_cannot_invoke_an_unallowlisted_route(
 ) -> None:
     model = RecordingModel(model_output)
     base_service = client.app.state.answer_service
-    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    service = AnswerQuestionService(
+        base_service.semantic_gateway,
+        local_model=model,
+        evidence_reranker=base_service.evidence_reranker,
+    )
     configured_client = TestClient(create_app(service))
 
     response = configured_client.post(
@@ -471,7 +475,11 @@ def test_configured_local_model_preserves_the_deterministic_authorized_scope(
 ) -> None:
     model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}')
     base_service = client.app.state.answer_service
-    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    service = AnswerQuestionService(
+        base_service.semantic_gateway,
+        local_model=model,
+        evidence_reranker=base_service.evidence_reranker,
+    )
     configured_client = TestClient(create_app(service))
 
     response = configured_client.post(
@@ -497,7 +505,11 @@ def test_configured_local_model_routes_a_paraphrased_definition_to_canonical_han
 ) -> None:
     model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"unambiguous"}')
     base_service = client.app.state.answer_service
-    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    service = AnswerQuestionService(
+        base_service.semantic_gateway,
+        local_model=model,
+        evidence_reranker=base_service.evidence_reranker,
+    )
     configured_client = TestClient(create_app(service))
 
     response = configured_client.post(
@@ -520,7 +532,11 @@ def test_configured_local_model_clarifies_an_ambiguous_definition_question(
 ) -> None:
     model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"ambiguous"}')
     base_service = client.app.state.answer_service
-    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    service = AnswerQuestionService(
+        base_service.semantic_gateway,
+        local_model=model,
+        evidence_reranker=base_service.evidence_reranker,
+    )
     configured_client = TestClient(create_app(service))
 
     response = configured_client.post(
@@ -579,7 +595,11 @@ def test_configured_local_model_drafts_only_the_authorized_evidence_response(
         ]
     )
     base_service = client.app.state.answer_service
-    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    service = AnswerQuestionService(
+        base_service.semantic_gateway,
+        local_model=model,
+        evidence_reranker=base_service.evidence_reranker,
+    )
     configured_client = TestClient(create_app(service))
 
     response = configured_client.post(
@@ -626,7 +646,11 @@ def test_configured_local_model_rejects_scope_expansion_at_service_boundary(
         ]
     )
     base_service = client.app.state.answer_service
-    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    service = AnswerQuestionService(
+        base_service.semantic_gateway,
+        local_model=model,
+        evidence_reranker=base_service.evidence_reranker,
+    )
     configured_client = TestClient(create_app(service))
 
     response = configured_client.post(
@@ -725,6 +749,12 @@ def test_readiness_route_reports_deterministic_mode_when_ollama_is_disabled(clie
             "model": "deterministic-hash",
             "version": "1",
         },
+        "reranker": {
+            "provider": "deterministic",
+            "status": "ready",
+            "model": "deterministic-cross-encoder",
+            "version": "1",
+        },
         "evidence_sync": {
             "status": "unconfigured",
             "qdrant": {
@@ -782,6 +812,12 @@ def test_readiness_route_reports_the_available_ollama_model(monkeypatch) -> None
         "embedding": {
             "status": "ready",
             "model": "deterministic-hash",
+            "version": "1",
+        },
+        "reranker": {
+            "provider": "ollama",
+            "status": "ready",
+            "model": "dengcao/Qwen3-Reranker-0.6B",
             "version": "1",
         },
         "evidence_sync": {
