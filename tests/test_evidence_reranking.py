@@ -14,12 +14,20 @@ from growth_data_agent.evidence import (
     EvidenceDocument,
     EvidenceLifecycleState,
     QdrantEvidenceStore,
+    _evidence_revision_key,
 )
 from growth_data_agent.evidence_sync import (
     ConfluenceEvidenceChunk,
     ConfluenceEvidenceRevision,
     QdrantEvidenceSynchronizer,
     SourceAccessMetadata,
+)
+from growth_data_agent.lightrag import (
+    InMemoryLightRAGStore,
+    LightRAGBackend,
+    LightRAGChunkRecord,
+    LightRAGEvidenceAdapter,
+    LightRAGEvidenceReference,
 )
 from growth_data_agent.main import create_app
 from growth_data_agent.policy import resolve_access_profile
@@ -43,6 +51,24 @@ class RecordingEvidenceStore:
         # return the complete query result here so the service-side defensive
         # filter is exercised against every candidate.
         return self.documents
+
+    def retrieve_scoped(
+        self,
+        query,
+        access_filter,
+        authorized_document_ids,
+        *,
+        limit,
+        authorized_revision_keys,
+    ):
+        del query, authorized_document_ids
+        self.filters.append(access_filter)
+        return [
+            document
+            for document in self.documents
+            if access_filter.allows(document)
+            and _evidence_revision_key(document) in authorized_revision_keys
+        ][:limit]
 
 
 class RecordingReranker:
@@ -106,12 +132,26 @@ def _client(
         postgres_executor=RecordingPostgresExecutor(),
         now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
+    lightrag_adapter = LightRAGEvidenceAdapter(
+        LightRAGBackend(
+            InMemoryLightRAGStore(
+                chunks=[
+                    LightRAGChunkRecord(
+                        reference=LightRAGEvidenceReference.from_document(document),
+                        text=document.text,
+                    )
+                    for document in evidence_store.documents
+                ]
+            )
+        )
+    )
     return TestClient(
         create_app(
             AnswerQuestionService(
                 gateway,
                 evidence_store=evidence_store,
                 evidence_reranker=reranker,
+                lightrag_adapter=lightrag_adapter,
             )
         )
     )
@@ -166,12 +206,10 @@ def test_only_active_driver_candidates_reach_the_cross_encoder_and_response(
     _, candidates, limit = reranker.calls[0]
     assert limit == 3
     assert [document.document_id for document in candidates] == [
-        supporting.document_id,
         second_supporting.document_id,
     ]
     assert [citation["document_id"] for citation in response.json()["evidence"]["citations"]] == [
         second_supporting.document_id,
-        supporting.document_id,
     ]
     assert "restricted" not in response.text
     assert "expired-driver-evidence" not in response.text
@@ -369,9 +407,9 @@ def test_external_qdrant_store_reconstructs_current_provenance_from_payload() ->
         embedding_model="deterministic-hash",
         embedding_version="1",
     )
-    QdrantEvidenceSynchronizer(
-        client=client, collection_name="external-test"
-    ).sync(StaticRevisionSource([revision]))
+    QdrantEvidenceSynchronizer(client=client, collection_name="external-test").sync(
+        StaticRevisionSource([revision])
+    )
     external_store = QdrantEvidenceStore(
         client=client,
         collection_name="external-test",

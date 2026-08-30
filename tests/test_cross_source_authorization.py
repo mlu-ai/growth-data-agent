@@ -5,7 +5,7 @@ from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, writ
 from fastapi.testclient import TestClient
 from qdrant_client import QdrantClient
 
-from growth_data_agent.evidence import EvidenceDocument, QdrantEvidenceStore
+from growth_data_agent.evidence import EvidenceDocument, EvidenceLifecycleState, QdrantEvidenceStore
 from growth_data_agent.graph import (
     GraphAccessFilter,
     GraphNode,
@@ -24,7 +24,7 @@ from growth_data_agent.main import create_app
 from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
-from growth_data_agent.synthetic import evidence_corpus
+from growth_data_agent.synthetic import evidence_corpus, graph_corpus
 
 
 class RecordingEvidenceStore:
@@ -39,6 +39,31 @@ class RecordingEvidenceStore:
         self.last_filter = access_filter
         self.last_limit = limit
         return self.documents[:limit]
+
+    def retrieve_scoped(
+        self,
+        query,
+        access_filter,
+        authorized_document_ids,
+        *,
+        limit,
+        authorized_revision_keys,
+    ):
+        del query, authorized_document_ids
+        self.calls += 1
+        self.last_filter = access_filter
+        self.last_limit = limit
+        return [
+            document
+            for document in self.documents
+            if access_filter.allows(document)
+            and (
+                document.source_document_id or document.document_id,
+                document.source_revision,
+                document.chunk_id or f"{document.document_id}:chunk:0",
+            )
+            in authorized_revision_keys
+        ][:limit]
 
 
 class RecordingGraphStore:
@@ -60,6 +85,7 @@ def _client(
     evidence_store: RecordingEvidenceStore | QdrantEvidenceStore | None = None,
     graph_store: RecordingGraphStore | None = None,
     lightrag_adapter: LightRAGEvidenceAdapter | None = None,
+    auto_lightrag_adapter: bool = True,
 ) -> tuple[TestClient, RecordingEvidenceStore, RecordingGraphStore]:
     artifact_path = write_artifact(tmp_path / "semantic.json")
     planner = RecordingMetricFlowPlanner(tmp_path / "semantic_manifest.json")
@@ -72,6 +98,24 @@ def _client(
     )
     evidence_store = evidence_store or RecordingEvidenceStore()
     graph_store = graph_store or RecordingGraphStore()
+    if (
+        auto_lightrag_adapter
+        and lightrag_adapter is None
+        and isinstance(evidence_store, RecordingEvidenceStore)
+    ):
+        lightrag_adapter = LightRAGEvidenceAdapter(
+            LightRAGBackend(
+                InMemoryLightRAGStore(
+                    chunks=[
+                        LightRAGChunkRecord(
+                            reference=LightRAGEvidenceReference.from_document(document),
+                            text=document.text,
+                        )
+                        for document in evidence_store.documents
+                    ]
+                )
+            )
+        )
     client = TestClient(
         create_app(
             AnswerQuestionService(
@@ -176,8 +220,7 @@ def test_apac_manager_cannot_expand_scope_through_broad_evidence_wording(
     body = response.json()
     assert body["effective_access_scope"]["regions"] == ["APAC"]
     assert all(
-        citation["affected_scope"]["region"] == "APAC"
-        for citation in body["evidence"]["citations"]
+        citation["affected_scope"]["region"] == "APAC" for citation in body["evidence"]["citations"]
     )
     assert all("APAC" in label for path in body["graph_paths"] for label in path["node_labels"])
     assert "Americas" not in response.text
@@ -231,9 +274,7 @@ def test_jira_product_manager_response_stays_within_jira_document_and_graph_scop
         for citation in body["evidence"]["citations"]
     )
     assert all(
-        "Confluence" not in label
-        for path in body["graph_paths"]
-        for label in path["node_labels"]
+        "Confluence" not in label for path in body["graph_paths"] for label in path["node_labels"]
     )
 
 
@@ -280,6 +321,84 @@ def test_indirect_identifier_prompt_is_refused_before_any_source_retrieval(
     assert "direct contact" not in response.text.casefold()
 
 
+def test_model_facing_evidence_requires_lightrag_before_any_source_retrieval(
+    tmp_path: Path,
+) -> None:
+    evidence_store = RecordingEvidenceStore(evidence_corpus())
+    graph_store = RecordingGraphStore(graph_corpus())
+    client, evidence_store, graph_store = _client(
+        tmp_path,
+        evidence_store,
+        graph_store,
+        auto_lightrag_adapter=False,
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "apac_regional_manager",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 503
+    assert evidence_store.calls == 0
+    assert graph_store.calls == 0
+    assert "tenant-" not in response.text
+    assert "jira-apac-paid-provisioning-incident" not in response.text
+
+
+def test_direct_identifier_requires_lightrag_before_any_source_retrieval(
+    tmp_path: Path,
+) -> None:
+    evidence_store = RecordingEvidenceStore(evidence_corpus())
+    graph_store = RecordingGraphStore(graph_corpus())
+    client, evidence_store, graph_store = _client(
+        tmp_path,
+        evidence_store,
+        graph_store,
+        auto_lightrag_adapter=False,
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "customer_success_manager",
+            "question": "Which Tenant IDs were affected by the Jira APAC incident?",
+        },
+    )
+
+    assert response.status_code == 503
+    assert evidence_store.calls == 0
+    assert graph_store.calls == 0
+    assert "tenant-" not in response.text
+    assert "graph" not in response.text.casefold()
+
+
+def test_canonical_definition_remains_available_without_lightrag(tmp_path: Path) -> None:
+    evidence_store = RecordingEvidenceStore(evidence_corpus())
+    graph_store = RecordingGraphStore(graph_corpus())
+    client, evidence_store, graph_store = _client(
+        tmp_path,
+        evidence_store,
+        graph_store,
+        auto_lightrag_adapter=False,
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "confluence_product_manager",
+            "question": "What is Confluence New PEU?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result_classification"] == "canonical_definition"
+    assert evidence_store.calls == 0
+    assert graph_store.calls == 0
+
+
 def test_direct_identifier_empty_authorized_scope_skips_graph_traversal(tmp_path: Path) -> None:
     evidence_store = QdrantEvidenceStore(
         [evidence_corpus()[0].model_copy(update={"region": "EMEA"})],
@@ -287,9 +406,7 @@ def test_direct_identifier_empty_authorized_scope_skips_graph_traversal(tmp_path
     )
     graph_store = RecordingGraphStore()
     adapter = LightRAGEvidenceAdapter(
-        LightRAGBackend(
-            QdrantAGELightRAGStore(evidence_store, InMemoryEvidenceGraphStore([]))
-        )
+        LightRAGBackend(QdrantAGELightRAGStore(evidence_store, InMemoryEvidenceGraphStore([])))
     )
     client, _, graph_store = _client(tmp_path, evidence_store, graph_store, adapter)
 
@@ -377,7 +494,10 @@ def test_generated_response_redacts_identifiers_embedded_in_permitted_source_met
         document_id=f"incident-{leaked_identifier}",
         metric_name="jira_new_peu",
         title="Jira APAC incident review",
-        text=f"Review references {leaked_identifier} but is classified as internal.",
+        text=(
+            f"Jira APAC 51-200 paid provisioning June 2026 decline review references "
+            f"{leaked_identifier} but is classified as internal."
+        ),
         product="Jira",
         region="APAC",
         tenant_ids=["tenant-0011"],
@@ -401,10 +521,16 @@ def test_generated_response_redacts_identifiers_embedded_in_permitted_source_met
                 tenant_ids=["tenant-0011"],
                 classification="internal",
                 identifier_entitlement="none",
+                seat_tiers=["51-200"],
+                source_document_id=document.document_id,
+                source_revision=document.source_revision,
+                chunk_id=document.chunk_id or f"{document.document_id}:chunk:0",
+                lifecycle_state=EvidenceLifecycleState.ACTIVE,
+                policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
             )
         ],
     )
-    client, _, _ = _client(
+    client, evidence_store, graph_store = _client(
         tmp_path,
         RecordingEvidenceStore([document]),
         RecordingGraphStore([graph_path]),
@@ -482,6 +608,7 @@ def test_entitled_identifier_response_is_bounded_when_sources_return_more_candid
     tmp_path: Path,
 ) -> None:
     permitted_ids = ["tenant-0011", "tenant-0023", "tenant-0035", "tenant-0047"]
+    source_document = evidence_corpus()[3]
     paths = [
         GraphPath(
             path_id=f"direct-{tenant_id}",
@@ -495,6 +622,11 @@ def test_entitled_identifier_response_is_bounded_when_sources_return_more_candid
                     tenant_ids=[tenant_id],
                     classification="restricted",
                     identifier_entitlement="direct",
+                    source_document_id=source_document.document_id,
+                    source_revision=source_document.source_revision,
+                    chunk_id=source_document.chunk_id or f"{source_document.document_id}:chunk:0",
+                    lifecycle_state=EvidenceLifecycleState.ACTIVE,
+                    policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
                 )
             ],
         )
@@ -502,7 +634,7 @@ def test_entitled_identifier_response_is_bounded_when_sources_return_more_candid
     ]
     client, _, _ = _client(
         tmp_path,
-        RecordingEvidenceStore(),
+        RecordingEvidenceStore([evidence_corpus()[3]]),
         RecordingGraphStore(paths),
     )
 

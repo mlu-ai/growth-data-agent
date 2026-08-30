@@ -935,7 +935,9 @@ class AnswerQuestionService:
             attributes={"result_limit": limit},
         ):
             if self.lightrag_adapter is None:
-                return self.evidence_store.retrieve(query, access_filter, limit=limit)
+                raise LightRAGAuthorizationError(
+                    "Governed LightRAG evidence retrieval is unavailable."
+                )
             source_documents = getattr(self.evidence_store, "documents", None)
             revision_reader = getattr(self.evidence_store, "authorized_revisions", None)
             if not source_documents and callable(revision_reader):
@@ -1602,7 +1604,7 @@ class AnswerQuestionService:
             if access_filter.allows(document)
         ]
         graph_paths = []
-        if documents or self.lightrag_adapter is None:
+        if documents:
             graph_filter = access_profile.graph_filter(product, region)
             graph_filter = replace(
                 graph_filter,

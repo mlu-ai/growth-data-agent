@@ -13,8 +13,15 @@ from growth_data_agent.evidence import (
     EvidenceDocument,
     QdrantEvidenceStore,
     VectorEvidenceStore,
+    _evidence_revision_key,
 )
-from growth_data_agent.lightrag import LightRAGEvidenceAdapter
+from growth_data_agent.lightrag import (
+    InMemoryLightRAGStore,
+    LightRAGBackend,
+    LightRAGChunkRecord,
+    LightRAGEvidenceAdapter,
+    LightRAGEvidenceReference,
+)
 from growth_data_agent.main import create_app
 from growth_data_agent.policy import AccessDeniedError, AccessProfile, tenant_ids_for_region
 from growth_data_agent.reranking import DeterministicCrossEncoderReranker
@@ -27,6 +34,24 @@ class RecordingEvidenceStore:
     def __init__(self, documents: list[EvidenceDocument]):
         self.documents = documents
         self.filters: list[EvidenceAccessFilter] = []
+
+    def retrieve_scoped(
+        self,
+        query: str,
+        access_filter: EvidenceAccessFilter,
+        authorized_document_ids: set[str],
+        *,
+        limit: int,
+        authorized_revision_keys: set[tuple[str, str, str]],
+    ) -> list[EvidenceDocument]:
+        del query, authorized_document_ids
+        self.filters.append(access_filter)
+        return [
+            document
+            for document in self.documents
+            if access_filter.allows(document)
+            and _evidence_revision_key(document) in authorized_revision_keys
+        ][:limit]
 
     def retrieve(
         self,
@@ -52,12 +77,28 @@ def _client(
         postgres_executor=executor,
         now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
+    lightrag_adapter = None
+    if isinstance(evidence_store, RecordingEvidenceStore):
+        lightrag_adapter = LightRAGEvidenceAdapter(
+            LightRAGBackend(
+                InMemoryLightRAGStore(
+                    chunks=[
+                        LightRAGChunkRecord(
+                            reference=LightRAGEvidenceReference.from_document(document),
+                            text=document.text,
+                        )
+                        for document in evidence_store.documents
+                    ]
+                )
+            )
+        )
     return TestClient(
         create_app(
             AnswerQuestionService(
                 gateway,
                 evidence_store=evidence_store,
                 evidence_reranker=DeterministicCrossEncoderReranker(),
+                lightrag_adapter=lightrag_adapter,
             )
         )
     )
@@ -248,7 +289,7 @@ def test_insufficient_evidence_is_explicitly_inconclusive(tmp_path: Path) -> Non
 
 
 def test_contradictory_evidence_is_inconclusive(tmp_path: Path) -> None:
-    supporting, = evidence_corpus()[:1]
+    (supporting,) = evidence_corpus()[:1]
     contradicting = supporting.model_copy(
         update={
             "document_id": "jira-apac-paid-provisioning-incident-contradiction",
