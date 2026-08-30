@@ -6,7 +6,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Annotated, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -23,6 +23,7 @@ from .observability import redact_identifiers
 
 _MAX_INTENT_QUESTION_LENGTH = 2_000
 _MAX_DRAFT_LENGTH = 2_000
+OLLAMA_INTENT_MODEL_NAME = "qwen3:4b"
 _ModelResponse = TypeVar("_ModelResponse", bound=BaseModel)
 
 
@@ -58,6 +59,12 @@ class LocalModelIntentRequest(BaseModel):
     task: Literal["intent_proposal"] = "intent_proposal"
     question: str = Field(min_length=1, max_length=_MAX_INTENT_QUESTION_LENGTH)
     requested_metric_name: str | None = Field(default=None, min_length=1, max_length=128)
+    available_metric_names: list[
+        Annotated[
+            str,
+            Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_]+$"),
+        ]
+    ] = Field(min_length=1, max_length=64)
 
 
 class LocalModelIntentProposal(BaseModel):
@@ -272,9 +279,22 @@ class _OllamaHttpClient:
 class OllamaLocalModel(_OllamaHttpClient):
     """Constrained Ollama transport used by the intent and evidence adapters."""
 
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        base_url: str = "http://127.0.0.1:11434",
+        timeout: float = 60.0,
+    ) -> None:
+        if model_name != OLLAMA_INTENT_MODEL_NAME:
+            raise ValueError(
+                f"The governed intent provider requires {OLLAMA_INTENT_MODEL_NAME}."
+            )
+        super().__init__(model_name=model_name, base_url=base_url, timeout=timeout)
+
     @classmethod
     def from_environment(cls) -> OllamaLocalModel | None:
-        """Build the adapter only when a local model is explicitly configured."""
+        """Build the adapter only when the local intent model is explicitly configured."""
         model_name = os.environ.get("OLLAMA_MODEL_NAME")
         if not model_name:
             return None
@@ -290,6 +310,35 @@ class OllamaLocalModel(_OllamaHttpClient):
             base_url=os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             timeout=timeout,
         )
+
+    def readiness(self) -> dict[str, str]:
+        """Check that Ollama responds for the configured intent model."""
+        request = urllib.request.Request(
+            f"{self.base_url}/api/show",
+            data=json.dumps({"name": self.model_name}).encode(),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = json.loads(response.read())
+        except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+            return {
+                "provider": "ollama",
+                "status": "unavailable",
+                "model": self.model_name,
+            }
+        if not isinstance(payload, dict):
+            return {
+                "provider": "ollama",
+                "status": "unavailable",
+                "model": self.model_name,
+            }
+        return {
+            "provider": "ollama",
+            "status": "ready",
+            "model": self.model_name,
+        }
 
     def generate(self, request: LocalModelCall) -> str:
         return self._send(self._request_data(request))
@@ -350,26 +399,31 @@ class OllamaBaselineModel(_OllamaHttpClient):
 
 
 class LocalModelIntentInterpreter:
-    """Use the model only to propose a metric, then route deterministically."""
+    """Use the model to choose a validated metric candidate, then route deterministically."""
 
     def __init__(
         self,
         model: LocalModelTransport,
         *,
-        metric_name_resolver: Callable[[AnswerQuestionRequest], str | None],
+        metric_names_provider: Callable[[AnswerQuestionRequest], Collection[str]],
         route_resolver: Callable[[AnswerQuestionRequest, str | None], AnalyticalRoute],
     ) -> None:
         self._model = model
-        self._metric_name_resolver = metric_name_resolver
+        self._metric_names_provider = metric_names_provider
         self._route_resolver = route_resolver
 
     def interpret(self, request: AnswerQuestionRequest) -> AnalyticalIntent:
-        expected_metric_name = self._metric_name_resolver(request)
+        available_metric_names = tuple(self._metric_names_provider(request))
+        if not available_metric_names:
+            raise LocalModelUnavailable(
+                "No current validated semantic metrics are available for intent interpretation."
+            )
         model_request = LocalModelIntentRequest(
             question=str(redact_identifiers(request.question)),
             requested_metric_name=str(redact_identifiers(request.requested_metric_name))
             if request.requested_metric_name is not None
             else None,
+            available_metric_names=list(available_metric_names),
         )
         proposal = _request_and_validate(
             self._model,
@@ -377,12 +431,12 @@ class LocalModelIntentInterpreter:
             model_input=model_request.model_dump(mode="json", exclude={"task"}),
             response_model=LocalModelIntentProposal,
         )
-        if proposal.metric_name != expected_metric_name:
+        if proposal.metric_name is None or proposal.metric_name not in available_metric_names:
             raise LocalModelOutputInvalid(
-                "Local-model intent disagreed with the deterministic metric resolver."
+                "Local-model intent selected a metric outside the validated semantic artifact."
             )
-        route = self._route_resolver(request, expected_metric_name)
-        return AnalyticalIntent(route=route, metric_name=expected_metric_name)
+        route = self._route_resolver(request, proposal.metric_name)
+        return AnalyticalIntent(route=route, metric_name=proposal.metric_name)
 
 
 class LocalModelEvidenceDraftingAdapter:
@@ -490,6 +544,15 @@ def validate_local_model_draft(
         raise LocalModelOutputInvalid("Local-model drafting returned an invalid typed result.")
     _validate_local_model_proposal(draft, build_local_model_evidence_context(response))
     return draft
+
+
+def local_model_readiness(model: LocalModelTransport | None) -> dict[str, str | None]:
+    """Return a safe readiness projection for the selected model boundary."""
+    if model is None:
+        return {"provider": "none", "status": "disabled", "model": None}
+    if isinstance(model, OllamaLocalModel):
+        return model.readiness()
+    return {"provider": "custom", "status": "configured", "model": None}
 
 
 def _request_and_validate(

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from .contracts import AnswerQuestionPayload, AnswerQuestionRequest, GovernedAnalyticalResponse
@@ -94,6 +95,14 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readiness")
+    def readiness() -> JSONResponse:
+        status = app.state.answer_service.readiness()
+        return JSONResponse(
+            status_code=503 if status["status"] == "unavailable" else 200,
+            content=status,
+        )
 
     @app.post("/answer_question", response_model=GovernedAnalyticalResponse)
     def answer_question(

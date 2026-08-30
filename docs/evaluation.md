@@ -34,6 +34,16 @@ The governed response path remains deterministic: semantic truth,
 authorization, retrieval, and safety are evaluated independently of model
 wording.
 
+The request-time intent provider is the opt-in Ollama-hosted `qwen3:4b` model. It
+receives a paraphrased question plus only the current validated semantic
+artifact's metric-name candidates and returns a schema-validated proposal. It
+does not generate canonical definitions or choose policy, routes, tools, or
+SQL; the answer service loads the canonical definition from dbt/MetricFlow
+after deterministic route validation. `GET /readiness` checks the configured
+Ollama model with its model endpoint and returns HTTP 503 when that dependency
+is unavailable. When `OLLAMA_MODEL_NAME` is unset or empty, the deterministic
+interpreter remains available for test/fallback mode.
+
 The service writes one redacted MLflow run per governed response. The default
 tracking URI is `file:./data/mlruns`; set `MLFLOW_TRACKING_URI` for a local
 MLflow server. Trace tags include the route, policy fingerprint, evaluation

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -41,6 +42,7 @@ from .local_model import (
     LocalModelEvidenceDraftingAdapter,
     LocalModelIntentInterpreter,
     LocalModelTransport,
+    local_model_readiness,
     validate_local_model_draft,
 )
 from .metric_definition_gaps import (
@@ -115,6 +117,7 @@ class AnswerQuestionService:
         )
         self.causal_pipeline = causal_pipeline or default_causal_pipeline()
         self.trace_sink = trace_sink or NoOpTraceSink()
+        self.local_model = local_model
         self.evidence_drafting_adapter = evidence_drafting_adapter or (
             LocalModelEvidenceDraftingAdapter(local_model) if local_model is not None else None
         )
@@ -123,13 +126,13 @@ class AnswerQuestionService:
         elif local_model is not None:
             configured_intent_interpreter = LocalModelIntentInterpreter(
                 local_model,
-                metric_name_resolver=self._requested_metric_name,
-                route_resolver=self._route_for_intent,
+                metric_names_provider=self._available_metric_names_for_request,
+                route_resolver=self._route_for_validated_intent,
             )
         else:
             configured_intent_interpreter = RuleBasedIntentInterpreter(
                 metric_name_resolver=self._requested_metric_name,
-                route_resolver=self._route_for_intent,
+                route_resolver=self._route_for_validated_intent,
             )
         self.execution_graph = execution_graph or ExecutionGraph(
             intent_interpreter=configured_intent_interpreter,
@@ -157,6 +160,34 @@ class AnswerQuestionService:
                 raise
             self._record_trace(request, response, trace_context)
             return response
+
+    def readiness(self) -> dict[str, object]:
+        """Expose model dependency state without exposing request or credential data."""
+        local_model = local_model_readiness(self.local_model)
+        return {
+            "status": "unavailable" if local_model["status"] == "unavailable" else "ready",
+            "local_model": local_model,
+        }
+
+    def _available_metric_names_for_request(
+        self, request: AnswerQuestionRequest
+    ) -> tuple[str, ...]:
+        """Filter canonical metric candidates by the request's resolved Access Profile."""
+        access_profile = resolve_access_profile(request.agent_user_id)
+        return tuple(
+            metric_name
+            for metric_name in self.semantic_gateway.available_metric_names()
+            if self._metric_product(metric_name) in access_profile.products
+        )
+
+    def _route_for_validated_intent(
+        self, request: AnswerQuestionRequest, metric_name: str | None
+    ) -> AnalyticalRoute:
+        return self._route_for_intent(
+            request,
+            metric_name,
+            canonical_metric_names=self.semantic_gateway.available_metric_names(),
+        )
 
     def _draft_evidence_response(
         self, response: GovernedAnalyticalResponse
@@ -1775,7 +1806,10 @@ class AnswerQuestionService:
 
     @staticmethod
     def _route_for_intent(
-        request: AnswerQuestionRequest, metric_name: str | None
+        request: AnswerQuestionRequest,
+        metric_name: str | None,
+        *,
+        canonical_metric_names: Collection[str] | None = None,
     ) -> AnalyticalRoute:
         if AnswerQuestionService._requests_direct_identifier(request.question):
             return AnalyticalRoute.DIRECT_IDENTIFIER
@@ -1785,12 +1819,17 @@ class AnswerQuestionService:
             return AnalyticalRoute.CAUSAL_ANALYSIS
         if metric_name is None:
             return AnalyticalRoute.LIMITATION
-        if metric_name not in {
-            "jira_new_peu",
-            "confluence_new_peu",
-            "jira_new_mau",
-            "confluence_new_mau",
-        }:
+        known_metric_names = (
+            set(canonical_metric_names)
+            if canonical_metric_names is not None
+            else {
+                "jira_new_peu",
+                "confluence_new_peu",
+                "jira_new_mau",
+                "confluence_new_mau",
+            }
+        )
+        if metric_name not in known_metric_names:
             return AnalyticalRoute.METRIC_DEFINITION_GAP
         if (
             metric_name
