@@ -715,6 +715,29 @@ def test_readiness_route_reports_deterministic_mode_when_ollama_is_disabled(clie
             "status": "disabled",
             "model": None,
         },
+        "qdrant": {
+            "status": "ready",
+            "collection": "growth_evidence",
+            "external": False,
+        },
+        "embedding": {
+            "status": "ready",
+            "model": "deterministic-hash",
+            "version": "1",
+        },
+        "evidence_sync": {
+            "status": "unconfigured",
+            "qdrant": {
+                "status": "unconfigured",
+                "collection": "growth_evidence",
+                "external": True,
+            },
+            "embedding": {
+                "status": "ready",
+                "model": "deterministic-hash",
+                "version": "1",
+            },
+        },
     }
 
 
@@ -751,4 +774,50 @@ def test_readiness_route_reports_the_available_ollama_model(monkeypatch) -> None
             "status": "ready",
             "model": "qwen3:4b",
         },
+        "qdrant": {
+            "status": "ready",
+            "collection": "growth_evidence",
+            "external": False,
+        },
+        "embedding": {
+            "status": "ready",
+            "model": "deterministic-hash",
+            "version": "1",
+        },
+        "evidence_sync": {
+            "status": "unconfigured",
+            "qdrant": {
+                "status": "unconfigured",
+                "collection": "growth_evidence",
+                "external": True,
+            },
+            "embedding": {
+                "status": "ready",
+                "model": "deterministic-hash",
+                "version": "1",
+            },
+        },
     }
+
+
+def test_readiness_route_reports_external_qdrant_sync_state(monkeypatch) -> None:
+    monkeypatch.setenv("QDRANT_URL", "https://qdrant.example")
+
+    class UnavailableQdrantClient:
+        def get_collections(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(
+        "growth_data_agent.main.qdrant_client_from_environment",
+        lambda: UnavailableQdrantClient(),
+    )
+
+    response = TestClient(create_app()).get("/readiness")
+
+    assert response.status_code == 503
+    assert response.json()["qdrant"] == {
+        "status": "unavailable",
+        "collection": "growth_evidence",
+        "external": True,
+    }
+    assert response.json()["evidence_sync"]["status"] == "unavailable"

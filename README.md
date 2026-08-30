@@ -176,6 +176,23 @@ The deterministic generator produces 1,000 Tenants, 10,000 Persons, 16,000
 Product Users, immutable Paid Enablement events, and Visit events across
 eighteen months. Rebuild the semantic artifact after `make dbt-build`.
 
+### Governed Confluence evidence sync
+
+The operator sync path normalizes the synthetic Confluence corpus through the
+same source contract used by live-shaped adapters and writes it to external
+Qdrant. Configure `QDRANT_URL` (and `QDRANT_API_KEY` when required) before
+running the backfill or incremental source sync:
+
+```sh
+make sync-confluence-evidence
+```
+
+The synchronizer skips unchanged page revisions, replaces updated revisions,
+and retains deleted or inaccessible revisions only as non-retrievable
+tombstones. Missing provenance, access policy, or embedding version metadata
+fails closed before the batch mutates Qdrant. The `/readiness` response reports
+Qdrant and embedding status without returning credentials.
+
 ## Checks
 
 Pull requests to `main` run three independently selectable GitHub Actions
