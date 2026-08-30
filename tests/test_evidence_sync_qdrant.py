@@ -10,7 +10,11 @@ from pydantic import ValidationError
 from qdrant_client import QdrantClient
 
 from growth_data_agent.contracts import EvidenceSupportStatus
-from growth_data_agent.evidence import EvidenceAccessFilter, _vectorize
+from growth_data_agent.evidence import (
+    EvidenceAccessFilter,
+    QdrantEvidenceStore,
+    _vectorize,
+)
 from growth_data_agent.evidence_sync import (
     ConfluenceEvidenceChunk,
     ConfluenceEvidenceRevision,
@@ -226,6 +230,55 @@ def test_access_metadata_change_is_not_hidden_by_same_content_revision() -> None
 
     assert result == EvidenceSyncResult(indexed_revision_count=1, removed_revision_count=1)
     assert {point.payload["classification"] for point in points} == {"restricted"}
+
+
+def test_long_lived_qdrant_cache_distinguishes_policy_fingerprint_changes() -> None:
+    client = QdrantClient(location=":memory:")
+    synchronizer = _synchronizer(client)
+    original = _revision()
+    synchronizer.sync(StaticConfluenceSource([original]))
+    store = QdrantEvidenceStore(client=client, collection_name="sync-test", external=True)
+    access_filter = _access_filter()
+
+    first = store.retrieve_scoped(
+        "onboarding regression",
+        access_filter,
+        {"page-123"},
+        limit=3,
+        authorized_revision_keys={("page-123", "42", "page-123:chunk:0")},
+    )
+    assert first[0].text == original.chunks[0].text
+
+    updated = original.model_copy(
+        update={
+            "source_access": SourceAccessMetadata(
+                classification="internal",
+                identifier_entitlement="none",
+                access_groups=["evidence-general"],
+                policy_expires_at=datetime(2098, 12, 31, tzinfo=UTC),
+            ),
+            "chunks": [
+                ConfluenceEvidenceChunk(
+                    chunk_id="page-123:chunk:0",
+                    chunk_index=0,
+                    text="The updated policy revision remains within the APAC scope.",
+                ),
+                original.chunks[1],
+            ],
+        }
+    )
+    synchronizer.sync(StaticConfluenceSource([updated]))
+
+    second = store.retrieve_scoped(
+        "updated policy revision",
+        access_filter,
+        {"page-123"},
+        limit=3,
+        authorized_revision_keys={("page-123", "42", "page-123:chunk:0")},
+    )
+
+    assert second[0].text == updated.chunks[0].text
+    assert second[0].policy_expires_at == updated.source_access.policy_expires_at
 
 
 @pytest.mark.parametrize(

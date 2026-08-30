@@ -465,6 +465,7 @@ class QdrantEvidenceStore:
                 str(metadata.get("source_document_id", "")),
                 str(metadata.get("source_revision", "")),
                 str(metadata.get("chunk_id", "")),
+                str(metadata.get("revision_fingerprint") or ""),
             )
             document = self._documents_by_revision_key.get(revision_key)
             if document is None:
@@ -633,7 +634,7 @@ def _evidence_node(
                 NAMESPACE_URL,
                 node_identity
                 or f"{provenance.source_document_id}:{provenance.source_revision}:"
-                f"{provenance.chunk_id}",
+                f"{provenance.chunk_id}:{document.revision_fingerprint or ''}",
             )
         ),
         text=document.text,
@@ -655,7 +656,11 @@ def _provenance_for(document: EvidenceDocument) -> EvidenceProvenance:
     )
 
 
-def _document_revision_key(document: EvidenceDocument) -> tuple[str, str, str]:
+def _document_revision_key(document: EvidenceDocument) -> tuple[str, str, str, str]:
+    return (*_evidence_revision_key(document), document.revision_fingerprint or "")
+
+
+def _evidence_revision_key(document: EvidenceDocument) -> tuple[str, str, str]:
     provenance = _provenance_for(document)
     return (provenance.source_document_id, provenance.source_revision, provenance.chunk_id)
 

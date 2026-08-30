@@ -25,7 +25,7 @@ def test_synthetic_evidence_is_ingested_as_stable_llamaindex_nodes() -> None:
         uuid5(
             NAMESPACE_URL,
             "jira-apac-paid-provisioning-incident:synthetic-v1:"
-            "jira-apac-paid-provisioning-incident:chunk:0",
+            "jira-apac-paid-provisioning-incident:chunk:0:",
         )
     )
     assert node.metadata["source_document_id"] == "jira-apac-paid-provisioning-incident"

@@ -3,9 +3,23 @@ from pathlib import Path
 
 from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, write_artifact
 from fastapi.testclient import TestClient
+from qdrant_client import QdrantClient
 
-from growth_data_agent.evidence import EvidenceDocument
-from growth_data_agent.graph import GraphAccessFilter, GraphNode, GraphPath
+from growth_data_agent.evidence import EvidenceDocument, QdrantEvidenceStore
+from growth_data_agent.graph import (
+    GraphAccessFilter,
+    GraphNode,
+    GraphPath,
+    InMemoryEvidenceGraphStore,
+)
+from growth_data_agent.lightrag import (
+    InMemoryLightRAGStore,
+    LightRAGBackend,
+    LightRAGChunkRecord,
+    LightRAGEvidenceAdapter,
+    LightRAGEvidenceReference,
+    QdrantAGELightRAGStore,
+)
 from growth_data_agent.main import create_app
 from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
@@ -43,8 +57,9 @@ class RecordingGraphStore:
 
 def _client(
     tmp_path: Path,
-    evidence_store: RecordingEvidenceStore | None = None,
+    evidence_store: RecordingEvidenceStore | QdrantEvidenceStore | None = None,
     graph_store: RecordingGraphStore | None = None,
+    lightrag_adapter: LightRAGEvidenceAdapter | None = None,
 ) -> tuple[TestClient, RecordingEvidenceStore, RecordingGraphStore]:
     artifact_path = write_artifact(tmp_path / "semantic.json")
     planner = RecordingMetricFlowPlanner(tmp_path / "semantic_manifest.json")
@@ -64,10 +79,44 @@ def _client(
                 evidence_store=evidence_store,
                 evidence_reranker=DeterministicCrossEncoderReranker(),
                 graph_store=graph_store,
+                lightrag_adapter=lightrag_adapter,
             )
         )
     )
     return client, evidence_store, graph_store
+
+
+class MaliciousScopedEvidenceStore(RecordingEvidenceStore):
+    def __init__(self, authorized: EvidenceDocument, injected: EvidenceDocument) -> None:
+        super().__init__([authorized])
+        self.injected = injected
+
+    def retrieve_scoped(
+        self,
+        query,
+        access_filter,
+        authorized_document_ids,
+        *,
+        limit,
+        authorized_revision_keys,
+    ):
+        del query, access_filter, authorized_document_ids, limit, authorized_revision_keys
+        return [self.injected]
+
+
+def _lightrag_adapter_for(document: EvidenceDocument) -> LightRAGEvidenceAdapter:
+    return LightRAGEvidenceAdapter(
+        LightRAGBackend(
+            InMemoryLightRAGStore(
+                chunks=[
+                    LightRAGChunkRecord(
+                        reference=LightRAGEvidenceReference.from_document(document),
+                        text=document.text,
+                    )
+                ]
+            )
+        )
+    )
 
 
 def test_evidence_response_contains_only_authorized_graph_paths(client: TestClient) -> None:
@@ -229,6 +278,63 @@ def test_indirect_identifier_prompt_is_refused_before_any_source_retrieval(
     assert graph_store.calls == 0
     assert "tenant-" not in response.text
     assert "direct contact" not in response.text.casefold()
+
+
+def test_direct_identifier_empty_authorized_scope_skips_graph_traversal(tmp_path: Path) -> None:
+    evidence_store = QdrantEvidenceStore(
+        [evidence_corpus()[0].model_copy(update={"region": "EMEA"})],
+        client=QdrantClient(location=":memory:"),
+    )
+    graph_store = RecordingGraphStore()
+    adapter = LightRAGEvidenceAdapter(
+        LightRAGBackend(
+            QdrantAGELightRAGStore(evidence_store, InMemoryEvidenceGraphStore([]))
+        )
+    )
+    client, _, graph_store = _client(tmp_path, evidence_store, graph_store, adapter)
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "customer_success_manager",
+            "question": "Which Tenant IDs were affected by the Jira APAC incident?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["direct_identifier_answer"]["identifiers"] == []
+    assert graph_store.calls == 0
+    assert "tenant-" not in response.text
+
+
+def test_direct_identifier_rejects_a_scoped_store_revision_mismatch(tmp_path: Path) -> None:
+    authorized = evidence_corpus()[0]
+    injected = authorized.model_copy(
+        update={
+            "source_revision": "injected-revision",
+            "text": "Injected evidence from another active revision.",
+        }
+    )
+    evidence_store = MaliciousScopedEvidenceStore(authorized, injected)
+    graph_store = RecordingGraphStore()
+    client, _, graph_store = _client(
+        tmp_path,
+        evidence_store,
+        graph_store,
+        _lightrag_adapter_for(authorized),
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "customer_success_manager",
+            "question": "Which Tenant IDs were affected by the Jira APAC incident?",
+        },
+    )
+
+    assert response.status_code == 503
+    assert "Injected evidence" not in response.text
+    assert graph_store.calls == 0
 
 
 def test_customer_success_manager_receives_bounded_audited_tenant_identifiers(

@@ -565,6 +565,33 @@ def test_apache_age_query_is_parameterized_with_the_pre_authorized_scope() -> No
     assert "graph_namespace" in cypher
 
 
+def test_apache_age_empty_group_scope_matches_python_policy() -> None:
+    path = graph_corpus()[0].model_copy(deep=True)
+    for node in path.nodes:
+        node.access_groups = ["regional-managers"]
+    metric = path.nodes[0]
+    executor = RecordingAgeQueryExecutor([path])
+    store = ApacheAgeEvidenceGraphStore(executor)
+    access_filter = GraphAccessFilter(
+        products=(metric.product,),
+        regions=(metric.region,),
+        tenant_ids=tuple(metric.tenant_ids),
+        classifications=(metric.classification,),
+        identifier_entitlements=(metric.identifier_entitlement,),
+        groups=(),
+    )
+
+    assert store.traverse(
+        "Jira APAC evidence",
+        access_filter,
+        limit=3,
+        metric_name=metric.node_id,
+    ) == [path]
+    cypher, parameters = executor.calls[0]
+    assert "size($groups) = 0 OR" in cypher
+    assert parameters["groups"] == []
+
+
 def test_age_post_filter_rejects_a_chain_for_the_wrong_metric() -> None:
     wrong_metric = GraphPath(
         path_id="wrong-metric-chain",

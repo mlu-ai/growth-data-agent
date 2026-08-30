@@ -42,6 +42,7 @@ from .evidence import (
     EvidenceDocument,
     QdrantEvidenceStore,
     VectorEvidenceStore,
+    _evidence_revision_key,
     build_evidence_answer,
     embedding_readiness,
 )
@@ -985,12 +986,22 @@ class AnswerQuestionService:
                 raise LightRAGAuthorizationError(
                     "LightRAG requires a backend-enforced scoped evidence retriever."
                 )
-            return [
-                document
-                for document in documents
-                if (document.source_document_id or document.document_id) in allowed_document_ids
-                and access_filter.allows(document)
-            ][:limit]
+            validated_documents = []
+            for document in documents:
+                if not isinstance(document, EvidenceDocument):
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned an invalid evidence document."
+                    )
+                if _evidence_revision_key(document) not in allowed_revision_keys:
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned an unauthorized evidence revision."
+                    )
+                if not access_filter.allows(document):
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned evidence outside the current policy."
+                    )
+                validated_documents.append(document)
+            return validated_documents[:limit]
 
     def _catalog_get(self, entity_name: str):
         with trace_span(
@@ -1590,8 +1601,9 @@ class AnswerQuestionService:
             )
             if access_filter.allows(document)
         ]
-        graph_filter = access_profile.graph_filter(product, region)
-        if documents:
+        graph_paths = []
+        if documents or self.lightrag_adapter is None:
+            graph_filter = access_profile.graph_filter(product, region)
             graph_filter = replace(
                 graph_filter,
                 groups=access_filter.groups,
@@ -1614,16 +1626,18 @@ class AnswerQuestionService:
                     )
                 ),
             )
-        graph_paths = [
-            path
-            for path in self._traverse_graph(
-                f"{product} {region} direct identifiers",
-                graph_filter,
-                limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
-                metric_name=("confluence_new_peu" if product == "Confluence" else "jira_new_peu"),
-            )
-            if graph_filter.allows(path)
-        ][:_DIRECT_IDENTIFIER_RESULT_LIMIT]
+            graph_paths = [
+                path
+                for path in self._traverse_graph(
+                    f"{product} {region} direct identifiers",
+                    graph_filter,
+                    limit=_DIRECT_IDENTIFIER_RESULT_LIMIT,
+                    metric_name=(
+                        "confluence_new_peu" if product == "Confluence" else "jira_new_peu"
+                    ),
+                )
+                if graph_filter.allows(path)
+            ][:_DIRECT_IDENTIFIER_RESULT_LIMIT]
         identifiers = self._permitted_identifiers(
             graph_paths=graph_paths,
             documents=documents,

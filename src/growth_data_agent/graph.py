@@ -755,7 +755,7 @@ def _age_node_access_filter(index: int) -> str:
             f"{node}.identifier_entitlement IN $identifier_entitlements",
             f"{node}.lifecycle_state = $active_lifecycle_state",
             f"{node}.policy_expires_at > $as_of",
-            f"(size(coalesce({node}.access_groups, [])) = 0 OR "
+            f"(size($groups) = 0 OR size(coalesce({node}.access_groups, [])) = 0 OR "
             f"ANY(group IN {node}.access_groups WHERE group IN $groups))",
             f"(size(coalesce({node}.direct_principal_grants, [])) = 0 OR "
             f"ANY(grant IN {node}.direct_principal_grants WHERE "

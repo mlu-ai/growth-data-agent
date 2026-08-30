@@ -6,9 +6,18 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from .evidence import EvidenceAccessFilter, EvidenceDocument, VectorEvidenceStore
+from .evidence import (
+    EvidenceAccessFilter,
+    EvidenceDocument,
+    VectorEvidenceStore,
+    _evidence_revision_key,
+)
 from .graph import GraphAccessFilter, GraphPath
-from .lightrag import AuthorizedEvidenceRevisionSet, LightRAGEvidenceAdapter
+from .lightrag import (
+    AuthorizedEvidenceRevisionSet,
+    LightRAGAuthorizationError,
+    LightRAGEvidenceAdapter,
+)
 from .observability import trace_span
 from .reranking import (
     EvidenceReranker,
@@ -144,16 +153,30 @@ class BoundedEvidenceInvestigationTools:
                     limit=_MAX_EVIDENCE_TOOL_RESULTS,
                     authorized_revision_keys=authorized_revision_keys,
                 )
-        documents = [
-            document
-            for document in retrieved_documents
-            if evidence_filter.allows(document)
-            and (
-                authorized_document_ids is None
-                or (document.source_document_id or document.document_id)
-                in authorized_document_ids
-            )
-        ][:_MAX_EVIDENCE_TOOL_RESULTS]
+        if self._lightrag_adapter is None:
+            documents = [
+                document
+                for document in retrieved_documents
+                if evidence_filter.allows(document)
+            ][:_MAX_EVIDENCE_TOOL_RESULTS]
+        else:
+            authorized_revision_set = authorized_revision_keys or set()
+            documents = []
+            for document in retrieved_documents:
+                if not isinstance(document, EvidenceDocument):
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned an invalid evidence document."
+                    )
+                if _evidence_revision_key(document) not in authorized_revision_set:
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned an unauthorized evidence revision."
+                    )
+                if not evidence_filter.allows(document):
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned evidence outside the current policy."
+                    )
+                documents.append(document)
+            documents = documents[:_MAX_EVIDENCE_TOOL_RESULTS]
         documents = self._rerank_authorized_documents(
             query,
             documents,
