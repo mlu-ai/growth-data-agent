@@ -867,6 +867,13 @@ def _slug(value: str) -> str:
 def _graph_node_key(node: GraphNode) -> str:
     tenant_scope = ",".join(sorted(node.tenant_ids))
     seat_scope = ",".join(sorted(node.seat_tiers))
+    revision_scope = ":".join(
+        (
+            node.source_document_id or "",
+            node.source_revision or "",
+            node.chunk_id or "",
+        )
+    )
     return ":".join(
         (
             node.product,
@@ -877,6 +884,7 @@ def _graph_node_key(node: GraphNode) -> str:
             node.identifier_entitlement,
             tenant_scope,
             seat_scope,
+            revision_scope,
         )
     )
 
