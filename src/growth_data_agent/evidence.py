@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from hashlib import sha256
 from math import sqrt
 from typing import Protocol
@@ -24,6 +25,15 @@ from .contracts import (
     EvidenceScope,
     EvidenceSupportStatus,
 )
+
+
+class EvidenceLifecycleState(StrEnum):
+    """Retrievability state carried by a synchronized evidence revision."""
+
+    ACTIVE = "active"
+    DELETED = "deleted"
+    INACCESSIBLE = "inaccessible"
+
 
 _VECTOR_SIZE = 32
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
@@ -69,6 +79,13 @@ class EvidenceDocument(BaseModel):
     source_document_id: str | None = None
     source_url: str | None = None
     source_revision: str = "synthetic-v1"
+    source_page_id: str | None = None
+    chunk_id: str | None = None
+    chunk_index: int = 0
+    lifecycle_state: EvidenceLifecycleState = EvidenceLifecycleState.ACTIVE
+    embedding_model: str | None = None
+    embedding_version: str | None = None
+    revision_fingerprint: str | None = None
     access_groups: list[str] = Field(default_factory=lambda: ["evidence-general"])
     direct_principal_grants: list[EvidencePrincipalGrant] = Field(default_factory=list)
     policy_expires_at: datetime = Field(
@@ -101,6 +118,7 @@ class EvidenceAccessFilter:
             and set(document.tenant_ids).issubset(self.tenant_ids)
             and document.classification in self.classifications
             and document.identifier_entitlement in self.identifier_entitlements
+            and document.lifecycle_state is EvidenceLifecycleState.ACTIVE
             and (not self.metric_names or document.metric_name in self.metric_names)
         )
         group_permitted = not self.groups or not document.access_groups or bool(
@@ -151,6 +169,10 @@ class EvidenceAccessFilter:
                 models.FieldCondition(
                     key="identifier_entitlement",
                     match=models.MatchAny(any=list(self.identifier_entitlements)),
+                ),
+                models.FieldCondition(
+                    key="lifecycle_state",
+                    match=models.MatchValue(value=EvidenceLifecycleState.ACTIVE.value),
                 ),
                 *(
                     [
@@ -289,6 +311,23 @@ class QdrantEvidenceStore:
         """Return scores for this execution context's final document ranking."""
         return self._last_scores.get()
 
+    def readiness(self) -> dict[str, object]:
+        """Report Qdrant reachability without exposing endpoint credentials."""
+        try:
+            self._client.get_collections()
+        except Exception:
+            return {
+                "status": "unavailable",
+                "detail": "Qdrant is unavailable.",
+                "embedding": embedding_readiness(),
+            }
+        return {
+            "status": "ready",
+            "collection": self._collection_name,
+            "external": False,
+            "embedding": embedding_readiness(),
+        }
+
 
 def build_evidence_answer(
     documents: Iterable[EvidenceDocument],
@@ -359,7 +398,12 @@ def _citation(document: EvidenceDocument) -> EvidenceCitation:
     )
 
 
-def _evidence_node(document: EvidenceDocument) -> TextNode:
+def _evidence_node(
+    document: EvidenceDocument,
+    *,
+    embedding: list[float] | None = None,
+    node_identity: str | None = None,
+) -> TextNode:
     """Create one stable LlamaIndex chunk while preserving source and policy provenance."""
     provenance = _provenance_for(document)
     metadata = document.model_dump(mode="json")
@@ -370,14 +414,27 @@ def _evidence_node(document: EvidenceDocument) -> TextNode:
             "source_url": provenance.source_url,
             "source_revision": provenance.source_revision,
             "chunk_id": provenance.chunk_id,
-            "chunk_index": 0,
+            "chunk_index": document.chunk_index,
+            "source_access": {
+                "classification": document.classification,
+                "identifier_entitlement": document.identifier_entitlement,
+                "access_groups": document.access_groups,
+                "direct_principal_grants": [
+                    grant.model_dump(mode="json") for grant in document.direct_principal_grants
+                ],
+                "policy_expires_at": document.policy_expires_at.isoformat(),
+            },
         }
     )
     return TextNode(
-        id_=str(uuid5(NAMESPACE_URL, provenance.chunk_id)),
+        id_=str(uuid5(NAMESPACE_URL, node_identity or provenance.chunk_id)),
         text=document.text,
         metadata=metadata,
-        embedding=_vectorize(f"{document.title} {document.text}"),
+        embedding=(
+            _vectorize(f"{document.title} {document.text}")
+            if embedding is None
+            else embedding
+        ),
     )
 
 
@@ -386,7 +443,7 @@ def _provenance_for(document: EvidenceDocument) -> EvidenceProvenance:
         source_document_id=document.source_document_id or document.document_id,
         source_url=document.source_url or _synthetic_source_url(document),
         source_revision=document.source_revision,
-        chunk_id=f"{document.document_id}:chunk:0",
+        chunk_id=document.chunk_id or f"{document.document_id}:chunk:0",
     )
 
 
@@ -416,3 +473,34 @@ def _lexical_score(query: str, document: EvidenceDocument) -> int:
         _TOKEN_PATTERN.findall(f"{document.title} {document.text}".casefold())
     )
     return len(query_tokens & document_tokens)
+
+
+class EmbeddingProvider(Protocol):
+    model_name: str
+    model_version: str
+
+    def embed(self, text: str) -> list[float]: ...
+
+    def readiness(self) -> dict[str, object]: ...
+
+
+class HashEmbeddingProvider:
+    """Deterministic POC embedder used by fixtures and local development."""
+
+    model_name = "deterministic-hash"
+    model_version = "1"
+
+    def embed(self, text: str) -> list[float]:
+        return _vectorize(text)
+
+    def readiness(self) -> dict[str, object]:
+        return {
+            "status": "ready",
+            "model": self.model_name,
+            "version": self.model_version,
+        }
+
+
+def embedding_readiness(provider: EmbeddingProvider | None = None) -> dict[str, object]:
+    """Return the readiness projection for the configured or deterministic embedder."""
+    return (provider or HashEmbeddingProvider()).readiness()

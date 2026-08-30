@@ -16,6 +16,12 @@ from .conversations import (
     conversation_retention_from_environment,
 )
 from .datahub import DataHubHttpCatalog
+from .evidence_sync import (
+    HashEmbeddingProvider,
+    QdrantEvidenceSynchronizer,
+    qdrant_client_from_environment,
+    qdrant_collection_from_environment,
+)
 from .graph import (
     ApacheAgeEvidenceGraphStore,
     EvidenceGraphUnavailableError,
@@ -123,6 +129,17 @@ def create_app(
             retention=conversation_retention_from_environment(),
         ),
     )
+    app.state.external_evidence_synchronizer = None
+    app.state.external_evidence_sync_unavailable = False
+    app.state.external_evidence_sync_unconfigured = not os.environ.get("QDRANT_URL")
+    if not app.state.external_evidence_sync_unconfigured:
+        try:
+            app.state.external_evidence_synchronizer = QdrantEvidenceSynchronizer(
+                client=qdrant_client_from_environment(),
+                collection_name=qdrant_collection_from_environment(),
+            )
+        except Exception:
+            app.state.external_evidence_sync_unavailable = True
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -131,6 +148,48 @@ def create_app(
     @app.get("/readiness")
     def readiness() -> JSONResponse:
         status = app.state.answer_service.readiness()
+        external_synchronizer = app.state.external_evidence_synchronizer
+        if external_synchronizer is not None:
+            external_status = external_synchronizer.readiness()
+            status = {
+                **status,
+                "evidence_sync": external_status,
+                "qdrant": external_status["qdrant"],
+                "embedding": external_status["embedding"],
+                "status": (
+                    "unavailable"
+                    if status["status"] == "unavailable"
+                    or external_status["status"] == "unavailable"
+                    else "ready"
+                ),
+            }
+        elif app.state.external_evidence_sync_unavailable:
+            external_status = {
+                "status": "unavailable",
+                "qdrant": {
+                    "status": "unavailable",
+                    "collection": qdrant_collection_from_environment(),
+                    "external": True,
+                },
+                "embedding": HashEmbeddingProvider().readiness(),
+            }
+            status = {
+                **status,
+                "evidence_sync": external_status,
+                "status": "unavailable",
+                "qdrant": external_status["qdrant"],
+                "embedding": external_status["embedding"],
+            }
+        elif app.state.external_evidence_sync_unconfigured:
+            status["evidence_sync"] = {
+                "status": "unconfigured",
+                "qdrant": {
+                    "status": "unconfigured",
+                    "collection": qdrant_collection_from_environment(),
+                    "external": True,
+                },
+                "embedding": HashEmbeddingProvider().readiness(),
+            }
         return JSONResponse(
             status_code=503 if status["status"] == "unavailable" else 200,
             content=status,

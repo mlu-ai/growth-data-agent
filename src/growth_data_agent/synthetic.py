@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from .contracts import EvidenceSupportStatus
 from .datahub import DataHubEntityMetadata
-from .evidence import EvidenceDocument, EvidencePrincipalGrant
+from .evidence import EvidenceDocument, EvidenceLifecycleState, EvidencePrincipalGrant
+from .evidence_sync import (
+    ConfluenceEvidenceChunk,
+    ConfluenceEvidenceRevision,
+    EvidenceRevisionValidationError,
+    SourceAccessMetadata,
+)
 from .graph import DerivedEvidenceGraphBuilder, GraphPath
 from .policy import tenant_ids_for_segment
 
@@ -48,7 +55,7 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
     """Return the deterministic incident corpus used by the evidence POC."""
     apac_51_200_tenants = _tenant_ids_for_segment("APAC", "51-200")
     emea_51_200_tenants = _tenant_ids_for_segment("EMEA", "51-200")
-    return (
+    documents = (
         EvidenceDocument(
             document_id="jira-apac-paid-provisioning-incident",
             metric_name="jira_new_peu",
@@ -169,6 +176,18 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "2026 New PEU increase period."
             ),
             accountable_team="Confluence Growth Acquisition Team",
+            source_document_id="confluence-americas-acquisition-campaign",
+            source_url="https://evidence.local/synthetic/confluence-americas-acquisition-campaign",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-americas-acquisition-campaign",
+            chunk_id="confluence-americas-acquisition-campaign:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            access_groups=["evidence-general"],
+            direct_principal_grants=[],
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
         EvidenceDocument(
             document_id="confluence-americas-enterprise-campaign",
@@ -191,6 +210,18 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "The campaign concerns a different Seat Tier from the affected segment."
             ),
             accountable_team="Confluence Growth Acquisition Team",
+            source_document_id="confluence-americas-enterprise-campaign",
+            source_url="https://evidence.local/synthetic/confluence-americas-enterprise-campaign",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-americas-enterprise-campaign",
+            chunk_id="confluence-americas-enterprise-campaign:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            access_groups=["evidence-general"],
+            direct_principal_grants=[],
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
         EvidenceDocument(
             document_id="confluence-americas-provisioning-maintenance",
@@ -213,6 +244,18 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "The notice concerns a different Seat Tier from the affected segment."
             ),
             accountable_team="Confluence Platform Provisioning Team",
+            source_document_id="confluence-americas-provisioning-maintenance",
+            source_url="https://evidence.local/synthetic/confluence-americas-provisioning-maintenance",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-americas-provisioning-maintenance",
+            chunk_id="confluence-americas-provisioning-maintenance:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            access_groups=["evidence-general"],
+            direct_principal_grants=[],
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
         EvidenceDocument(
             document_id="confluence-americas-acquisition-campaign-restricted",
@@ -244,6 +287,16 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                     expires_at=datetime(2099, 12, 31, tzinfo=UTC),
                 )
             ],
+            source_document_id="confluence-americas-acquisition-campaign-restricted",
+            source_url="https://evidence.local/synthetic/confluence-americas-acquisition-campaign-restricted",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-americas-acquisition-campaign-restricted",
+            chunk_id="confluence-americas-acquisition-campaign-restricted:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
         EvidenceDocument(
             document_id="confluence-emea-onboarding-email-regression",
@@ -268,6 +321,18 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "scope and the June 2026 New MAU decline period."
             ),
             accountable_team="Confluence Growth Activation Team",
+            source_document_id="confluence-emea-onboarding-email-regression",
+            source_url="https://evidence.local/synthetic/confluence-emea-onboarding-email-regression",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-emea-onboarding-email-regression",
+            chunk_id="confluence-emea-onboarding-email-regression:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            access_groups=["evidence-general"],
+            direct_principal_grants=[],
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
         EvidenceDocument(
             document_id="confluence-emea-small-tenant-onboarding-email",
@@ -290,6 +355,18 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "The review concerns a different Seat Tier from the affected segment."
             ),
             accountable_team="Confluence Growth Activation Team",
+            source_document_id="confluence-emea-small-tenant-onboarding-email",
+            source_url="https://evidence.local/synthetic/confluence-emea-small-tenant-onboarding-email",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-emea-small-tenant-onboarding-email",
+            chunk_id="confluence-emea-small-tenant-onboarding-email:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            access_groups=["evidence-general"],
+            direct_principal_grants=[],
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
         EvidenceDocument(
             document_id="confluence-emea-201-plus-onboarding-email",
@@ -312,6 +389,18 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "The summary concerns a different Seat Tier from the affected segment."
             ),
             accountable_team="Confluence Growth Activation Team",
+            source_document_id="confluence-emea-201-plus-onboarding-email",
+            source_url="https://evidence.local/synthetic/confluence-emea-201-plus-onboarding-email",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-emea-201-plus-onboarding-email",
+            chunk_id="confluence-emea-201-plus-onboarding-email:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            access_groups=["evidence-general"],
+            direct_principal_grants=[],
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
         EvidenceDocument(
             document_id="confluence-emea-onboarding-email-regression-restricted",
@@ -343,8 +432,105 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                     expires_at=datetime(2099, 12, 31, tzinfo=UTC),
                 )
             ],
+            source_document_id="confluence-emea-onboarding-email-regression-restricted",
+            source_url="https://evidence.local/synthetic/confluence-emea-onboarding-email-regression-restricted",
+            source_revision="synthetic-v1",
+            source_page_id="confluence-emea-onboarding-email-regression-restricted",
+            chunk_id="confluence-emea-onboarding-email-regression-restricted:chunk:0",
+            chunk_index=0,
+            lifecycle_state=EvidenceLifecycleState.ACTIVE,
+            embedding_model="deterministic-hash",
+            embedding_version="1",
+            policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
         ),
     )
+    return documents
+
+
+class SyntheticConfluenceEvidenceSource:
+    """Adapt the deterministic fixture corpus to the normalized source contract."""
+
+    def __init__(self, documents: Iterable[EvidenceDocument] | None = None) -> None:
+        self._documents = tuple(documents if documents is not None else evidence_corpus())
+
+    def iter_revisions(self) -> Iterable[ConfluenceEvidenceRevision]:
+        for document in self._documents:
+            if document.product != "Confluence":
+                continue
+            if not document.source_document_id or not document.source_url:
+                raise EvidenceRevisionValidationError(
+                    f"Synthetic source page {document.document_id} is missing provenance."
+                )
+            required_fields = {
+                "source_document_id",
+                "source_url",
+                "source_revision",
+                "source_page_id",
+                "chunk_id",
+                "chunk_index",
+                "lifecycle_state",
+                "classification",
+                "identifier_entitlement",
+                "access_groups",
+                "direct_principal_grants",
+                "policy_expires_at",
+                "embedding_model",
+                "embedding_version",
+            }
+            missing_fields = {
+                field
+                for field in required_fields
+                if field not in document.model_fields_set
+                or getattr(document, field) is None
+                or (
+                    isinstance(getattr(document, field), str)
+                    and not getattr(document, field).strip()
+                )
+            }
+            if missing_fields:
+                raise EvidenceRevisionValidationError(
+                    f"Synthetic source page {document.document_id} is missing required metadata: "
+                    f"{', '.join(sorted(missing_fields))}."
+                )
+            source_page_id = document.source_document_id
+            source_url = document.source_url
+            chunks = (
+                [
+                    ConfluenceEvidenceChunk(
+                        chunk_id=document.chunk_id,
+                        chunk_index=document.chunk_index,
+                        text=document.text,
+                    )
+                ]
+                if document.lifecycle_state is EvidenceLifecycleState.ACTIVE
+                else []
+            )
+            yield ConfluenceEvidenceRevision(
+                source_page_id=source_page_id,
+                source_url=source_url,
+                source_revision=document.source_revision,
+                lifecycle_state=document.lifecycle_state,
+                metric_name=document.metric_name,
+                title=document.title,
+                product=document.product,
+                region=document.region,
+                tenant_ids=document.tenant_ids,
+                tenant_scope=document.tenant_scope,
+                relevant_date=document.relevant_date,
+                freshness=document.freshness,
+                support_status=document.support_status,
+                support_explanation=document.support_explanation,
+                chunks=chunks,
+                source_access=SourceAccessMetadata(
+                    classification=document.classification,
+                    identifier_entitlement=document.identifier_entitlement,
+                    access_groups=document.access_groups,
+                    direct_principal_grants=document.direct_principal_grants,
+                    policy_expires_at=document.policy_expires_at,
+                ),
+                embedding_model=document.embedding_model,
+                embedding_version=document.embedding_version,
+            )
 
 
 def graph_corpus() -> tuple[GraphPath, ...]:

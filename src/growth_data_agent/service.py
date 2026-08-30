@@ -35,7 +35,12 @@ from .datahub import (
     DataHubCatalogStore,
     DataHubCatalogUnavailableError,
 )
-from .evidence import QdrantEvidenceStore, VectorEvidenceStore, build_evidence_answer
+from .evidence import (
+    QdrantEvidenceStore,
+    VectorEvidenceStore,
+    build_evidence_answer,
+    embedding_readiness,
+)
 from .evidence_tools import BoundedEvidenceInvestigationTools
 from .execution import (
     AuthorizedExecution,
@@ -294,9 +299,29 @@ class AnswerQuestionService:
     def readiness(self) -> dict[str, object]:
         """Expose model dependency state without exposing request or credential data."""
         local_model = local_model_readiness(self.local_model)
+        evidence_readiness = getattr(self.evidence_store, "readiness", None)
+        evidence = (
+            evidence_readiness()
+            if evidence_readiness is not None
+            else {
+                "status": "ready",
+                "external": False,
+                "embedding": embedding_readiness(),
+            }
+        )
+        qdrant = {key: value for key, value in evidence.items() if key != "embedding"}
+        embedding = evidence.get("embedding", embedding_readiness())
         return {
-            "status": "unavailable" if local_model["status"] == "unavailable" else "ready",
+            "status": (
+                "unavailable"
+                if local_model["status"] == "unavailable"
+                or qdrant["status"] == "unavailable"
+                or embedding["status"] == "unavailable"
+                else "ready"
+            ),
             "local_model": local_model,
+            "qdrant": qdrant,
+            "embedding": embedding,
         }
 
     def _available_metric_names_for_request(
