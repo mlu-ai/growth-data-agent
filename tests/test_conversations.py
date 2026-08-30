@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from starlette.testclient import TestClient as RawTestClient
+
+from growth_data_agent.contracts import (
+    AnswerQuestionRequest,
+    ConversationSummary,
+    ConversationTurn,
+    EffectiveAccessScope,
+    ResultClassification,
+)
+from growth_data_agent.conversations import (
+    ConversationAccessDeniedError,
+    InMemoryConversationCheckpointStore,
+    SQLiteConversationCheckpointStore,
+)
+from growth_data_agent.policy import AccessDeniedError
+from growth_data_agent.principal import VerifiedPrincipal, development_token_environment_variable
+
+
+def _token(principal_id: str) -> str:
+    return os.environ[development_token_environment_variable(principal_id)]
+
+
+def _answer(client: TestClient, *, question: str, conversation_id: str | None = None):
+    payload = {"question": question}
+    if conversation_id is not None:
+        payload["conversation_id"] = conversation_id
+    return client.post(
+        "/answer_question",
+        headers={"Authorization": f"Bearer {_token('data_analyst')}"},
+        json=payload,
+    )
+
+
+def test_first_answer_creates_an_opaque_conversation_and_trace(client: TestClient) -> None:
+    response = _answer(client, question="What is Jira New PEU?")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["conversation_id"], str)
+    assert len(body["conversation_id"]) >= 32
+    assert body["conversation_id"] not in {"data_analyst", "jira_new_peu"}
+    assert body["trace_id"]
+
+
+def test_follow_up_uses_prior_metric_context_and_gets_a_new_trace(client: TestClient) -> None:
+    first = _answer(client, question="What is Jira New PEU?")
+    conversation_id = first.json()["conversation_id"]
+
+    follow_up = _answer(
+        client,
+        question="What does that metric mean?",
+        conversation_id=conversation_id,
+    )
+
+    assert follow_up.status_code == 200
+    body = follow_up.json()
+    assert body["conversation_id"] == conversation_id
+    assert body["trace_id"] != first.json()["trace_id"]
+    assert body["result_classification"] == "canonical_definition"
+    assert body["canonical_definition"]["name"] == "jira_new_peu"
+
+
+def test_another_verified_principal_cannot_continue_a_private_conversation(
+    client: TestClient,
+) -> None:
+    first = _answer(client, question="What is Jira New PEU?")
+    conversation_id = first.json()["conversation_id"]
+    other_client = RawTestClient(client.app)
+
+    response = other_client.post(
+        "/answer_question",
+        headers={"Authorization": f"Bearer {_token('apac_regional_manager')}"},
+        json={
+            "conversation_id": conversation_id,
+            "question": "What does that metric mean?",
+        },
+    )
+
+    assert response.status_code == 403
+    assert "conversation" in response.json()["detail"].casefold()
+    assert conversation_id not in response.text
+
+
+def test_follow_up_refreshes_semantic_freshness_before_using_saved_metric_context(
+    client: TestClient,
+) -> None:
+    first = _answer(client, question="What is Jira New PEU?")
+    conversation_id = first.json()["conversation_id"]
+    artifact_path: Path = client.app.state.answer_service.semantic_gateway.artifact_store.path
+    artifact = json.loads(artifact_path.read_text())
+    artifact["validation"]["status"] = "failed"
+    artifact_path.write_text(json.dumps(artifact))
+
+    follow_up = _answer(
+        client,
+        question="What does that metric mean?",
+        conversation_id=conversation_id,
+    )
+
+    assert follow_up.status_code == 200
+    assert follow_up.json()["result_classification"] == "limitation"
+    assert follow_up.json()["source_freshness"]["is_current"] is False
+
+
+def _principal() -> VerifiedPrincipal:
+    return VerifiedPrincipal(
+        principal_id="data_analyst",
+        issuer="https://issuer.example.test",
+        subject="subject-123",
+    )
+
+
+def _turn(*, created_at: datetime, question: str, metric_name: str = "jira_new_peu"):
+    return ConversationTurn(
+        turn_id=f"turn-{created_at.timestamp()}-{len(question)}",
+        question=question,
+        result_classification=ResultClassification.CANONICAL_DEFINITION,
+        metric_name=metric_name,
+        trace_id=f"trace-{created_at.timestamp()}",
+        created_at=created_at,
+    )
+
+
+def test_sqlite_checkpoint_survives_restart_without_raw_evidence_chunks(tmp_path: Path) -> None:
+    database_path = tmp_path / "conversations.sqlite3"
+    recorded_at = datetime(2026, 8, 30, tzinfo=UTC)
+    summary = ConversationSummary(
+        agent_user_goal="Understand Jira New PEU",
+        resolved_scope=EffectiveAccessScope(
+            products=["Jira"],
+            regions=["Americas", "APAC", "EMEA"],
+            tenant_scope="All permitted Jira Tenants",
+            permitted_columns=["metric_name", "definition"],
+        ),
+        metric_name="jira_new_peu",
+        evidence_revision_ids=["incident@revision-7"],
+        qualified_conclusions=["canonical_definition"],
+        workflow_state="canonical_definition",
+    )
+    first = SQLiteConversationCheckpointStore(
+        database_path,
+        now=lambda: recorded_at,
+    )
+    checkpoint = first.create(_principal())
+    first.append(
+        checkpoint.conversation_id,
+        _principal(),
+        turn=_turn(created_at=recorded_at, question="What is Jira New PEU?"),
+        summary=summary,
+    )
+    with sqlite3.connect(database_path) as connection:
+        stored_summary = connection.execute(
+            "SELECT summary_json FROM conversation_checkpoints"
+        ).fetchone()[0]
+    assert "What is Jira New PEU?" not in stored_summary
+
+    restarted = SQLiteConversationCheckpointStore(
+        database_path,
+        now=lambda: recorded_at,
+    )
+    loaded = restarted.load(checkpoint.conversation_id, _principal())
+
+    assert loaded.summary == summary
+    assert loaded.recent_turns[0].question == "What is Jira New PEU?"
+    assert b"raw evidence chunk" not in database_path.read_bytes()
+
+
+def test_service_requires_a_verified_principal_at_the_conversation_boundary(
+    client: TestClient,
+) -> None:
+    with pytest.raises(AccessDeniedError):
+        client.app.state.answer_service.answer_question(
+            AnswerQuestionRequest(agent_user_id="data_analyst", question="What is Jira New PEU?")
+        )
+
+
+def test_checkpoint_owner_binding_includes_issuer_and_subject(tmp_path: Path) -> None:
+    store = SQLiteConversationCheckpointStore(tmp_path / "conversations.sqlite3")
+    checkpoint = store.create(_principal())
+    same_id_different_identity = VerifiedPrincipal(
+        principal_id="data_analyst",
+        issuer="https://another-issuer.example.test",
+        subject="subject-123",
+    )
+
+    with pytest.raises(ConversationAccessDeniedError):
+        store.load(checkpoint.conversation_id, same_id_different_identity)
+
+
+def test_recent_context_is_bounded_by_tokens_and_transcript_retention(tmp_path: Path) -> None:
+    recorded_at = datetime(2026, 8, 1, tzinfo=UTC)
+    current_time = [recorded_at]
+    store = InMemoryConversationCheckpointStore(
+        retention=timedelta(days=30),
+        now=lambda: current_time[0],
+        recent_context_token_budget=4,
+    )
+    checkpoint = store.create(_principal())
+    store.append(
+        checkpoint.conversation_id,
+        _principal(),
+        turn=_turn(created_at=recorded_at, question="one two three"),
+        summary=ConversationSummary(metric_name="jira_new_peu"),
+    )
+    store.append(
+        checkpoint.conversation_id,
+        _principal(),
+        turn=_turn(created_at=recorded_at + timedelta(seconds=1), question="four five six"),
+        summary=ConversationSummary(metric_name="jira_new_peu"),
+    )
+
+    loaded = store.load(checkpoint.conversation_id, _principal())
+    assert [turn.question for turn in loaded.recent_turns] == ["four five six"]
+
+    current_time[0] = recorded_at + timedelta(days=31)
+    assert store.transcript(checkpoint.conversation_id, _principal()) == ()
+
+
+def test_trace_is_linked_to_but_distinct_from_conversation(client: TestClient) -> None:
+    class RecordingTraceSink:
+        def __init__(self) -> None:
+            self.trace = None
+
+        def record(self, trace) -> None:
+            self.trace = trace
+
+    sink = RecordingTraceSink()
+    client.app.state.answer_service.trace_sink = sink
+
+    response = _answer(client, question="What is Jira New PEU?")
+
+    assert response.status_code == 200
+    assert sink.trace is not None
+    assert sink.trace.conversation_id == response.json()["conversation_id"]
+    assert sink.trace.trace_id == response.json()["trace_id"]
+    assert sink.trace.trace_id != sink.trace.conversation_id

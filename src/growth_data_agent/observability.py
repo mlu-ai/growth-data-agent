@@ -49,6 +49,8 @@ _SAFE_SPAN_NAMES = frozenset(
         "graph_traversal",
     }
 )
+
+
 class TraceSink(Protocol):
     def record(self, trace: TraceRecord) -> None: ...
 
@@ -76,6 +78,7 @@ class TraceRecord:
     retrieval_scores: Sequence[float]
     evaluation_outcome: str
     response: Mapping[str, Any]
+    conversation_id: str | None = None
     node_spans: Sequence[TraceSpan] = ()
     tool_spans: Sequence[TraceSpan] = ()
 
@@ -86,6 +89,7 @@ class TraceContext:
     def __init__(self) -> None:
         self._node_spans: list[TraceSpan] = []
         self._tool_spans: list[TraceSpan] = []
+        self.conversation_id: str | None = None
 
     @property
     def node_spans(self) -> tuple[TraceSpan, ...]:
@@ -197,16 +201,12 @@ class MlflowTraceSink:
                 self._mlflow.set_tag("response_classification", trace.response_classification)
                 self._mlflow.set_tag("policy_fingerprint", trace.policy_fingerprint)
                 self._mlflow.set_tag("evaluation_outcome", trace.evaluation_outcome)
+                if trace.conversation_id is not None:
+                    self._mlflow.set_tag("conversation_id", trace.conversation_id)
                 self._mlflow.log_params(
                     {
-                        **{
-                            key: str(value)
-                            for key, value in trace.source_versions.items()
-                        },
-                        **{
-                            f"{key}_outcome": value
-                            for key, value in trace.tool_outcomes.items()
-                        },
+                        **{key: str(value) for key, value in trace.source_versions.items()},
+                        **{f"{key}_outcome": value for key, value in trace.tool_outcomes.items()},
                     }
                 )
                 scores = [float(score) for score in trace.retrieval_scores]
@@ -265,9 +265,7 @@ class MlflowTraceSink:
             self._mlflow.set_tag("evaluation_category", category)
             self._mlflow.set_tag("evaluation_outcome", "pass" if passed else "fail")
             self._mlflow.log_param("model_name", model_name)
-            self._mlflow.log_metrics(
-                {"fixture_passed": 1.0 if passed else 0.0, **(metrics or {})}
-            )
+            self._mlflow.log_metrics({"fixture_passed": 1.0 if passed else 0.0, **(metrics or {})})
 
 
 def redact_identifiers(value: Any) -> Any:
@@ -312,6 +310,7 @@ def _safe_response_payload(response: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_citation_count": _sequence_length(evidence_citations),
         "graph_path_count": _sequence_length(graph_paths),
         "caveat_count": _sequence_length(caveats),
+        "has_conversation_id": response.get("conversation_id") is not None,
     }
 
 

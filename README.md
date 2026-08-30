@@ -23,6 +23,17 @@ is `data/decision_records.sqlite3` with twelve months (365 days). Only decision
 metadata is stored: identifier values, approval prose, and source-page bodies
 are excluded; a SHA-256 digest is retained for approval-context correlation.
 
+Answer requests also support private durable Conversations. The server creates
+an opaque `conversation_id` on the first answer; send it on a later request to
+continue that Conversation. It is bound to the verified Agent User identity, and
+each Turn re-resolves authorization and the current semantic artifact before
+using the bounded recent context and structured summary. Set
+`CONVERSATION_DATABASE_URL` to choose the Postgres checkpoint database (it
+defaults to `DATABASE_URL`) and
+`GROWTH_DATA_AGENT_CONVERSATION_RETENTION_DAYS` to configure raw turn-metadata
+retention; the default is thirty days. Evidence chunks and full model payloads
+are not stored as conversation memory.
+
 Evidence questions about the APAC Jira decline or the Confluence EMEA New MAU
 decline first run the validated Driver Decomposition, then query the synthetic
 Qdrant corpus with Access Profile-derived product, Region, Tenant,

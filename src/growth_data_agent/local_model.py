@@ -15,6 +15,7 @@ from .contracts import (
     AnalyticalIntent,
     AnalyticalRoute,
     AnswerQuestionRequest,
+    ConversationContext,
     EvidenceSupportStatus,
     GovernedAnalyticalResponse,
     ResultClassification,
@@ -65,6 +66,9 @@ class LocalModelIntentRequest(BaseModel):
             Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_]+$"),
         ]
     ] = Field(min_length=1, max_length=64)
+    conversation_context: ConversationContext | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class LocalModelIntentProposal(BaseModel):
@@ -313,9 +317,7 @@ class OllamaLocalModel(_OllamaHttpClient):
             raise LocalModelOutputInvalid(
                 "Local-model requests must use a supported bounded task envelope."
             ) from error
-        model_input = redact_identifiers(
-            call.input.model_dump(mode="json", exclude={"task"})
-        )
+        model_input = redact_identifiers(call.input.model_dump(mode="json", exclude={"task"}))
         return {
             "model": self.model_name,
             "prompt": (
@@ -368,9 +370,7 @@ class OllamaIntentModel(OllamaLocalModel):
         timeout: float = 60.0,
     ) -> None:
         if model_name != OLLAMA_INTENT_MODEL_NAME:
-            raise ValueError(
-                f"The governed intent provider requires {OLLAMA_INTENT_MODEL_NAME}."
-            )
+            raise ValueError(f"The governed intent provider requires {OLLAMA_INTENT_MODEL_NAME}.")
         super().__init__(model_name=model_name, base_url=base_url, timeout=timeout)
 
     @classmethod
@@ -397,9 +397,7 @@ class OllamaBaselineModel(_OllamaHttpClient):
             raise LocalModelOutputInvalid(
                 "Baseline evaluation input did not match its bounded schema."
             ) from error
-        model_input = redact_identifiers(
-            baseline_input.model_dump(mode="json", exclude_none=True)
-        )
+        model_input = redact_identifiers(baseline_input.model_dump(mode="json", exclude_none=True))
         return self._send(
             {
                 "model": self.model_name,
@@ -440,11 +438,17 @@ class LocalModelIntentInterpreter:
             if request.requested_metric_name is not None
             else None,
             available_metric_names=list(available_metric_names),
+            conversation_context=request.conversation_context,
         )
+        model_input = model_request.model_dump(mode="json", exclude={"task"})
+        if model_request.conversation_context is None:
+            model_input.pop("conversation_context", None)
+        else:
+            model_input = redact_identifiers(model_input)
         proposal = _request_and_validate(
             self._model,
             task=model_request.task,
-            model_input=model_request.model_dump(mode="json", exclude={"task"}),
+            model_input=model_input,
             response_model=LocalModelIntentProposal,
         )
         if (
@@ -528,10 +532,9 @@ def _validate_local_model_proposal(
     context: CitedEvidenceDraft,
 ) -> None:
     citation_ids = {citation.document_id for citation in context.citations}
-    if (
-        len(set(proposal.citation_document_ids)) != len(proposal.citation_document_ids)
-        or not set(proposal.citation_document_ids).issubset(citation_ids)
-    ):
+    if len(set(proposal.citation_document_ids)) != len(proposal.citation_document_ids) or not set(
+        proposal.citation_document_ids
+    ).issubset(citation_ids):
         raise LocalModelOutputInvalid("Local-model prose cited an unapproved document.")
     if proposal.support_status != context.support_status:
         raise LocalModelOutputInvalid("Local-model prose changed the evidence status.")
@@ -584,13 +587,9 @@ def _request_and_validate(
     response_model: type[_ModelResponse],
 ) -> _ModelResponse:
     try:
-        call = _LOCAL_MODEL_CALL_ADAPTER.validate_python(
-            {"task": task, "input": model_input}
-        )
+        call = _LOCAL_MODEL_CALL_ADAPTER.validate_python({"task": task, "input": model_input})
     except ValidationError as error:
-        raise LocalModelOutputInvalid(
-            f"{task} input did not match its bounded schema."
-        ) from error
+        raise LocalModelOutputInvalid(f"{task} input did not match its bounded schema.") from error
     try:
         raw_output = model.generate(call)
     except LocalModelError:
@@ -609,6 +608,7 @@ def _request_and_validate(
         raise LocalModelOutputInvalid(
             "Local-model output did not match its bounded schema."
         ) from error
+
 
 def _normalise_text(value: str) -> str:
     return " ".join(value.casefold().split())
