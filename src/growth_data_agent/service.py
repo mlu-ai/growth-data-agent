@@ -1608,6 +1608,11 @@ class AnswerQuestionService:
             metric_name="confluence_new_peu" if product == "Confluence" else "jira_new_peu",
             agent_user_id=request.agent_user_id,
         )
+        require_bound_qdrant_age_stores(
+            self.lightrag_adapter,
+            self.evidence_store,
+            self.graph_store,
+        )
         documents = [
             document
             for document in self._retrieve_evidence(
@@ -1619,11 +1624,6 @@ class AnswerQuestionService:
         ]
         graph_paths = []
         if documents:
-            require_bound_qdrant_age_stores(
-                self.lightrag_adapter,
-                self.evidence_store,
-                self.graph_store,
-            )
             graph_filter = access_profile.graph_filter(product, region)
             graph_filter = replace(
                 graph_filter,

@@ -8,6 +8,7 @@ from qdrant_client import QdrantClient
 
 from growth_data_agent.evidence import EvidenceDocument, EvidenceLifecycleState, QdrantEvidenceStore
 from growth_data_agent.graph import (
+    ApacheAgeEvidenceGraphStore,
     GraphAccessFilter,
     GraphNode,
     GraphPath,
@@ -79,6 +80,15 @@ class RecordingGraphStore:
         self.last_filter = access_filter
         self.last_limit = limit
         return self.paths[:limit]
+
+
+class RecordingAgeExecutor:
+    def __init__(self) -> None:
+        self.query_calls: list[tuple[str, dict[str, object]]] = []
+
+    def query(self, cypher: str, parameters: dict[str, object]) -> list[GraphPath]:
+        self.query_calls.append((cypher, parameters))
+        return []
 
 
 class InjectedLightRAGAdapter:
@@ -504,9 +514,9 @@ def test_direct_identifier_empty_authorized_scope_skips_graph_traversal(tmp_path
         [evidence_corpus()[0].model_copy(update={"region": "EMEA"})],
         client=QdrantClient(location=":memory:"),
     )
-    graph_store = RecordingGraphStore()
+    graph_store = InMemoryEvidenceGraphStore([])
     adapter = LightRAGEvidenceAdapter(
-        LightRAGBackend(QdrantAGELightRAGStore(evidence_store, InMemoryEvidenceGraphStore([])))
+        LightRAGBackend(QdrantAGELightRAGStore(evidence_store, graph_store))
     )
     client, _, graph_store = _client(tmp_path, evidence_store, graph_store, adapter)
 
@@ -520,7 +530,7 @@ def test_direct_identifier_empty_authorized_scope_skips_graph_traversal(tmp_path
 
     assert response.status_code == 200
     assert response.json()["direct_identifier_answer"]["identifiers"] == []
-    assert graph_store.calls == 0
+    assert graph_store.last_filter is None
     assert "tenant-" not in response.text
 
 
@@ -569,11 +579,13 @@ def test_direct_identifier_rejects_an_unbound_graph_store_before_traversal(
             if path.path_id == "jira-apac-paid-provisioning-incident-restricted-identifier-chain"
         ]
     )
+    governed_age_executor = RecordingAgeExecutor()
+    governed_backend_graph_store = ApacheAgeEvidenceGraphStore(governed_age_executor)
     governed_adapter = LightRAGEvidenceAdapter(
         LightRAGBackend(
             QdrantAGELightRAGStore(
                 evidence_store,
-                InMemoryEvidenceGraphStore([]),
+                governed_backend_graph_store,
             )
         )
     )
@@ -594,6 +606,8 @@ def test_direct_identifier_rejects_an_unbound_graph_store_before_traversal(
 
     assert response.status_code == 503
     assert injected_graph_store.calls == 0
+    assert governed_age_executor.query_calls == []
+    assert governed_backend_graph_store.last_filter is None
     assert "tenant-0011" not in response.text
     assert "jira-apac-paid-provisioning-incident-restricted" not in response.text
     assert "path" not in response.text.casefold()
@@ -728,10 +742,21 @@ def test_entitled_response_does_not_extract_identifiers_from_none_entitlement_so
             )
         ],
     )
+    governed_evidence_store = QdrantEvidenceStore(
+        [document],
+        client=QdrantClient(location=":memory:"),
+    )
+    governed_graph_store = InMemoryEvidenceGraphStore([path])
+    governed_adapter = LightRAGEvidenceAdapter(
+        LightRAGBackend(
+            QdrantAGELightRAGStore(governed_evidence_store, governed_graph_store)
+        )
+    )
     client, _, _ = _client(
         tmp_path,
-        RecordingEvidenceStore([document]),
-        RecordingGraphStore([path]),
+        governed_evidence_store,
+        governed_graph_store,
+        governed_adapter,
     )
 
     response = client.post(
