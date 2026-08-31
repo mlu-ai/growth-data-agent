@@ -447,7 +447,7 @@ def test_dependency_failure_is_fail_closed_and_traced(tmp_path: Path) -> None:
     trace = trace_sink.records[0]
     assert f"trace_id={trace.trace_id}" in response.json()["detail"]
     assert trace.response_classification == "safe_refusal"
-    assert trace.tool_spans[-1].name == "graph_traversal"
+    assert trace.tool_spans[-1].name == "evidence_retrieval"
     assert trace.tool_spans[-1].status == "error"
 
 
@@ -502,8 +502,9 @@ def test_governed_response_records_route_tools_and_source_versions(
     ]
     assert [span.name for span in trace.tool_spans] == [
         "semantic_driver_decomposition",
-        "graph_traversal",
+        "lightrag_retrieval",
         "evidence_retrieval",
+        "graph_traversal",
     ]
 
 

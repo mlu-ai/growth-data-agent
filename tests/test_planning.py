@@ -18,6 +18,8 @@ from growth_data_agent.planning import (
     InvestigationComplexity,
     LeadAgentPlanner,
     PlanAction,
+    PlanActionExecution,
+    PlanExecutionSnapshot,
     PlanningInvariantError,
     PlanToolOutcome,
     ToolOutcomeStatus,
@@ -113,6 +115,112 @@ def test_tool_failure_replans_to_the_next_existing_action_only() -> None:
     assert replanned.current_action is PlanAction.CITED_EVIDENCE
     assert replanned.actions == metadata.actions
     assert replanned.tool_outcomes[-1].error_type == "SemanticQueryExecutionError"
+
+
+def test_action_execution_records_real_order_and_replans_before_next_action() -> None:
+    planner = LeadAgentPlanner()
+    metadata = planner.start(
+        AnalyticalIntent(route=AnalyticalRoute.LEGACY, metric_name="jira_new_peu"),
+        _authorized(),
+        semantic_current=True,
+    )
+    assert metadata is not None
+    calls: list[PlanAction] = []
+
+    def run(action: PlanAction, payload: object | None) -> PlanActionExecution:
+        calls.append(action)
+        if action is PlanAction.METRICFLOW:
+            raise RuntimeError("metricflow unavailable")
+        return PlanActionExecution(value=f"completed:{action.value}", payload=payload)
+
+    result = planner.execute(
+        metadata,
+        run_action=run,
+        snapshot_provider=lambda _: PlanExecutionSnapshot(
+            policy_fingerprint=metadata.policy_fingerprint,
+            semantic_current=True,
+            evidence_revision_keys=(),
+        ),
+    )
+
+    assert calls == [PlanAction.METRICFLOW, PlanAction.CITED_EVIDENCE, PlanAction.LIGHTRAG]
+    assert [outcome.action for outcome in result.metadata.tool_outcomes] == calls
+    assert result.metadata.tool_outcomes[0].status is ToolOutcomeStatus.FAILED
+    assert result.metadata.tool_outcomes[1].status is ToolOutcomeStatus.SUCCESS
+    assert result.metadata.current_action is None
+
+
+def test_action_execution_blocks_next_action_when_policy_changes() -> None:
+    planner = LeadAgentPlanner()
+    metadata = planner.start(
+        AnalyticalIntent(route=AnalyticalRoute.LEGACY, metric_name="jira_new_peu"),
+        _authorized(),
+        semantic_current=True,
+    )
+    assert metadata is not None
+    calls: list[PlanAction] = []
+
+    def run(action: PlanAction, payload: object | None) -> PlanActionExecution:
+        calls.append(action)
+        return PlanActionExecution(payload=payload)
+
+    snapshots = iter(
+        (
+            PlanExecutionSnapshot(
+                policy_fingerprint=metadata.policy_fingerprint,
+                semantic_current=True,
+                evidence_revision_keys=(),
+            ),
+            PlanExecutionSnapshot(
+                policy_fingerprint="expanded-policy",
+                semantic_current=True,
+                evidence_revision_keys=(),
+            ),
+        )
+    )
+    result = planner.execute(metadata, run_action=run, snapshot_provider=lambda _: next(snapshots))
+
+    assert calls == [PlanAction.METRICFLOW]
+    assert result.metadata.last_replan_reason == "invariant_blocked"
+    assert result.metadata.current_action is PlanAction.CITED_EVIDENCE
+
+
+def test_action_execution_blocks_next_action_when_evidence_revision_changes() -> None:
+    planner = LeadAgentPlanner()
+    metadata = planner.start(
+        AnalyticalIntent(route=AnalyticalRoute.LEGACY, metric_name="jira_new_peu"),
+        _authorized(),
+        semantic_current=True,
+    )
+    assert metadata is not None
+    calls: list[PlanAction] = []
+    snapshots = iter(
+        (
+            PlanExecutionSnapshot(
+                policy_fingerprint=metadata.policy_fingerprint,
+                semantic_current=True,
+                evidence_revision_keys=(),
+            ),
+            PlanExecutionSnapshot(
+                policy_fingerprint=metadata.policy_fingerprint,
+                semantic_current=True,
+                evidence_revision_keys=(("doc-1", "revision-2", "chunk-1"),),
+            ),
+        )
+    )
+
+    def run(action: PlanAction, payload: object | None) -> PlanActionExecution:
+        calls.append(action)
+        return PlanActionExecution(
+            payload=payload,
+            evidence_revision_keys=(("doc-1", "revision-1", "chunk-1"),),
+        )
+
+    result = planner.execute(metadata, run_action=run, snapshot_provider=lambda _: next(snapshots))
+
+    assert calls == [PlanAction.METRICFLOW]
+    assert result.metadata.last_replan_reason == "invariant_blocked"
+    assert result.metadata.current_action is PlanAction.CITED_EVIDENCE
 
 
 def test_replan_rejects_stale_semantic_or_evidence_state() -> None:

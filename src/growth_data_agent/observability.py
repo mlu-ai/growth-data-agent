@@ -46,6 +46,7 @@ _SAFE_SPAN_NAMES = frozenset(
         "semantic_definition",
         "semantic_query",
         "semantic_driver_decomposition",
+        "lightrag_retrieval",
         "evidence_retrieval",
         "catalog_lookup",
         "causal_evaluation",

@@ -43,6 +43,15 @@ class EvidenceInvestigation:
     lightrag_chain: LightRAGEvidenceChain
 
 
+@dataclass(frozen=True)
+class CitedEvidencePreparation:
+    """Authorized citation candidates prepared before derived graph traversal."""
+
+    documents: list[EvidenceDocument]
+    graph_filter: GraphAccessFilter | None
+    lightrag_chain: LightRAGEvidenceChain
+
+
 class BoundedEvidenceInvestigationTools:
     """Invoke the two approved evidence tools with a non-negotiable result budget."""
 
@@ -67,6 +76,41 @@ class BoundedEvidenceInvestigationTools:
         metric_name: str,
     ) -> EvidenceInvestigation:
         """Pass policy to each tool before it retrieves candidates or graph paths."""
+        prepared = self.retrieve_cited_evidence(
+            query=query,
+            evidence_filter=evidence_filter,
+            graph_filter=graph_filter,
+            metric_name=metric_name,
+        )
+        graph_paths = (
+            self._graph_traversal_tool(
+                query,
+                prepared.graph_filter,
+                metric_name,
+                _MAX_EVIDENCE_TOOL_RESULTS,
+            )
+            if prepared.graph_filter is not None
+            else []
+        )
+        return EvidenceInvestigation(
+            documents=prepared.documents,
+            graph_paths=[
+                path
+                for path in graph_paths
+                if prepared.graph_filter is not None and prepared.graph_filter.allows(path)
+            ][:_MAX_EVIDENCE_TOOL_RESULTS],
+            lightrag_chain=prepared.lightrag_chain,
+        )
+
+    def retrieve_cited_evidence(
+        self,
+        *,
+        query: str,
+        evidence_filter: EvidenceAccessFilter,
+        graph_filter: GraphAccessFilter,
+        metric_name: str,
+    ) -> CitedEvidencePreparation:
+        """Run LightRAG and cited retrieval without traversing the derived graph."""
         if self._lightrag_adapter is None:
             raise LightRAGAuthorizationError(
                 "Governed LightRAG evidence retrieval is unavailable."
@@ -93,24 +137,29 @@ class BoundedEvidenceInvestigationTools:
             document for document in source_documents if evidence_filter.allows(document)
         ]
         if not authorized_documents:
-            return EvidenceInvestigation(
-                documents=[], graph_paths=[], lightrag_chain=_empty_lightrag_chain()
+            return CitedEvidencePreparation(
+                documents=[], graph_filter=None, lightrag_chain=_empty_lightrag_chain()
             )
         authorized_scope = AuthorizedEvidenceRevisionSet.from_documents(
             authorized_documents,
             evidence_filter,
             revision_source=revision_reader,
         )
-        lightrag_chain = validate_authorized_lightrag_chain(
-            lightrag_adapter.retrieve_chain(
-                query,
+        with trace_span(
+            "lightrag_retrieval",
+            kind="tool",
+            attributes={"result_limit": _MAX_EVIDENCE_TOOL_RESULTS},
+        ):
+            lightrag_chain = validate_authorized_lightrag_chain(
+                lightrag_adapter.retrieve_chain(
+                    query,
+                    authorized_scope,
+                    evidence_filter,
+                    limit=_MAX_EVIDENCE_TOOL_RESULTS,
+                ),
                 authorized_scope,
                 evidence_filter,
-                limit=_MAX_EVIDENCE_TOOL_RESULTS,
-            ),
-            authorized_scope,
-            evidence_filter,
-        )
+            )
         # Keep the downstream candidate set anchored to LightRAG's top-ranked
         # reference; the remaining chain records are explanatory context, not
         # permission to widen the vector candidate set.
@@ -127,8 +176,8 @@ class BoundedEvidenceInvestigationTools:
             for reference in references
         }
         if not authorized_document_ids:
-            return EvidenceInvestigation(
-                documents=[], graph_paths=[], lightrag_chain=lightrag_chain
+            return CitedEvidencePreparation(
+                documents=[], graph_filter=None, lightrag_chain=lightrag_chain
             )
         graph_filter = GraphAccessFilter(
             products=graph_filter.products,
@@ -144,12 +193,6 @@ class BoundedEvidenceInvestigationTools:
             authorized_revision_keys=tuple(sorted(authorized_revision_keys or ())),
         )
 
-        graph_paths = self._graph_traversal_tool(
-            query,
-            graph_filter,
-            metric_name,
-            _MAX_EVIDENCE_TOOL_RESULTS,
-        )
         with trace_span(
             "evidence_retrieval",
             kind="tool",
@@ -167,37 +210,33 @@ class BoundedEvidenceInvestigationTools:
                 limit=_MAX_EVIDENCE_TOOL_RESULTS,
                 authorized_revision_keys=authorized_revision_keys,
             )
-        authorized_revision_set = authorized_revision_keys or set()
-        documents = []
-        for document in retrieved_documents:
-            if not isinstance(document, EvidenceDocument):
-                raise LightRAGAuthorizationError(
-                    "LightRAG scoped retrieval returned an invalid evidence document."
-                )
-            if _evidence_revision_key(document) not in authorized_revision_set:
-                raise LightRAGAuthorizationError(
-                    "LightRAG scoped retrieval returned an unauthorized evidence revision."
-                )
-            if not evidence_filter.allows(document):
-                raise LightRAGAuthorizationError(
-                    "LightRAG scoped retrieval returned evidence outside the current policy."
-                )
-            documents.append(document)
-        documents = documents[:_MAX_EVIDENCE_TOOL_RESULTS]
-        documents = self._rerank_authorized_documents(
-            query,
-            documents,
-            limit=_MAX_EVIDENCE_TOOL_RESULTS,
-        )
-        return EvidenceInvestigation(
-            documents=documents,
-            graph_paths=[
-                path
-                for path in graph_paths
-                if graph_filter.allows(path)
-            ][:_MAX_EVIDENCE_TOOL_RESULTS],
-            lightrag_chain=lightrag_chain,
-        )
+            authorized_revision_set = authorized_revision_keys or set()
+            documents = []
+            for document in retrieved_documents:
+                if not isinstance(document, EvidenceDocument):
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned an invalid evidence document."
+                    )
+                if _evidence_revision_key(document) not in authorized_revision_set:
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned an unauthorized evidence revision."
+                    )
+                if not evidence_filter.allows(document):
+                    raise LightRAGAuthorizationError(
+                        "LightRAG scoped retrieval returned evidence outside the current policy."
+                    )
+                documents.append(document)
+            documents = documents[:_MAX_EVIDENCE_TOOL_RESULTS]
+            documents = self._rerank_authorized_documents(
+                query,
+                documents,
+                limit=_MAX_EVIDENCE_TOOL_RESULTS,
+            )
+            return CitedEvidencePreparation(
+                documents=documents,
+                graph_filter=graph_filter,
+                lightrag_chain=lightrag_chain,
+            )
 
     def _rerank_authorized_documents(
         self,

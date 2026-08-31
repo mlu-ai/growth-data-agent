@@ -18,11 +18,17 @@ from .contracts import (
     ConversationContext,
     EffectiveAccessScope,
     GovernedAnalyticalResponse,
+    LeadAgentMetadata,
+    PlanAction,
 )
 from .local_model import LocalModelError
 from .observability import set_lead_agent_metadata, trace_span
-from .planning import LeadAgentPlanner
-from .policy import AccessProfile, resolve_access_profile
+from .planning import (
+    LeadAgentPlanner,
+    PlanActionExecution,
+    PlanExecutionSnapshot,
+)
+from .policy import AccessProfile, policy_fingerprint, resolve_access_profile
 
 
 class IntentInterpreter(Protocol):
@@ -75,6 +81,15 @@ LimitationHandler = Callable[[AuthorizedExecution], GovernedAnalyticalResponse]
 MetricDefinitionGapHandler = Callable[
     [AuthorizedExecution, AnalyticalIntent], GovernedAnalyticalResponse
 ]
+PlanActionExecutor = Callable[
+    [AuthorizedExecution, AnalyticalIntent, PlanAction, object | None], PlanActionExecution
+]
+PlanningSnapshotProvider = Callable[[AuthorizedExecution, object | None], PlanExecutionSnapshot]
+PlanningEligibilityProvider = Callable[[AuthorizedExecution, AnalyticalIntent], bool]
+PlanningFailurePolicy = Callable[[Exception], bool]
+PlanningBlockedHandler = Callable[
+    [AuthorizedExecution, AnalyticalIntent, LeadAgentMetadata], GovernedAnalyticalResponse
+]
 
 
 class _ExecutionState(TypedDict, total=False):
@@ -84,7 +99,7 @@ class _ExecutionState(TypedDict, total=False):
     intent: AnalyticalIntent
     trace_id: str
     response: GovernedAnalyticalResponse
-    lead_agent_metadata: object
+    lead_agent_metadata: LeadAgentMetadata | None
 
 
 class ExecutionGraph:
@@ -105,6 +120,11 @@ class ExecutionGraph:
         clarification_handler: ClarificationHandler,
         lead_agent_planner: LeadAgentPlanner | None = None,
         semantic_freshness_provider: Callable[[AuthorizedExecution], bool] | None = None,
+        plan_action_executor: PlanActionExecutor | None = None,
+        planning_snapshot_provider: PlanningSnapshotProvider | None = None,
+        planning_eligibility_provider: PlanningEligibilityProvider | None = None,
+        planning_failure_policy: PlanningFailurePolicy | None = None,
+        planning_blocked_handler: PlanningBlockedHandler | None = None,
         checkpointer=None,
     ) -> None:
         self._intent_interpreter = intent_interpreter
@@ -119,6 +139,13 @@ class ExecutionGraph:
         self._clarification_handler = clarification_handler
         self._lead_agent_planner = lead_agent_planner or LeadAgentPlanner()
         self._semantic_freshness_provider = semantic_freshness_provider or (lambda _: True)
+        self._plan_action_executor = plan_action_executor
+        self._planning_snapshot_provider = planning_snapshot_provider or self._default_snapshot
+        self._planning_eligibility_provider = planning_eligibility_provider or (
+            lambda _authorized, _intent: True
+        )
+        self._planning_failure_policy = planning_failure_policy
+        self._planning_blocked_handler = planning_blocked_handler
         graph = StateGraph(_ExecutionState)
         graph.add_node("authorize", self._authorize)
         graph.add_node("interpret", self._interpret)
@@ -210,13 +237,28 @@ class ExecutionGraph:
                 intent = AnalyticalIntent.model_validate(proposed_intent)
         except (LocalModelError, ValidationError):
             intent = AnalyticalIntent(route=AnalyticalRoute.CLARIFICATION)
-        metadata = self._lead_agent_planner.start(
-            intent,
-            state["authorized_execution"],
-            semantic_current=self._semantic_freshness_provider(state["authorized_execution"]),
-        )
+        authorized_execution = state["authorized_execution"]
+        if self._planning_eligibility_provider(authorized_execution, intent):
+            snapshot = self._planning_snapshot_provider(authorized_execution, None)
+            metadata = self._lead_agent_planner.start(
+                intent,
+                authorized_execution,
+                semantic_current=snapshot.semantic_current,
+                evidence_revision_keys=snapshot.evidence_revision_keys,
+            )
+        else:
+            metadata = None
         set_lead_agent_metadata(metadata)
         return {"intent": intent, "lead_agent_metadata": metadata}
+
+    def _default_snapshot(
+        self, authorized_execution: AuthorizedExecution, _payload: object | None
+    ) -> PlanExecutionSnapshot:
+        return PlanExecutionSnapshot(
+            policy_fingerprint=policy_fingerprint(authorized_execution.access_profile),
+            semantic_current=self._semantic_freshness_provider(authorized_execution),
+            evidence_revision_keys=(),
+        )
 
     @staticmethod
     def _route(state: _ExecutionState) -> str:
@@ -239,8 +281,8 @@ class ExecutionGraph:
     def _legacy(self, state: _ExecutionState) -> dict[str, GovernedAnalyticalResponse]:
         with trace_span("legacy", kind="node"):
             return {
-                "response": self._with_plan(
-                    state, self._legacy_handler(state["authorized_execution"])
+                "response": self._run_planned_or(
+                    state, lambda: self._legacy_handler(state["authorized_execution"])
                 )
             }
 
@@ -249,9 +291,9 @@ class ExecutionGraph:
     ) -> dict[str, GovernedAnalyticalResponse]:
         with trace_span("driver_decomposition", kind="node"):
             return {
-                "response": self._with_plan(
+                "response": self._run_planned_or(
                     state,
-                    self._driver_decomposition_handler(
+                    lambda: self._driver_decomposition_handler(
                         state["authorized_execution"], state["intent"]
                     ),
                 )
@@ -320,3 +362,34 @@ class ExecutionGraph:
         if metadata is None:
             return response
         return response.model_copy(update={"lead_agent_metadata": metadata})
+
+    def _run_planned_or(
+        self,
+        state: _ExecutionState,
+        fallback: Callable[[], GovernedAnalyticalResponse],
+    ) -> GovernedAnalyticalResponse:
+        metadata = state.get("lead_agent_metadata")
+        if metadata is None or self._plan_action_executor is None:
+            return self._with_plan(state, fallback())
+        authorized_execution = state["authorized_execution"]
+        intent = state["intent"]
+        result = self._lead_agent_planner.execute(
+            metadata,
+            run_action=lambda action, payload: self._plan_action_executor(
+                authorized_execution, intent, action, payload
+            ),
+            snapshot_provider=lambda payload: self._planning_snapshot_provider(
+                authorized_execution, payload
+            ),
+            should_replan=self._planning_failure_policy,
+            on_metadata=set_lead_agent_metadata,
+        )
+        response = result.value
+        if not isinstance(response, GovernedAnalyticalResponse):
+            if self._planning_blocked_handler is not None:
+                response = self._planning_blocked_handler(
+                    authorized_execution, intent, result.metadata
+                )
+                return response.model_copy(update={"lead_agent_metadata": result.metadata})
+            raise RuntimeError("The bounded investigation did not produce a governed response.")
+        return response.model_copy(update={"lead_agent_metadata": result.metadata})
