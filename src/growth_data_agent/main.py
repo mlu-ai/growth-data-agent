@@ -240,6 +240,9 @@ def create_app(
             question=payload.question,
             requested_metric_name=payload.requested_metric_name,
             selected_factor_id=payload.selected_factor_id,
+            opportunity_scenario_percentage_points=(
+                payload.opportunity_scenario_percentage_points
+            ),
             conversation_id=payload.conversation_id,
             verification_request_confirmation=payload.verification_request_confirmation,
             verified_principal=principal,

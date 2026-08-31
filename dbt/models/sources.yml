@@ -33,3 +33,17 @@ sources:
               - accepted_values:
                   arguments:
                     values: [Jira, Confluence]
+      - name: product_user_entitlements
+        description: >
+          Provisioning/entitlement events for synthetic Product Users, distinct
+          from and logically prior to Paid Enablement (paid access).
+        columns:
+          - name: entitlement_id
+            tests: [not_null, unique]
+          - name: product_user_id
+            tests: [not_null]
+          - name: product
+            tests:
+              - accepted_values:
+                  arguments:
+                    values: [Jira, Confluence]

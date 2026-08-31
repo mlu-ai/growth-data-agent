@@ -114,6 +114,32 @@ document, sufficient on its own to reach supported status without a second
 independent source.
 _Avoid_: Trusted source, verified document
 
+**Sizing Eligible**:
+A Candidate Causal Factor whose Factor Vocabulary category has a reviewed
+dbt/MetricFlow event-and-audience mapping; only a Sizing Eligible factor may
+receive an Opportunity Estimate. A factor without a mapping remains a
+Hypothesis and offers a data-team mapping request instead.
+_Avoid_: Quantifiable, actionable factor
+
+**Eligible Population**:
+The governed dbt/MetricFlow count of Product Users in a Driver Decomposition
+segment who could receive a Sizing Eligible factor's governed event and have
+not already qualified through it; never inferred from documents or the
+evidence graph.
+_Avoid_: Audience, addressable market, target population
+
+**Opportunity Scenario**:
+An analyst-supplied absolute percentage-point assumption about a change to
+the Eligible Population's qualifying-event rate, used to compute a
+conditional Opportunity Estimate.
+_Avoid_: Forecast input, growth target
+
+**Opportunity Estimate**:
+A conditional projection — Eligible Population multiplied by an Opportunity
+Scenario — for one Sizing Eligible Candidate Causal Factor; never a causal
+effect, forecast, or observed uplift.
+_Avoid_: Projected impact, expected lift, forecasted growth
+
 **Paid Tenant Tenure**:
 Elapsed time since the Product User's Tenant began its paid subscription.
 _Avoid_: Account age, user age, tenure

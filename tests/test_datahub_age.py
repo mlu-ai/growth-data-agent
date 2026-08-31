@@ -198,12 +198,14 @@ def test_validated_dbt_metadata_is_publishable_for_catalog_ownership_and_discove
 
     result = DataHubMetadataPublisher(transport).publish(artifact)
 
-    assert result.published_entity_count == 4
+    assert result.published_entity_count == 6
     assert {entity.entity_name for entity in transport.entities} == {
         "fct_jira_new_peu",
         "fct_jira_new_mau",
         "fct_confluence_new_peu",
         "fct_confluence_new_mau",
+        "fct_jira_new_peu_eligible_population",
+        "fct_confluence_new_peu_eligible_population",
     }
     model = next(
         entity for entity in transport.entities if entity.entity_name == "fct_jira_new_peu"
@@ -213,7 +215,7 @@ def test_validated_dbt_metadata_is_publishable_for_catalog_ownership_and_discove
     assert model.classification == "internal"
     assert "canonical-metric" in model.discovery_tags
     assert model.source_artifact_sha256 == artifact.semantic_manifest_sha256
-    assert len({entity.urn for entity in transport.entities}) == 4
+    assert len({entity.urn for entity in transport.entities}) == 6
     assert "dataPlatform:postgres" in model.urn
 
 

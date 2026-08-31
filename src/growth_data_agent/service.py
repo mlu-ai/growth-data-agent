@@ -14,6 +14,7 @@ from .contracts import (
     AnalyticalIntent,
     AnalyticalRoute,
     AnswerQuestionRequest,
+    CandidateCausalFactor,
     CatalogFreshness,
     CatalogMetadata,
     ConversationSummary,
@@ -27,6 +28,8 @@ from .contracts import (
     FactorSupportStatus,
     GovernedAnalyticalResponse,
     MetricDefinitionGap,
+    OpportunityEstimate,
+    OpportunitySizingGap,
     PlanAction,
     ResultClassification,
     SensitiveIdentifier,
@@ -59,7 +62,7 @@ from .execution import (
     IntentInterpreter,
     RuleBasedIntentInterpreter,
 )
-from .factor_ranking import rank_candidate_causal_factors
+from .factor_ranking import rank_candidate_causal_factors, sizing_eligible_metric_name
 from .factors import (
     DriverMovementWindow,
     build_evidence_investigation_query,
@@ -708,6 +711,17 @@ class AnswerQuestionService:
             if not matched:
                 return self._selection_lost_response(state, selected_factor_id)
             candidate_causal_factors = matched
+        scenario_percentage_points = (
+            state.authorized_execution.request.opportunity_scenario_percentage_points
+        )
+        if scenario_percentage_points is not None:
+            if selected_factor_id is None:
+                return self._opportunity_sizing_missing_selection_response(
+                    state, candidate_causal_factors
+                )
+            return self._opportunity_sizing_response(
+                state, candidate_causal_factors[0], scenario_percentage_points
+            )
         evidence_chain = self._empty_public_evidence_chain()
         graph_paths: list[Any] = []
 
@@ -799,6 +813,167 @@ class AnswerQuestionService:
                 "Only evidence permitted by product, Region, Tenant, classification, "
                 "and identifier entitlements was retrieved.",
             ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
+    def _opportunity_sizing_missing_selection_response(
+        self,
+        state: _PlannedInvestigationState,
+        candidate_causal_factors: list[CandidateCausalFactor],
+    ) -> GovernedAnalyticalResponse:
+        """Opportunity sizing requires an explicit, revalidated Factor ID selection.
+
+        Unlike `_selection_lost_response` (a selection was made and specifically
+        failed to revalidate), this is "no selection was ever made" — the currently
+        ranked candidates are shown as-is so the analyst can see which Factor ID to
+        select next turn.
+        """
+        assert state.cited_evidence is not None
+        evidence = build_evidence_answer(state.cited_evidence.documents)
+        return GovernedAnalyticalResponse(
+            answer=(
+                "Limitation: Opportunity sizing requires an explicit, revalidated "
+                "selected Factor ID; none was provided or resolved for this turn, "
+                f"so no Opportunity Estimate is returned for the {state.region} "
+                f"{state.seat_tier} Seat Tier {self._metric_label(state.metric_name)} "
+                "investigation."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            canonical_definition=state.definition,
+            semantic_query_evidence=state.query_evidence,
+            driver_decomposition=state.decomposition,
+            evidence=evidence,
+            evidence_chain=self._empty_public_evidence_chain(),
+            candidate_causal_factors=candidate_causal_factors,
+            graph_paths=[],
+            source_freshness=state.freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=[
+                "Opportunity sizing requires both an explicit selected Factor ID and "
+                "an analyst-supplied absolute percentage-point Opportunity Scenario.",
+                "Only evidence permitted by product, Region, Tenant, classification, "
+                "and identifier entitlements was retrieved.",
+            ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
+    def _opportunity_sizing_gap_response(
+        self, state: _PlannedInvestigationState, factor: CandidateCausalFactor
+    ) -> GovernedAnalyticalResponse:
+        """A factor without a governed event-and-audience mapping remains a
+        Hypothesis and offers a data-team mapping request instead of an estimate."""
+        assert state.cited_evidence is not None
+        evidence = build_evidence_answer(state.cited_evidence.documents)
+        return GovernedAnalyticalResponse(
+            answer=(
+                f"Hypothesis: Candidate Causal Factor {factor.factor_id!r} has no "
+                "dbt/MetricFlow-governed event-and-audience mapping, so it is not "
+                "Sizing Eligible. It remains a Hypothesis; a data-team mapping "
+                "request is offered instead of an Opportunity Estimate."
+            ),
+            result_classification=ResultClassification.HYPOTHESIS,
+            canonical_definition=state.definition,
+            semantic_query_evidence=state.query_evidence,
+            driver_decomposition=state.decomposition,
+            evidence=evidence,
+            evidence_chain=self._public_evidence_chain(state.cited_evidence.lightrag_chain),
+            candidate_causal_factors=[factor],
+            graph_paths=self._graph_path_citations(state.graph_paths),
+            opportunity_sizing_gap=OpportunitySizingGap(
+                factor_id=factor.factor_id, category=factor.category
+            ),
+            source_freshness=state.freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=[
+                (
+                    "This category has no reviewed dbt/MetricFlow event-and-audience "
+                    "mapping; the Eligible Population is never inferred from documents "
+                    "or the evidence graph, so Opportunity Estimate is not offered."
+                ),
+                "Only evidence permitted by product, Region, Tenant, classification, "
+                "and identifier entitlements was retrieved.",
+            ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
+    def _opportunity_sizing_response(
+        self,
+        state: _PlannedInvestigationState,
+        factor: CandidateCausalFactor,
+        scenario_percentage_points: float,
+    ) -> GovernedAnalyticalResponse:
+        """Ground an analyst-supplied scenario in the governed Eligible Population
+        for this factor's category/driver metric; never a causal effect or forecast."""
+        metric_name = sizing_eligible_metric_name(factor.category, state.metric_name)
+        if metric_name is None:
+            return self._opportunity_sizing_gap_response(state, factor)
+        eligible_population, _freshness = self._semantic_eligible_population(
+            metric_name,
+            state.authorized_execution.access_profile,
+            region=factor.documented_change.region,
+            seat_tier=factor.documented_change.seat_tier,
+        )
+        if eligible_population is None:
+            return self._opportunity_sizing_gap_response(state, factor)
+
+        baseline_rate_percentage = (
+            factor.documented_change.comparison_value / eligible_population * 100
+            if eligible_population
+            else 0.0
+        )
+        raw_incremental = eligible_population * scenario_percentage_points / 100
+        incremental_product_users = round(raw_incremental)
+        assert state.driver_window is not None
+        assert state.cited_evidence is not None
+        evidence = build_evidence_answer(state.cited_evidence.documents)
+        caveats = [
+            "This Opportunity Estimate is a conditional projection from an "
+            "analyst-supplied scenario assumption, not a causal effect, forecast, "
+            "or observed uplift.",
+            "Only evidence permitted by product, Region, Tenant, classification, "
+            "and identifier entitlements was retrieved.",
+        ]
+        if raw_incremental != incremental_product_users:
+            caveats.append(
+                f"Incremental Product Users is rounded from {raw_incremental:.2f} to "
+                "a whole Product User count."
+            )
+        return GovernedAnalyticalResponse(
+            answer=(
+                f"Opportunity Estimate for Candidate Causal Factor {factor.factor_id!r}: "
+                f"a {scenario_percentage_points:+.2f} percentage-point scenario against "
+                f"{eligible_population} Eligible Population Product Users projects "
+                f"{incremental_product_users} incremental Product Users."
+            ),
+            result_classification=ResultClassification.OPPORTUNITY_ESTIMATE,
+            canonical_definition=state.definition,
+            semantic_query_evidence=state.query_evidence,
+            driver_decomposition=state.decomposition,
+            evidence=evidence,
+            evidence_chain=self._public_evidence_chain(state.cited_evidence.lightrag_chain),
+            candidate_causal_factors=[factor],
+            graph_paths=self._graph_path_citations(state.graph_paths),
+            opportunity_estimate=OpportunityEstimate(
+                factor_id=factor.factor_id,
+                baseline_rate_percentage=round(baseline_rate_percentage, 2),
+                eligible_population=eligible_population,
+                scenario_percentage_point_change=scenario_percentage_points,
+                incremental_product_users=incremental_product_users,
+                formula=(
+                    "incremental_product_users = eligible_population × "
+                    "scenario_percentage_point_change ÷ 100"
+                ),
+                scenario_window_start=state.driver_window.start,
+                scenario_window_end=state.driver_window.end,
+                non_causal_caveat=(
+                    "This Opportunity Estimate is a conditional projection grounded in "
+                    "the governed dbt/MetricFlow event-and-audience mapping, not a "
+                    "causal effect, forecast, or observed uplift."
+                ),
+            ),
+            source_freshness=state.freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=caveats,
             trace_id=state.authorized_execution.trace_id,
         )
 
@@ -1493,6 +1668,23 @@ class AnswerQuestionService:
         ):
             return self.semantic_gateway.execute_scoped_metric(
                 metric_name, access_profile, **scope_kwargs
+            )
+
+    def _semantic_eligible_population(
+        self,
+        metric_name: str,
+        access_profile,
+        *,
+        region: str,
+        seat_tier: str,
+    ):
+        with trace_span(
+            "semantic_eligible_population",
+            kind="tool",
+            attributes={"metric_name": metric_name},
+        ):
+            return self.semantic_gateway.eligible_population(
+                metric_name, access_profile, region=region, seat_tier=seat_tier
             )
 
     def _semantic_driver_decomposition(

@@ -22,6 +22,7 @@ class ResultClassification(StrEnum):
     METRIC_DEFINITION_GAP = "metric_definition_gap"
     PROVISIONAL_METRIC = "provisional_metric"
     LIMITATION = "limitation"
+    OPPORTUNITY_ESTIMATE = "opportunity_estimate"
 
 
 class AnalyticalRoute(StrEnum):
@@ -157,6 +158,9 @@ class AnswerQuestionPayload(BaseModel):
     question: str = Field(min_length=1)
     requested_metric_name: str | None = Field(default=None, min_length=1)
     selected_factor_id: str | None = Field(default=None, min_length=1, max_length=256)
+    opportunity_scenario_percentage_points: float | None = Field(
+        default=None, ge=-100, le=100
+    )
     conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
     verification_request_confirmation: VerificationRequestConfirmation | None = None
 
@@ -372,6 +376,36 @@ class CandidateCausalFactor(BaseModel):
     status: FactorSupportStatus
     ranking_signals: RankingSignals
     non_causal_caveat: str = Field(min_length=1, max_length=512)
+    sizing_eligible: bool
+
+
+class OpportunityEstimate(BaseModel):
+    """A conditional projection from an analyst scenario, grounded in a governed
+    dbt/MetricFlow event-and-audience mapping; never a causal effect or forecast."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    factor_id: str = Field(min_length=1, max_length=256)
+    baseline_rate_percentage: float = Field(ge=0)
+    eligible_population: int = Field(ge=0)
+    scenario_percentage_point_change: float = Field(ge=-100, le=100)
+    incremental_product_users: int
+    formula: str = Field(min_length=1, max_length=512)
+    scenario_window_start: date
+    scenario_window_end: date
+    non_causal_caveat: str = Field(min_length=1, max_length=512)
+
+
+class OpportunitySizingGap(BaseModel):
+    """Why a Candidate Causal Factor is not Sizing Eligible; offers a mapping request
+    rather than substituting a document/graph-derived audience."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    factor_id: str = Field(min_length=1, max_length=256)
+    category: FactorVocabularyCategory
+    semantic_authority: str = "dbt/MetricFlow"
+    mapping_request_offered: bool = True
 
 
 class EvidenceChainReference(BaseModel):
@@ -500,6 +534,8 @@ class GovernedAnalyticalResponse(BaseModel):
     direct_identifier_audit: DirectIdentifierAudit | None = None
     metric_definition_gap: MetricDefinitionGap | None = None
     provisional_metric: ProvisionalMetric | None = None
+    opportunity_estimate: OpportunityEstimate | None = None
+    opportunity_sizing_gap: OpportunitySizingGap | None = None
     data_team_verification_request: DataTeamVerificationRequest | None = None
     lead_agent_metadata: LeadAgentMetadata | None = None
     source_freshness: SourceFreshness

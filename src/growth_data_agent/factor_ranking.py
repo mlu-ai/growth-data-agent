@@ -204,12 +204,30 @@ def _rank_key(
     )
 
 
+_SIZING_ELIGIBLE_DRIVER_METRICS = ("jira_new_peu", "confluence_new_peu")
+
+
+def sizing_eligible_metric_name(
+    category: FactorVocabularyCategory, metric_name: str
+) -> str | None:
+    """The governed event-and-audience mapping: which Eligible Population metric (if
+    any) a Candidate Causal Factor's category is reviewed against for this driver
+    metric. Returns `None` when no mapping exists — the factor remains a Hypothesis,
+    never Sizing Eligible, and no audience is inferred from documents or the graph."""
+    if category != FactorVocabularyCategory.PROVISIONING_OR_ENTITLEMENT:
+        return None
+    if metric_name not in _SIZING_ELIGIBLE_DRIVER_METRICS:
+        return None
+    return f"{metric_name}_eligible_population"
+
+
 def _build_card(
     group: CandidateFactorGroup,
     *,
     status: FactorSupportStatus,
     signals: RankingSignals,
     contribution: DriverContribution,
+    metric_name: str,
 ) -> CandidateCausalFactor:
     # Prefer a SUPPORTS record as the anchor for the proposed mechanism/category/
     # occurrence-time text — even in a CONTRADICTED group, the card describes the
@@ -241,6 +259,7 @@ def _build_card(
             "the cited evidence supports or challenges it but does not establish that it "
             "caused the observed movement."
         ),
+        sizing_eligible=sizing_eligible_metric_name(anchor.category, metric_name) is not None,
     )
 
 
@@ -278,6 +297,12 @@ def rank_candidate_causal_factors(
     ]
     scored.sort(key=lambda item: _rank_key(item[1], item[2], group_factor_id(item[0].key)))
     return [
-        _build_card(group, status=status, signals=signals, contribution=contribution)
+        _build_card(
+            group,
+            status=status,
+            signals=signals,
+            contribution=contribution,
+            metric_name=metric_name,
+        )
         for group, status, signals in scored[:max_candidates]
     ]

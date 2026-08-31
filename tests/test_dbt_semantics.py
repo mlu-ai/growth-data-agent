@@ -34,3 +34,37 @@ def test_dbt_model_selects_only_first_jira_paid_enablement() -> None:
     assert "POSTGRES_PORT" in loader
     assert "paid_enablements_are_immutable" in loader
     assert "Refusing to reload immutable events" in loader
+
+
+def test_dbt_eligible_population_excludes_already_paid_enabled_users() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    intermediate = (
+        repository / "dbt/models/intermediate/int_eligible_population.sql"
+    ).read_text()
+    jira_fact_model = (
+        repository / "dbt/models/marts/fct_jira_new_peu_eligible_population.sql"
+    ).read_text()
+    confluence_fact_model = (
+        repository / "dbt/models/marts/fct_confluence_new_peu_eligible_population.sql"
+    ).read_text()
+    jira_semantic_yaml = (
+        repository / "dbt/models/marts/jira_new_peu_eligible_population.yml"
+    ).read_text()
+    confluence_semantic_yaml = (
+        repository / "dbt/models/marts/confluence_new_peu_eligible_population.yml"
+    ).read_text()
+    staging = (
+        repository / "dbt/models/staging/stg_product_user_entitlements.sql"
+    ).read_text()
+
+    assert "stg_product_user_entitlements" in intermediate
+    assert "int_first_paid_enablement" in intermediate
+    assert "paid_enablement_ordinal = 1" in intermediate
+    assert "enablements.product_user_id is null" in intermediate
+    assert "product = 'Jira'" in jira_fact_model
+    assert "product = 'Confluence'" in confluence_fact_model
+    assert "count_distinct" in jira_semantic_yaml
+    assert "count_distinct" in confluence_semantic_yaml
+    assert "seat_tier" in jira_semantic_yaml
+    assert "seat_tier" in confluence_semantic_yaml
+    assert "product_user_entitlements" in staging
