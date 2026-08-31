@@ -1547,10 +1547,12 @@ class AnswerQuestionService:
             classification = ResultClassification.HYPOTHESIS
             answer = supported_answer
             evidence_chain = self._public_evidence_chain(investigation.lightrag_chain)
+            graph_paths = self._graph_path_citations(investigation.graph_paths)
         else:
             classification = ResultClassification.INCONCLUSIVE
             answer = f"{inconclusive_answer} {evidence.support_explanation}"
             evidence_chain = self._empty_public_evidence_chain()
+            graph_paths = []
         return GovernedAnalyticalResponse(
             answer=answer,
             result_classification=classification,
@@ -1559,7 +1561,7 @@ class AnswerQuestionService:
             driver_decomposition=decomposition,
             evidence=evidence,
             evidence_chain=evidence_chain,
-            graph_paths=self._graph_path_citations(investigation.graph_paths),
+            graph_paths=graph_paths,
             source_freshness=freshness,
             effective_access_scope=scope,
             caveats=[

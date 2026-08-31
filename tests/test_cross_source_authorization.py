@@ -342,7 +342,7 @@ def test_inconclusive_response_does_not_publish_a_graph_hypothesis_chain(
     client, _, _ = _client(
         tmp_path,
         RecordingEvidenceStore([inconclusive]),
-        RecordingGraphStore(),
+        RecordingGraphStore(graph_corpus()),
     )
 
     response = client.post(
@@ -362,6 +362,8 @@ def test_inconclusive_response_does_not_publish_a_graph_hypothesis_chain(
         "relations": [],
         "references": [],
     }
+    assert body["graph_paths"] == []
+    assert "tenant-" not in response.text
 
 
 def test_product_scope_is_checked_before_a_cross_product_metric_query(client: TestClient) -> None:
