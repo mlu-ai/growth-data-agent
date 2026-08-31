@@ -105,11 +105,23 @@ class ValidatedMetricFlowGateway:
         )
 
     def available_metric_names(self) -> tuple[str, ...]:
-        """Return only metric names from the current validated semantic artifact."""
+        """Return current, validated metric names available as general-purpose
+        canonical-definition/Driver Decomposition candidates.
+
+        Excludes Eligible Population metrics: they are governed and published to
+        the catalog like any other metric, but reachable only via
+        `eligible_population()` from a confirmed Opportunity Sizing selection —
+        never a free-standing candidate the local model may route an arbitrary
+        analyst question to.
+        """
         artifact = self.artifact_store.load()
         if not self.freshness(artifact).is_current:
             return ()
-        return tuple(metric.name for metric in artifact.metrics)
+        return tuple(
+            metric.name
+            for metric in artifact.metrics
+            if not metric.name.endswith("_eligible_population")
+        )
 
     def canonical_definition(
         self, metric_name: str
@@ -181,6 +193,48 @@ class ValidatedMetricFlowGateway:
             ),
             freshness,
         )
+
+    def eligible_population(
+        self,
+        metric_name: str,
+        access_profile: AccessProfile,
+        *,
+        region: str,
+        seat_tier: str,
+    ) -> tuple[int | None, SourceFreshness]:
+        """Plan and execute a governed Eligible Population count after validation.
+
+        Returns a single aggregate count, never grouped or per-identifier rows —
+        this is the only sizing-time query, so entitlement (`authorize_query_columns`)
+        is checked fresh here rather than trusted from an earlier turn or card.
+        """
+        context, freshness = self._validated_metric_query_context(metric_name)
+        if context is None:
+            return None, freshness
+
+        metric_product = _metric_product(metric_name)
+        entity_name = _metricflow_entity(metric_name)
+        constraints = list(
+            access_profile.metricflow_where_constraints(
+                metric_product, entity_name=entity_name
+            )
+        )
+        access_profile.authorize_query_columns(
+            (f"{entity_name}__region", f"{entity_name}__seat_tier")
+        )
+        constraints.append(f"{entity_name}__region IN ({region!r})")
+        constraints.append(f"{entity_name}__seat_tier = '{seat_tier}'")
+        plan = self.metricflow_planner.plan(
+            MetricFlowQueryRequest(
+                metric_name=metric_name,
+                where_constraints=tuple(constraints),
+                group_by_names=(),
+            )
+        )
+        rows = self.postgres_executor.execute_rows(plan)
+        if not rows:
+            return 0, freshness
+        return int(rows[0][metric_name]), freshness
 
     def driver_decomposition(
         self,

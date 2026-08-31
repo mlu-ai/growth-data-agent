@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: fct_jira_new_peu_eligible_population
+    description: One row per Jira Product User entitled but not yet Paid Enabled.
+    columns:
+      - name: product_user_id
+        tests: [not_null, unique]
+      - name: tenant_id
+        tests: [not_null]
+      - name: entitled_at
+        tests: [not_null]
+
+semantic_models:
+  - name: jira_new_peu_eligible_population
+    description: >
+      Governed Eligible Population for Jira New PEU Opportunity Sizing: Product
+      Users entitled to Jira who have not previously qualified through Paid
+      Enablement for that product. Never inferred from documents or the
+      evidence graph.
+    model: ref('fct_jira_new_peu_eligible_population')
+    config:
+      meta:
+        semantic_version: "1.0.0"
+        canonical_grain: Product User in a Tenant and Jira product
+        canonical_time_rule: Entitled but with no first-ever Jira Paid Enablement.
+    defaults:
+      agg_time_dimension: entitled_date
+    entities:
+      - name: product_user
+        type: primary
+        expr: product_user_id
+      - name: tenant
+        type: foreign
+        expr: tenant_id
+    dimensions:
+      - name: product
+        type: categorical
+        expr: product
+      - name: region
+        type: categorical
+        expr: region
+      - name: seat_tier
+        type: categorical
+        expr: seat_tier
+      - name: entitled_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: jira_new_peu_eligible_population
+        description: >
+          Count of Product Users entitled to Jira with no first-ever Jira Paid
+          Enablement — the Eligible Population for a Jira New PEU Opportunity
+          Scenario.
+        agg: count_distinct
+        expr: product_user_id
+
+metrics:
+  - name: jira_new_peu_eligible_population
+    description: >
+      Jira New PEU Eligible Population: entitled Product Users who have not
+      previously qualified through Paid Enablement for Jira.
+    type: simple
+    type_params:
+      measure: jira_new_peu_eligible_population

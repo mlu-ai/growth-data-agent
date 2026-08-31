@@ -42,6 +42,9 @@ _CONFLUENCE_EMEA_NEW_MAU_SCENARIO = {
 }
 
 
+_ENTITLED_NOT_ENABLED_COUNT = 40
+
+
 @dataclass(frozen=True)
 class DatasetCounts:
     tenants: int
@@ -49,6 +52,7 @@ class DatasetCounts:
     product_users: int
     paid_enablements: int
     visits: int
+    product_user_entitlements: int
 
 
 def evidence_corpus() -> tuple[EvidenceDocument, ...]:
@@ -583,18 +587,23 @@ def generate(output_directory: Path) -> DatasetCounts:
     product_users = _product_users(tenants)
     paid_enablements = _paid_enablements(product_users, tenants)
     visits = _visits(product_users)
+    product_user_entitlements = _product_user_entitlements(tenants)
 
     _write_csv(output_directory / "tenants.csv", tenants)
     _write_csv(output_directory / "persons.csv", persons)
     _write_csv(output_directory / "product_users.csv", product_users)
     _write_csv(output_directory / "paid_enablements.csv", paid_enablements)
     _write_csv(output_directory / "visits.csv", visits)
+    _write_csv(
+        output_directory / "product_user_entitlements.csv", product_user_entitlements
+    )
     return DatasetCounts(
         tenants=len(tenants),
         persons=len(persons),
         product_users=len(product_users),
         paid_enablements=len(paid_enablements),
         visits=len(visits),
+        product_user_entitlements=len(product_user_entitlements),
     )
 
 
@@ -741,6 +750,33 @@ def _enablement_event(
         "product": product_user["product"],
         "paid_enabled_at": datetime.combine(enabled_on, datetime.min.time(), UTC).isoformat(),
     }
+
+
+def _product_user_entitlements(tenants: list[dict[str, str]]) -> list[dict[str, str]]:
+    """A cohort of Jira Product Users in the APAC 51-200 Seat Tier who are entitled
+    (provisioned) but deliberately have no Paid Enablement — the known, computable
+    Eligible Population for the Jira APAC paid-provisioning-incident sizing scenario.
+    A distinct product_user_id namespace keeps this cohort out of the enabled
+    population in paid_enablements.csv; Eligible Population only needs entitlement
+    rows for the not-yet-enabled cohort, not full history for already-enabled users.
+    """
+    apac_51_200_tenant_ids = _tenant_ids_for_segment("APAC", "51-200")
+    entitlements: list[dict[str, str]] = []
+    for index in range(1, _ENTITLED_NOT_ENABLED_COUNT + 1):
+        tenant_id = apac_51_200_tenant_ids[(index - 1) % len(apac_51_200_tenant_ids)]
+        entitled_on = date(2026, 6, (index % 28) + 1)
+        entitlements.append(
+            {
+                "entitlement_id": f"entitlement-{index:05d}",
+                "product_user_id": f"entitled-product-user-{index:05d}",
+                "tenant_id": tenant_id,
+                "product": "Jira",
+                "entitled_at": datetime.combine(
+                    entitled_on, datetime.min.time(), UTC
+                ).isoformat(),
+            }
+        )
+    return entitlements
 
 
 def _visits(product_users: list[dict[str, str]]) -> list[dict[str, str]]:

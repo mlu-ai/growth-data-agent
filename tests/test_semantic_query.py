@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,7 +15,7 @@ from growth_data_agent.metricflow_query import (
     PostgresMetricFlowExecutor,
     SemanticQueryExecutionError,
 )
-from growth_data_agent.policy import resolve_access_profile
+from growth_data_agent.policy import AccessDeniedError, resolve_access_profile
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 
 
@@ -137,6 +138,46 @@ def test_driver_decomposition_uses_only_approved_dimensions_and_apac_row_scope(
     assert evidence.constrained_regions == ["APAC"]
     assert decomposition.approved_dimensions == ["Region", "Seat Tier"]
     assert all(item.region == "APAC" for item in decomposition.contributions)
+
+
+def test_eligible_population_is_a_single_aggregate_scoped_to_region_and_seat_tier(
+    tmp_path: Path,
+) -> None:
+    gateway, planner, executor = _gateway(tmp_path)
+
+    eligible_population, freshness = gateway.eligible_population(
+        "jira_new_peu_eligible_population",
+        resolve_access_profile("data_analyst"),
+        region="APAC",
+        seat_tier="51-200",
+    )
+
+    assert freshness.is_current is True
+    assert eligible_population == 40
+    assert planner.requests[0].where_constraints == (
+        "product_user__product = 'Jira'",
+        "product_user__region IN ('APAC')",
+        "product_user__seat_tier = '51-200'",
+    )
+    assert planner.requests[0].group_by_names == ()
+
+
+def test_eligible_population_rejects_a_profile_without_seat_tier_authorization(
+    tmp_path: Path,
+) -> None:
+    gateway, _planner, _executor = _gateway(tmp_path)
+    profile = resolve_access_profile("data_analyst")
+    narrowed_profile = dataclasses.replace(
+        profile, permitted_query_columns=("product", "region", "tenant_id", "metric_month")
+    )
+
+    with pytest.raises(AccessDeniedError, match="seat_tier"):
+        gateway.eligible_population(
+            "jira_new_peu_eligible_population",
+            narrowed_profile,
+            region="APAC",
+            seat_tier="51-200",
+        )
 
 
 def test_metricflow_planner_compiles_the_validated_semantic_manifest() -> None:

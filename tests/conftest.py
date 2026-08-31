@@ -121,6 +121,37 @@ def write_artifact(path: Path, *, status: str = "success", hours_old: int = 0) -
                 "model_name": "fct_confluence_new_mau",
                 "citation_path": "dbt/models/marts/confluence_new_mau.yml#confluence_new_mau",
             },
+            {
+                "name": "jira_new_peu_eligible_population",
+                "definition": (
+                    "Jira New PEU Eligible Population: entitled Product Users who have "
+                    "not previously qualified through Paid Enablement for Jira."
+                ),
+                "formula": "count_distinct(product_user_id)",
+                "grain": "Product User in a Tenant and Jira product",
+                "time_rule": "Entitled but with no first-ever Jira Paid Enablement.",
+                "model_name": "fct_jira_new_peu_eligible_population",
+                "citation_path": (
+                    "dbt/models/marts/jira_new_peu_eligible_population.yml"
+                    "#jira_new_peu_eligible_population"
+                ),
+            },
+            {
+                "name": "confluence_new_peu_eligible_population",
+                "definition": (
+                    "Confluence New PEU Eligible Population: entitled Product Users who "
+                    "have not previously qualified through Paid Enablement for "
+                    "Confluence."
+                ),
+                "formula": "count_distinct(product_user_id)",
+                "grain": "Product User in a Tenant and Confluence product",
+                "time_rule": "Entitled but with no first-ever Confluence Paid Enablement.",
+                "model_name": "fct_confluence_new_peu_eligible_population",
+                "citation_path": (
+                    "dbt/models/marts/confluence_new_peu_eligible_population.yml"
+                    "#confluence_new_peu_eligible_population"
+                ),
+            },
         ],
     }
     path.write_text(json.dumps(artifact))
@@ -218,6 +249,10 @@ class RecordingPostgresExecutor:
 
     def execute_rows(self, plan: PlannedMetricFlowQuery):
         self.plans.append(plan)
+        if plan.metric_name == "jira_new_peu_eligible_population":
+            return [{"jira_new_peu_eligible_population": 40}]
+        if plan.metric_name == "confluence_new_peu_eligible_population":
+            return [{"confluence_new_peu_eligible_population": 25}]
         if plan.metric_name == "confluence_new_mau":
             if any(
                 "confluence_new_mau_product_user__region IN ('APAC')" in constraint

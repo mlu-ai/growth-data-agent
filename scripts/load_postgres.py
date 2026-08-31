@@ -13,6 +13,7 @@ _TABLES = {
     "product_users": "product_user_id, person_id, tenant_id, product",
     "paid_enablements": "paid_enablement_id, product_user_id, tenant_id, product, paid_enabled_at",
     "visits": "visit_id, product_user_id, product, visited_at",
+    "product_user_entitlements": "entitlement_id, product_user_id, tenant_id, product, entitled_at",
 }
 
 _DDL = """
@@ -34,6 +35,11 @@ create table if not exists public.paid_enablements (
 create table if not exists public.visits (
     visit_id text primary key, product_user_id text not null references public.product_users,
     product text not null, visited_at timestamptz not null
+);
+create table if not exists public.product_user_entitlements (
+    entitlement_id text primary key, product_user_id text not null,
+    tenant_id text not null references public.tenants, product text not null,
+    entitled_at timestamptz not null
 );
 create or replace function public.reject_paid_enablement_mutation()
 returns trigger
