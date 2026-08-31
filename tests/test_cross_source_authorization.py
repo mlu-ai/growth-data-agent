@@ -554,6 +554,51 @@ def test_direct_identifier_rejects_a_scoped_store_revision_mismatch(tmp_path: Pa
     assert graph_store.calls == 0
 
 
+def test_direct_identifier_rejects_an_unbound_graph_store_before_traversal(
+    tmp_path: Path,
+) -> None:
+    document = evidence_corpus()[3]
+    evidence_store = QdrantEvidenceStore(
+        [document],
+        client=QdrantClient(location=":memory:"),
+    )
+    injected_graph_store = RecordingGraphStore(
+        [
+            path
+            for path in graph_corpus()
+            if path.path_id == "jira-apac-paid-provisioning-incident-restricted-identifier-chain"
+        ]
+    )
+    governed_adapter = LightRAGEvidenceAdapter(
+        LightRAGBackend(
+            QdrantAGELightRAGStore(
+                evidence_store,
+                InMemoryEvidenceGraphStore([]),
+            )
+        )
+    )
+    client, _, injected_graph_store = _client(
+        tmp_path,
+        evidence_store,
+        injected_graph_store,
+        governed_adapter,
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "customer_success_manager",
+            "question": "Which Tenant IDs were affected by the Jira APAC incident?",
+        },
+    )
+
+    assert response.status_code == 503
+    assert injected_graph_store.calls == 0
+    assert "tenant-0011" not in response.text
+    assert "jira-apac-paid-provisioning-incident-restricted" not in response.text
+    assert "path" not in response.text.casefold()
+
+
 def test_customer_success_manager_receives_bounded_audited_tenant_identifiers(
     client: TestClient,
 ) -> None:
@@ -709,33 +754,42 @@ def test_entitled_identifier_response_is_bounded_when_sources_return_more_candid
 ) -> None:
     permitted_ids = ["tenant-0011", "tenant-0023", "tenant-0035", "tenant-0047"]
     source_document = evidence_corpus()[3]
+    template = next(
+        path
+        for path in graph_corpus()
+        if path.path_id == "jira-apac-paid-provisioning-incident-restricted-identifier-chain"
+    )
     paths = [
-        GraphPath(
-            path_id=f"direct-{tenant_id}",
-            nodes=[
-                GraphNode(
-                    node_id=tenant_id,
-                    node_type="tenant",
-                    label=tenant_id,
-                    product="Jira",
-                    region="APAC",
-                    tenant_ids=[tenant_id],
-                    classification="restricted",
-                    identifier_entitlement="direct",
-                    source_document_id=source_document.document_id,
-                    source_revision=source_document.source_revision,
-                    chunk_id=source_document.chunk_id or f"{source_document.document_id}:chunk:0",
-                    lifecycle_state=EvidenceLifecycleState.ACTIVE,
-                    policy_expires_at=datetime(2099, 12, 31, tzinfo=UTC),
-                )
-            ],
+        template.model_copy(
+            update={
+                "path_id": f"direct-{tenant_id}",
+                "nodes": [
+                    node.model_copy(
+                        update={"node_id": tenant_id, "label": tenant_id, "tenant_ids": [tenant_id]}
+                    )
+                    if node.node_type == "tenant"
+                    else node.model_copy(deep=True)
+                    for node in template.nodes
+                ],
+            }
         )
         for tenant_id in permitted_ids
     ]
+    governed_graph_store = InMemoryEvidenceGraphStore(paths)
+    governed_evidence_store = QdrantEvidenceStore(
+        [source_document],
+        client=QdrantClient(location=":memory:"),
+    )
+    governed_adapter = LightRAGEvidenceAdapter(
+        LightRAGBackend(
+            QdrantAGELightRAGStore(governed_evidence_store, governed_graph_store)
+        )
+    )
     client, _, _ = _client(
         tmp_path,
-        RecordingEvidenceStore([evidence_corpus()[3]]),
-        RecordingGraphStore(paths),
+        governed_evidence_store,
+        governed_graph_store,
+        governed_adapter,
     )
 
     response = client.post(

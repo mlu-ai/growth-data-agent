@@ -60,6 +60,7 @@ from .lightrag import (
     LightRAGBackend,
     LightRAGEvidenceAdapter,
     QdrantAGELightRAGStore,
+    require_bound_qdrant_age_stores,
     require_governed_lightrag_adapter,
     validate_authorized_lightrag_references,
 )
@@ -1618,6 +1619,11 @@ class AnswerQuestionService:
         ]
         graph_paths = []
         if documents:
+            require_bound_qdrant_age_stores(
+                self.lightrag_adapter,
+                self.evidence_store,
+                self.graph_store,
+            )
             graph_filter = access_profile.graph_filter(product, region)
             graph_filter = replace(
                 graph_filter,

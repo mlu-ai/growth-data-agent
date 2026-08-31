@@ -984,6 +984,25 @@ def require_governed_lightrag_adapter(adapter: object) -> LightRAGEvidenceAdapte
     return concrete_adapter
 
 
+def require_bound_qdrant_age_stores(
+    adapter: object,
+    evidence_store: object,
+    graph_store: object,
+) -> QdrantAGELightRAGStore:
+    """Require direct-identifier stores to be the adapter's exact governed backends."""
+    concrete_adapter = require_governed_lightrag_adapter(adapter)
+    backend_store = concrete_adapter._backend._store
+    if (
+        type(backend_store) is not QdrantAGELightRAGStore
+        or backend_store.qdrant_store is not evidence_store
+        or backend_store.graph_store is not graph_store
+    ):
+        raise LightRAGAuthorizationError(
+            "Direct-identifier retrieval requires the adapter-bound Qdrant and AGE stores."
+        )
+    return backend_store
+
+
 def validate_authorized_lightrag_references(
     references: Iterable[object],
     authorized_scope: AuthorizedEvidenceRevisionSet,
