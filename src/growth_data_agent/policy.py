@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 
 from .contracts import EffectiveAccessScope, ProvisionalMetricInput
 from .evidence import EvidenceAccessFilter
@@ -212,6 +214,23 @@ class AccessProfile:
         if unauthorized:
             columns = ", ".join(unauthorized)
             raise AccessDeniedError(f"Access Profile is not entitled to query columns: {columns}.")
+
+
+def policy_fingerprint(access_profile: AccessProfile) -> str:
+    """Return a stable policy identifier without logging entitlement contents."""
+    policy = {
+        "products": access_profile.products,
+        "regions": access_profile.regions,
+        "tenant_scope": access_profile.tenant_scope,
+        "permitted_tenant_ids": access_profile.permitted_tenant_ids,
+        "permitted_columns": access_profile.permitted_columns,
+        "permitted_classifications": access_profile.permitted_classifications,
+        "permitted_identifiers": access_profile.permitted_identifiers,
+        "permitted_query_columns": access_profile.permitted_query_columns,
+        "evidence_groups": access_profile.evidence_groups,
+    }
+    encoded = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+    return sha256(encoded).hexdigest()[:16]
 
 
 _CANONICAL_DEFINITION_COLUMNS = (

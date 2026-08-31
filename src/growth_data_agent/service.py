@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Collection, Iterable
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
@@ -28,6 +28,7 @@ from .contracts import (
     EvidenceSupportStatus,
     GovernedAnalyticalResponse,
     MetricDefinitionGap,
+    PlanAction,
     ResultClassification,
     SensitiveIdentifier,
     SourceFreshness,
@@ -47,18 +48,25 @@ from .evidence import (
     EvidenceDocument,
     QdrantEvidenceStore,
     VectorEvidenceStore,
+    _document_revision_key,
     _evidence_revision_key,
     build_evidence_answer,
     embedding_readiness,
 )
-from .evidence_tools import BoundedEvidenceInvestigationTools
+from .evidence_tools import BoundedEvidenceInvestigationTools, CitedEvidencePreparation
 from .execution import (
     AuthorizedExecution,
     ExecutionGraph,
     IntentInterpreter,
     RuleBasedIntentInterpreter,
 )
-from .graph import ApacheAgeEvidenceGraphStore, EvidenceGraphStore, InMemoryEvidenceGraphStore
+from .graph import (
+    ApacheAgeEvidenceGraphStore,
+    EvidenceGraphStore,
+    EvidenceGraphUnavailableError,
+    GraphAccessFilter,
+    InMemoryEvidenceGraphStore,
+)
 from .lightrag import (
     AuthorizedEvidenceRevisionSet,
     LightRAGAuthorizationError,
@@ -96,19 +104,55 @@ from .observability import (
     policy_fingerprint,
     trace_span,
 )
+from .planning import (
+    PlanActionExecution,
+    PlanExecutionSnapshot,
+    RevisionIdentity,
+)
 from .policy import (
     AccessDeniedError,
     UnknownAgentUserError,
     resolve_access_profile,
     tenant_ids_for_segment,
 )
-from .reranking import EvidenceReranker, reranker_readiness
+from .reranking import (
+    EvidenceReranker,
+    EvidenceRerankingError,
+    reranker_readiness,
+)
 from .semantic import ValidatedMetricFlowGateway
 from .synthetic import evidence_corpus, graph_corpus
 
 _DIRECT_IDENTIFIER_RESULT_LIMIT = 3
 _IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
 RevisionReader = Callable[[EvidenceAccessFilter], Iterable[EvidenceDocument]]
+
+
+@dataclass
+class _PlannedInvestigationState:
+    """Opaque in-memory state shared by one bounded investigation turn."""
+
+    authorized_execution: AuthorizedExecution
+    intent: AnalyticalIntent
+    metric_name: str
+    region: str | None = None
+    seat_tier: str | None = None
+    evidence_query: str | None = None
+    scope_evidence_to_seat_tier: bool = False
+    supported_answer: str | None = None
+    inconclusive_answer: str | None = None
+    definition: Any = None
+    decomposition: Any = None
+    query_evidence: Any = None
+    freshness: SourceFreshness | None = None
+    evidence_filter: EvidenceAccessFilter | None = None
+    graph_filter: Any = None
+    cited_evidence: CitedEvidencePreparation | None = None
+    validated_evidence_revision_identities: tuple[RevisionIdentity, ...] = ()
+    current_evidence_filter: EvidenceAccessFilter | None = None
+    current_graph_filter: GraphAccessFilter | None = None
+    graph_paths: list[Any] = field(default_factory=list)
+    response: GovernedAnalyticalResponse | None = None
 
 
 class AnswerQuestionService:
@@ -207,6 +251,12 @@ class AnswerQuestionService:
             metric_definition_gap_handler=self._answer_metric_definition_gap_specialist,
             legacy_handler=self._answer_legacy_question,
             clarification_handler=self._answer_intent_clarification,
+            semantic_freshness_provider=self._semantic_is_current,
+            plan_action_executor=self._execute_plan_action,
+            planning_snapshot_provider=self._planning_snapshot,
+            planning_eligibility_provider=self._planning_eligible,
+            planning_failure_policy=self._planning_failure_policy,
+            planning_blocked_handler=self._planning_blocked_response,
             checkpointer=getattr(self.conversation_store, "checkpointer", None),
         )
 
@@ -271,6 +321,465 @@ class AnswerQuestionService:
             return self.conversation_store.create(principal)
         return self.conversation_store.load(request.conversation_id, principal)
 
+    def _planning_eligible(
+        self, authorized_execution: AuthorizedExecution, intent: AnalyticalIntent
+    ) -> bool:
+        if intent.route is AnalyticalRoute.DRIVER_DECOMPOSITION:
+            return True
+        if intent.route is not AnalyticalRoute.LEGACY:
+            return False
+        question = authorized_execution.request.question
+        return any(
+            (
+                self._requests_apac_decline_evidence(question),
+                self._requests_confluence_campaign_evidence(question),
+                self._requests_confluence_emea_regression(question),
+            )
+        )
+
+    def _planning_snapshot(
+        self, authorized_execution: AuthorizedExecution, payload: object | None
+    ) -> PlanExecutionSnapshot:
+        current_profile = resolve_access_profile(authorized_execution.request.agent_user_id)
+        semantic_current = self._semantic_is_current(authorized_execution)
+        evidence_revision_keys: tuple[RevisionIdentity, ...] = ()
+        if isinstance(payload, _PlannedInvestigationState) and payload.region is not None:
+            try:
+                current_filter = self._current_planned_evidence_filter(payload, current_profile)
+                payload.current_evidence_filter = current_filter
+                evidence_revision_keys = self._authorized_active_evidence_manifest(current_filter)
+                if (
+                    payload.validated_evidence_revision_identities
+                    and payload.cited_evidence is not None
+                ):
+                    payload.current_graph_filter = self._current_planned_graph_filter(
+                        payload, current_profile, current_filter
+                    )
+            except Exception:
+                # A missing authoritative manifest is itself a failed freshness proof.
+                semantic_current = False
+                if payload.validated_evidence_revision_identities:
+                    evidence_revision_keys = (("__manifest_unavailable__", "", "", ""),)
+        return PlanExecutionSnapshot(
+            policy_fingerprint=policy_fingerprint(current_profile),
+            semantic_current=semantic_current,
+            evidence_revision_keys=evidence_revision_keys,
+        )
+
+    def _current_planned_evidence_filter(
+        self, state: _PlannedInvestigationState, profile
+    ) -> EvidenceAccessFilter:
+        product = cast(str, self._metric_product(state.metric_name))
+        return profile.evidence_filter(
+            product,
+            cast(str, state.region),
+            seat_tier=state.seat_tier if state.scope_evidence_to_seat_tier else None,
+            metric_name=state.metric_name,
+            agent_user_id=state.authorized_execution.request.agent_user_id,
+        )
+
+    def _authorized_active_evidence_manifest(
+        self, access_filter: EvidenceAccessFilter
+    ) -> tuple[RevisionIdentity, ...]:
+        """Read current active revision identity from the authoritative evidence source."""
+        revision_reader = getattr(self.evidence_store, "authorized_revisions", None)
+        if callable(revision_reader):
+            documents = tuple(revision_reader(access_filter))
+        else:
+            source_documents = getattr(self.evidence_store, "documents", None)
+            if source_documents is None:
+                raise LightRAGAuthorizationError(
+                    "Current authorized evidence revisions are unavailable."
+                )
+            documents = tuple(source_documents)
+        return tuple(
+            sorted(
+                _document_revision_key(document)
+                for document in documents
+                if access_filter.allows(document)
+            )
+        )
+
+    def _current_planned_graph_filter(
+        self,
+        state: _PlannedInvestigationState,
+        profile,
+        evidence_filter: EvidenceAccessFilter,
+    ) -> GraphAccessFilter:
+        if state.cited_evidence is None or state.cited_evidence.graph_filter is None:
+            raise LightRAGAuthorizationError("The graph scope is unavailable.")
+        graph_filter = profile.graph_filter(
+            cast(str, self._metric_product(state.metric_name)),
+            cast(str, state.region),
+            seat_tier=state.seat_tier if state.scope_evidence_to_seat_tier else None,
+        )
+        cited_graph_filter = state.cited_evidence.graph_filter
+        return replace(
+            graph_filter,
+            groups=evidence_filter.groups,
+            agent_user_id=evidence_filter.agent_user_id,
+            as_of=evidence_filter.as_of,
+            authorized_document_ids=cited_graph_filter.authorized_document_ids,
+            authorized_revision_keys=cited_graph_filter.authorized_revision_keys,
+        )
+
+    @staticmethod
+    def _planning_failure_policy(error: Exception) -> bool:
+        """Do not reinterpret authorization or dependency failures as alternate work."""
+        return not isinstance(
+            error,
+            (
+                AccessDeniedError,
+                EvidenceGraphUnavailableError,
+                EvidenceRerankingError,
+                LightRAGAuthorizationError,
+            ),
+        )
+
+    def _planning_blocked_response(
+        self,
+        authorized_execution: AuthorizedExecution,
+        _intent: AnalyticalIntent,
+        _metadata,
+    ) -> GovernedAnalyticalResponse:
+        try:
+            artifact = self.semantic_gateway.artifact_store.load()
+            freshness = self.semantic_gateway.freshness(artifact)
+        except (OSError, ValueError):
+            freshness = SourceFreshness(
+                validated_at=datetime.now(UTC), maximum_age_seconds=86_400, is_current=False
+            )
+        return GovernedAnalyticalResponse(
+            answer=(
+                "The bounded investigation was stopped before its next action because a current "
+                "governance prerequisite was not satisfied."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            source_freshness=freshness,
+            effective_access_scope=authorized_execution.effective_scope,
+            caveats=[
+                "No subsequent action ran after the policy, semantic freshness, or evidence "
+                "revision guard blocked it."
+            ],
+            trace_id=authorized_execution.trace_id,
+        )
+
+    def _execute_plan_action(
+        self,
+        authorized_execution: AuthorizedExecution,
+        intent: AnalyticalIntent,
+        action: PlanAction,
+        payload: object | None,
+    ) -> PlanActionExecution:
+        state = payload
+        if not isinstance(state, _PlannedInvestigationState):
+            state = self._new_planned_investigation_state(authorized_execution, intent)
+        if action is PlanAction.METRICFLOW:
+            return self._run_plan_metricflow(state)
+        if action is PlanAction.CITED_EVIDENCE:
+            return self._run_plan_cited_evidence(state)
+        if action is PlanAction.LIGHTRAG:
+            return self._run_plan_lightrag(state)
+        raise RuntimeError("Unsupported planned action.")
+
+    def _new_planned_investigation_state(
+        self, authorized_execution: AuthorizedExecution, intent: AnalyticalIntent
+    ) -> _PlannedInvestigationState:
+        request = authorized_execution.request
+        if intent.route is AnalyticalRoute.DRIVER_DECOMPOSITION:
+            return _PlannedInvestigationState(
+                authorized_execution=authorized_execution,
+                intent=intent,
+                metric_name=cast(str, intent.metric_name),
+            )
+        question = request.question
+        if self._requests_apac_decline_evidence(question):
+            return _PlannedInvestigationState(
+                authorized_execution=authorized_execution,
+                intent=intent,
+                metric_name="jira_new_peu",
+                region="APAC",
+                seat_tier="51-200",
+                evidence_query="Jira APAC 51-200 paid provisioning June 2026 decline",
+                scope_evidence_to_seat_tier=True,
+                supported_answer=(
+                    "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
+                    "part of the observed APAC 51-200 Seat Tier Tenant decline. The evidence "
+                    "supports this Hypothesis but does not establish causation."
+                ),
+                inconclusive_answer=(
+                    "Inconclusive: the permitted evidence does not support a reliable explanation "
+                    "for the observed APAC 51-200 Seat Tier Tenant decline."
+                ),
+            )
+        if self._requests_confluence_campaign_evidence(question):
+            return _PlannedInvestigationState(
+                authorized_execution=authorized_execution,
+                intent=intent,
+                metric_name="confluence_new_peu",
+                region="Americas",
+                seat_tier="11-50",
+                evidence_query=(
+                    "Confluence Americas 11-50 acquisition campaign June 2026 New PEU movement"
+                ),
+                scope_evidence_to_seat_tier=True,
+                supported_answer=(
+                    "Hypothesis: the permitted Confluence Americas acquisition campaign may help "
+                    "explain the observed Americas 11-50 Seat Tier Tenant movement. The evidence "
+                    "supports this Hypothesis but does not establish causation."
+                ),
+                inconclusive_answer=(
+                    "Inconclusive: the permitted evidence does not support a reliable explanation "
+                    "for the observed Americas 11-50 Seat Tier Tenant movement."
+                ),
+            )
+        return _PlannedInvestigationState(
+            authorized_execution=authorized_execution,
+            intent=intent,
+            metric_name="confluence_new_mau",
+            region="EMEA",
+            seat_tier="51-200",
+            evidence_query=(
+                "Confluence EMEA 51-200 onboarding-email regression June 2026 New MAU decline"
+            ),
+            scope_evidence_to_seat_tier=True,
+            supported_answer=(
+                "Hypothesis: the permitted Confluence EMEA onboarding-email regression may help "
+                "explain the observed 51-200 Seat Tier Tenant New MAU decline. The evidence "
+                "supports this Hypothesis but does not establish causation."
+            ),
+            inconclusive_answer=(
+                "Inconclusive: the permitted evidence does not support a reliable explanation "
+                "for the observed Confluence EMEA 51-200 Seat Tier Tenant New MAU decline."
+            ),
+        )
+
+    def _run_plan_metricflow(
+        self, state: _PlannedInvestigationState
+    ) -> PlanActionExecution:
+        profile = state.authorized_execution.access_profile
+        product = self._metric_product(state.metric_name)
+        if product is None:
+            raise AccessDeniedError("The planned metric is not governed.")
+        profile.authorize_product(product)
+        if state.region is not None:
+            profile.authorize_region(state.region)
+        definition, decomposition, query_evidence, freshness = (
+            self._semantic_driver_decomposition(
+                state.metric_name,
+                profile,
+                baseline_period="2026-05",
+                comparison_period="2026-06",
+            )
+        )
+        state.definition = definition
+        state.decomposition = decomposition
+        state.query_evidence = query_evidence
+        state.freshness = freshness
+        if definition is None or decomposition is None or query_evidence is None:
+            return PlanActionExecution(
+                value=self._plan_limitation_response(state), payload=state, stop=True
+            )
+        if state.intent.route is AnalyticalRoute.DRIVER_DECOMPOSITION:
+            return PlanActionExecution(
+                value=self._driver_response_from_plan(state), payload=state
+            )
+        return PlanActionExecution(payload=state)
+
+    def _run_plan_cited_evidence(
+        self, state: _PlannedInvestigationState
+    ) -> PlanActionExecution:
+        if (
+            state.definition is None
+            or state.decomposition is None
+            or state.query_evidence is None
+            or state.region is None
+            or state.seat_tier is None
+            or state.evidence_query is None
+        ):
+            raise RuntimeError("Cited evidence requires a successful MetricFlow action.")
+        profile = state.authorized_execution.access_profile
+        product = cast(str, self._metric_product(state.metric_name))
+        matching = next(
+            (
+                contribution
+                for contribution in state.decomposition.contributions
+                if contribution.region == state.region
+                and contribution.seat_tier == state.seat_tier
+            ),
+            None,
+        )
+        if (
+            matching is None
+            or state.decomposition.reconciled_change != state.decomposition.net_change
+            or state.decomposition.residual != 0
+        ):
+            return PlanActionExecution(
+                value=self._unresolved_plan_response(state), payload=state, stop=True
+            )
+        state.evidence_filter = profile.evidence_filter(
+            product,
+            state.region,
+            seat_tier=state.seat_tier if state.scope_evidence_to_seat_tier else None,
+            metric_name=state.metric_name,
+            agent_user_id=state.authorized_execution.request.agent_user_id,
+        )
+        state.graph_filter = profile.graph_filter(
+            product,
+            state.region,
+            seat_tier=state.seat_tier if state.scope_evidence_to_seat_tier else None,
+        )
+        if state.current_evidence_filter is not None:
+            state.evidence_filter = state.current_evidence_filter
+        state.cited_evidence = self.evidence_tools.retrieve_cited_evidence(
+            query=state.evidence_query,
+            evidence_filter=state.evidence_filter,
+            graph_filter=state.graph_filter,
+            metric_name=state.metric_name,
+        )
+        state.validated_evidence_revision_identities = (
+            state.cited_evidence.authorized_revision_identities
+        )
+        return PlanActionExecution(
+            payload=state,
+            evidence_revision_keys=state.validated_evidence_revision_identities,
+        )
+
+    def _run_plan_lightrag(
+        self, state: _PlannedInvestigationState
+    ) -> PlanActionExecution:
+        if state.cited_evidence is None:
+            raise RuntimeError("LightRAG requires a successful cited-evidence action.")
+        if state.current_graph_filter is not None and state.evidence_query is not None:
+            state.graph_paths = self._traverse_graph(
+                state.evidence_query,
+                state.current_graph_filter,
+                limit=3,
+                metric_name=state.metric_name,
+            )
+        response = self._evidence_response_from_plan(state)
+        return PlanActionExecution(
+            value=response,
+            payload=state,
+            evidence_revision_keys=state.validated_evidence_revision_identities,
+        )
+
+    def _driver_response_from_plan(self, state: _PlannedInvestigationState):
+        decomposition = state.decomposition
+        leading = decomposition.contributions[0] if decomposition.contributions else None
+        leading_text = "No segment movement was returned."
+        if leading is not None:
+            if decomposition.net_change > 0:
+                leading_text = (
+                    f"{leading.region} / {leading.seat_tier} Seat Tier Tenants are the leading "
+                    f"observed movement, contributing {leading.change:+,} of the "
+                    f"{decomposition.net_change:+,} net movement."
+                )
+            else:
+                leading_text = (
+                    f"{leading.region} / {leading.seat_tier} Seat Tier Tenants are the leading "
+                    f"observed driver, contributing {leading.contribution_to_decline:,} of the "
+                    f"{decomposition.decline:,} decline ({leading.percentage_of_decline:g}%)."
+                )
+        return GovernedAnalyticalResponse(
+            answer=(
+                "Driver Decomposition (observed, non-causal): "
+                f"{self._metric_label(state.metric_name)} "
+                f"moved from {decomposition.baseline_value:,} in May 2026 to "
+                f"{decomposition.comparison_value:,} in June 2026 ({decomposition.net_change:+,}). "
+                f"Semantic definition v{state.definition.semantic_version}: "
+                f"{state.definition.definition} "
+                f"{leading_text} The approved Region and Seat Tier contributions reconcile to the "
+                "scoped movement; this observation does not establish causation."
+            ),
+            result_classification=ResultClassification.DRIVER_DECOMPOSITION,
+            canonical_definition=state.definition,
+            semantic_query_evidence=state.query_evidence,
+            driver_decomposition=decomposition,
+            source_freshness=state.freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=[
+                "This is a Driver Decomposition of observed canonical metric values, not a "
+                "causal conclusion.",
+                "Only Region and Seat Tier are approved dimensions for this decomposition.",
+            ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
+    def _evidence_response_from_plan(self, state: _PlannedInvestigationState):
+        assert state.cited_evidence is not None
+        evidence = build_evidence_answer(state.cited_evidence.documents)
+        if evidence.support_status == EvidenceSupportStatus.SUPPORTS:
+            classification = ResultClassification.HYPOTHESIS
+            answer = cast(str, state.supported_answer)
+            evidence_chain = self._public_evidence_chain(state.cited_evidence.lightrag_chain)
+            graph_paths = self._graph_path_citations(state.graph_paths)
+        else:
+            classification = ResultClassification.INCONCLUSIVE
+            answer = f"{state.inconclusive_answer} {evidence.support_explanation}"
+            evidence_chain = self._empty_public_evidence_chain()
+            graph_paths = []
+        return GovernedAnalyticalResponse(
+            answer=answer,
+            result_classification=classification,
+            canonical_definition=state.definition,
+            semantic_query_evidence=state.query_evidence,
+            driver_decomposition=state.decomposition,
+            evidence=evidence,
+            evidence_chain=evidence_chain,
+            graph_paths=graph_paths,
+            source_freshness=state.freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=[
+                (
+                    f"The {state.region} {state.seat_tier} Seat Tier result is an observed Driver "
+                    "Decomposition; the retrieved material is a Hypothesis, not a causal "
+                    "conclusion."
+                ),
+                "Only evidence permitted by product, Region, Tenant, classification, and "
+                "identifier entitlements was retrieved.",
+            ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
+    def _unresolved_plan_response(self, state: _PlannedInvestigationState):
+        return GovernedAnalyticalResponse(
+            answer=(
+                f"Inconclusive: the validated Driver Decomposition does not resolve the "
+                f"{state.region} {state.seat_tier} Seat Tier scope, so no evidence was retrieved."
+            ),
+            result_classification=ResultClassification.INCONCLUSIVE,
+            canonical_definition=state.definition,
+            semantic_query_evidence=state.query_evidence,
+            driver_decomposition=state.decomposition,
+            evidence=build_evidence_answer([]),
+            source_freshness=state.freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=[
+                "Evidence retrieval requires a reconciled Driver Decomposition with a matching "
+                "Region and Seat Tier contribution."
+            ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
+    def _plan_limitation_response(self, state: _PlannedInvestigationState):
+        freshness = state.freshness or SourceFreshness(
+            validated_at=datetime.now(UTC), maximum_age_seconds=86_400, is_current=False
+        )
+        return GovernedAnalyticalResponse(
+            answer=(
+                f"The governed {self._metric_label(state.metric_name)} investigation was limited "
+                "because its current semantic action did not produce usable evidence."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            source_freshness=freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=[
+                "No subsequent evidence action was authorized without a current semantic result."
+            ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
     @staticmethod
     def _conversation_metric_name(response: GovernedAnalyticalResponse) -> str | None:
         for value in (
@@ -298,6 +807,7 @@ class AnswerQuestionService:
             metric_name=cls._conversation_metric_name(response),
             trace_id=response.trace_id,
             created_at=datetime.now(UTC),
+            lead_agent_metadata=response.lead_agent_metadata,
         )
 
     @classmethod
@@ -414,6 +924,7 @@ class AnswerQuestionService:
                     "The local model failed closed; no model-generated prose or additional "
                     "evidence was returned."
                 ],
+                lead_agent_metadata=response.lead_agent_metadata,
                 trace_id=response.trace_id,
             )
         return response.model_copy(update={"answer": draft.answer})
@@ -793,6 +1304,7 @@ class AnswerQuestionService:
                 else "not_evaluated"
             ),
             response=response.model_dump(mode="json"),
+            lead_agent_metadata=response.lead_agent_metadata,
             conversation_id=response.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
@@ -843,6 +1355,7 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "access_denied",
             },
+            lead_agent_metadata=trace_context.lead_agent_metadata,
             conversation_id=trace_context.conversation_id or request.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
@@ -882,6 +1395,7 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "dependency_unavailable",
             },
+            lead_agent_metadata=trace_context.lead_agent_metadata,
             conversation_id=trace_context.conversation_id or request.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
@@ -897,6 +1411,15 @@ class AnswerQuestionService:
             return policy_fingerprint(resolve_access_profile(request.agent_user_id))
         except UnknownAgentUserError:
             return "unknown-agent"
+
+    def _semantic_is_current(self, authorized_execution: AuthorizedExecution | None = None) -> bool:
+        """Provide planning with the same semantic freshness boundary as execution."""
+        del authorized_execution
+        try:
+            artifact = self.semantic_gateway.artifact_store.load()
+        except (OSError, ValueError):
+            return False
+        return self.semantic_gateway.freshness(artifact).is_current
 
     def _semantic_canonical_definition(self, metric_name: str):
         with trace_span(

@@ -1,12 +1,48 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
 
-from growth_data_agent.contracts import AnalyticalIntent, AnalyticalRoute, AnswerQuestionRequest
+from growth_data_agent.contracts import (
+    AnalyticalIntent,
+    AnalyticalRoute,
+    AnswerQuestionRequest,
+    GovernedAnalyticalResponse,
+    ResultClassification,
+    SourceFreshness,
+)
 from growth_data_agent.execution import ExecutionGraph, RuleBasedIntentInterpreter
-from growth_data_agent.policy import UnknownAgentUserError
+from growth_data_agent.planning import (
+    PlanAction,
+    PlanActionExecution,
+    PlanExecutionSnapshot,
+)
+from growth_data_agent.policy import (
+    UnknownAgentUserError,
+    policy_fingerprint,
+    resolve_access_profile,
+)
 from growth_data_agent.service import AnswerQuestionService
+
+
+def _planned_response(trace_id: str) -> GovernedAnalyticalResponse:
+    return GovernedAnalyticalResponse(
+        answer="bounded result",
+        result_classification=ResultClassification.LIMITATION,
+        source_freshness=SourceFreshness(
+            validated_at=datetime.now(UTC), maximum_age_seconds=86_400, is_current=True
+        ),
+        effective_access_scope={
+            "products": ["Jira"],
+            "regions": ["APAC"],
+            "tenant_scope": "APAC Tenants only",
+            "permitted_columns": [],
+        },
+        caveats=[],
+        trace_id=trace_id,
+    )
 
 
 def test_canonical_definition_runs_through_validated_intent(client) -> None:
@@ -62,6 +98,102 @@ def test_canonical_intent_requires_a_metric_name() -> None:
 def test_driver_intent_requires_a_metric_name() -> None:
     with pytest.raises(ValidationError):
         AnalyticalIntent(route=AnalyticalRoute.DRIVER_DECOMPOSITION)
+
+
+def test_graph_replans_after_action_failure_before_invoking_next_action() -> None:
+    calls: list[PlanAction] = []
+    response = _planned_response("planned-trace")
+    current_policy = policy_fingerprint(resolve_access_profile("data_analyst"))
+
+    class Interpreter:
+        def interpret(self, request):
+            return AnalyticalIntent(route=AnalyticalRoute.LEGACY, metric_name="jira_new_peu")
+
+    def run(_authorized, _intent, action, payload):
+        calls.append(action)
+        if action is PlanAction.METRICFLOW:
+            raise RuntimeError("metricflow unavailable")
+        return PlanActionExecution(value=response, payload=payload)
+
+    graph = ExecutionGraph(
+        intent_interpreter=Interpreter(),
+        canonical_definition_handler=lambda *_: pytest.fail("canonical handler must not run"),
+        driver_decomposition_handler=lambda *_: pytest.fail("driver handler must not run"),
+        causal_analysis_handler=lambda _: pytest.fail("causal handler must not run"),
+        catalog_ownership_handler=lambda _: pytest.fail("catalog handler must not run"),
+        direct_identifier_handler=lambda _: pytest.fail("identifier handler must not run"),
+        limitation_handler=lambda _: pytest.fail("limitation handler must not run"),
+        metric_definition_gap_handler=lambda *_: pytest.fail("gap handler must not run"),
+        legacy_handler=lambda _: pytest.fail("legacy fallback must not run"),
+        clarification_handler=lambda _: pytest.fail("clarification handler must not run"),
+        plan_action_executor=run,
+        planning_snapshot_provider=lambda _authorized, _payload: PlanExecutionSnapshot(
+            policy_fingerprint=current_policy, semantic_current=True, evidence_revision_keys=()
+        ),
+    )
+
+    result = graph.answer_question(
+        AnswerQuestionRequest(
+            agent_user_id="data_analyst",
+            question="What evidence may explain the decline?",
+        )
+    )
+
+    assert result.lead_agent_metadata is not None
+    assert calls == [PlanAction.METRICFLOW, PlanAction.CITED_EVIDENCE, PlanAction.LIGHTRAG]
+    assert [outcome.action for outcome in result.lead_agent_metadata.tool_outcomes] == calls
+    assert result.lead_agent_metadata.tool_outcomes[0].status.value == "failed"
+
+
+def test_graph_blocks_next_action_when_fresh_snapshot_changes() -> None:
+    calls: list[PlanAction] = []
+    response = _planned_response("stale-trace")
+    current_policy = policy_fingerprint(resolve_access_profile("data_analyst"))
+    snapshots = iter(
+        (
+            PlanExecutionSnapshot(
+                policy_fingerprint=current_policy, semantic_current=True, evidence_revision_keys=()
+            ),
+            PlanExecutionSnapshot(
+                policy_fingerprint=current_policy, semantic_current=True, evidence_revision_keys=()
+            ),
+            PlanExecutionSnapshot(
+                policy_fingerprint="changed-policy",
+                semantic_current=True,
+                evidence_revision_keys=(),
+            ),
+        )
+    )
+
+    class Interpreter:
+        def interpret(self, request):
+            return AnalyticalIntent(route=AnalyticalRoute.LEGACY, metric_name="jira_new_peu")
+
+    graph = ExecutionGraph(
+        intent_interpreter=Interpreter(),
+        canonical_definition_handler=lambda *_: pytest.fail("canonical handler must not run"),
+        driver_decomposition_handler=lambda *_: pytest.fail("driver handler must not run"),
+        causal_analysis_handler=lambda _: pytest.fail("causal handler must not run"),
+        catalog_ownership_handler=lambda _: pytest.fail("catalog handler must not run"),
+        direct_identifier_handler=lambda _: pytest.fail("identifier handler must not run"),
+        limitation_handler=lambda _: pytest.fail("limitation handler must not run"),
+        metric_definition_gap_handler=lambda *_: pytest.fail("gap handler must not run"),
+        legacy_handler=lambda _: pytest.fail("legacy fallback must not run"),
+        clarification_handler=lambda _: pytest.fail("clarification handler must not run"),
+        plan_action_executor=lambda _authorized, _intent, action, payload: (
+            calls.append(action) or PlanActionExecution(value=response, payload=payload)
+        ),
+        planning_snapshot_provider=lambda _authorized, _payload: next(snapshots),
+    )
+
+    result = graph.answer_question(
+        AnswerQuestionRequest(agent_user_id="data_analyst", question="What evidence may explain?")
+    )
+
+    assert calls == [PlanAction.METRICFLOW]
+    assert result.lead_agent_metadata is not None
+    assert result.lead_agent_metadata.current_action is PlanAction.CITED_EVIDENCE
+    assert result.lead_agent_metadata.last_replan_reason == "invariant_blocked"
 
 
 def test_blank_requested_metric_returns_a_governed_limitation(client) -> None:

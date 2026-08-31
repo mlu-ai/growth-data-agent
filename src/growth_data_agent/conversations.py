@@ -31,6 +31,7 @@ from .contracts import (
     ConversationSummary,
     ConversationTurn,
     EffectiveAccessScope,
+    LeadAgentMetadata,
 )
 from .principal import VerifiedPrincipal
 
@@ -296,7 +297,8 @@ class SQLiteConversationCheckpointStore:
                     result_classification TEXT NOT NULL,
                     metric_name TEXT,
                     trace_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    lead_agent_metadata_json TEXT
                 )
                 """
             )
@@ -304,6 +306,16 @@ class SQLiteConversationCheckpointStore:
                 "CREATE INDEX IF NOT EXISTS idx_conversation_transcript_created_at "
                 "ON conversation_transcript(conversation_id, created_at)"
             )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(conversation_transcript)"
+                ).fetchall()
+            }
+            if "lead_agent_metadata_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_transcript ADD COLUMN lead_agent_metadata_json TEXT"
+                )
 
     def create(self, principal: VerifiedPrincipal) -> ConversationCheckpoint:
         conversation_id = _new_conversation_id()
@@ -367,8 +379,8 @@ class SQLiteConversationCheckpointStore:
                 """
                 INSERT INTO conversation_transcript (
                     conversation_id, turn_id, question, result_classification,
-                    metric_name, trace_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    metric_name, trace_id, created_at, lead_agent_metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conversation_id,
@@ -378,6 +390,11 @@ class SQLiteConversationCheckpointStore:
                     turn.metric_name,
                     turn.trace_id,
                     turn.created_at.isoformat(),
+                    (
+                        _json(turn.lead_agent_metadata.model_dump(mode="json"))
+                        if turn.lead_agent_metadata is not None
+                        else None
+                    ),
                 ),
             )
             recent = bounded_recent_turns(
@@ -440,7 +457,8 @@ class SQLiteConversationCheckpointStore:
     def _transcript_rows(self, connection, conversation_id: str) -> list[ConversationTurn]:
         rows = connection.execute(
             """
-            SELECT turn_id, question, result_classification, metric_name, trace_id, created_at
+            SELECT turn_id, question, result_classification, metric_name, trace_id,
+                   created_at, lead_agent_metadata_json
             FROM conversation_transcript
             WHERE conversation_id = ?
             ORDER BY created_at, turn_id
@@ -563,8 +581,8 @@ class PostgresConversationCheckpointStore:
                     """
                     INSERT INTO growth_agent_conversation_transcript (
                         conversation_id, turn_id, question, result_classification,
-                        metric_name, trace_id, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        metric_name, trace_id, created_at, lead_agent_metadata_json
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         conversation_id,
@@ -574,6 +592,11 @@ class PostgresConversationCheckpointStore:
                         turn.metric_name,
                         turn.trace_id,
                         turn.created_at,
+                        (
+                            Jsonb(turn.lead_agent_metadata.model_dump(mode="json"))
+                            if turn.lead_agent_metadata is not None
+                            else None
+                        ),
                     ),
                 )
                 recent = bounded_recent_turns(
@@ -643,9 +666,14 @@ class PostgresConversationCheckpointStore:
                 result_classification TEXT NOT NULL,
                 metric_name TEXT,
                 trace_id TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL
+                created_at TIMESTAMPTZ NOT NULL,
+                lead_agent_metadata_json JSONB
             )
             """
+        )
+        connection.execute(
+            "ALTER TABLE growth_agent_conversation_transcript "
+            "ADD COLUMN IF NOT EXISTS lead_agent_metadata_json JSONB"
         )
         connection.execute(
             """
@@ -680,7 +708,8 @@ class PostgresConversationCheckpointStore:
     def _transcript_rows(self, connection, conversation_id: str) -> list[ConversationTurn]:
         rows = connection.execute(
             """
-            SELECT turn_id, question, result_classification, metric_name, trace_id, created_at
+            SELECT turn_id, question, result_classification, metric_name, trace_id,
+                   created_at, lead_agent_metadata_json
             FROM growth_agent_conversation_transcript
             WHERE conversation_id = %s
             ORDER BY created_at, turn_id
@@ -831,6 +860,12 @@ def _json(value: object) -> str:
 
 
 def _turn_from_row(row: Mapping[str, Any]) -> ConversationTurn:
+    try:
+        metadata_json = row["lead_agent_metadata_json"]
+    except (KeyError, IndexError):
+        metadata_json = None
+    if isinstance(metadata_json, str):
+        metadata_json = json.loads(metadata_json)
     return ConversationTurn(
         turn_id=row["turn_id"],
         question=row["question"],
@@ -841,5 +876,10 @@ def _turn_from_row(row: Mapping[str, Any]) -> ConversationTurn:
             row["created_at"]
             if isinstance(row["created_at"], datetime)
             else datetime.fromisoformat(row["created_at"])
+        ),
+        lead_agent_metadata=(
+            LeadAgentMetadata.model_validate(metadata_json)
+            if metadata_json is not None
+            else None
         ),
     )
