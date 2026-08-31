@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from collections.abc import Iterator, Mapping, Sequence
@@ -12,6 +11,11 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 from statistics import fmean
 from typing import Any, Literal, Protocol
+
+from .contracts import LeadAgentMetadata
+from .policy import policy_fingerprint
+
+__all__ = ("policy_fingerprint",)
 
 _IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
 _SAFE_SPAN_ATTRIBUTE_KEYS = frozenset(
@@ -78,6 +82,7 @@ class TraceRecord:
     retrieval_scores: Sequence[float]
     evaluation_outcome: str
     response: Mapping[str, Any]
+    lead_agent_metadata: LeadAgentMetadata | None = None
     conversation_id: str | None = None
     node_spans: Sequence[TraceSpan] = ()
     tool_spans: Sequence[TraceSpan] = ()
@@ -90,6 +95,7 @@ class TraceContext:
         self._node_spans: list[TraceSpan] = []
         self._tool_spans: list[TraceSpan] = []
         self.conversation_id: str | None = None
+        self.lead_agent_metadata: LeadAgentMetadata | None = None
 
     @property
     def node_spans(self) -> tuple[TraceSpan, ...]:
@@ -161,6 +167,13 @@ def trace_span(
         yield span_attributes
 
 
+def set_lead_agent_metadata(metadata: LeadAgentMetadata | None) -> None:
+    """Attach safe planning state to the current request trace, if present."""
+    context = _CURRENT_TRACE.get()
+    if context is not None:
+        context.lead_agent_metadata = metadata
+
+
 class NoOpTraceSink:
     """Keep tests and explicitly offline callers independent of an MLflow server."""
 
@@ -226,6 +239,7 @@ class MlflowTraceSink:
         if not callable(start_span):
             yield
             return
+
         with start_span(
             name=f"answer_question:{trace.trace_id}",
             span_type="CHAIN",
@@ -283,6 +297,8 @@ def _redact_trace_payload(trace: TraceRecord) -> dict[str, Any]:
     """Log metadata-only response details and allowlisted, sanitized span attributes."""
     payload = asdict(trace)
     payload["response"] = _safe_response_payload(trace.response)
+    if trace.lead_agent_metadata is not None:
+        payload["lead_agent_metadata"] = trace.lead_agent_metadata.model_dump(mode="json")
     for span_group in ("node_spans", "tool_spans"):
         for span in payload[span_group]:
             span["name"] = _safe_span_name(span["name"])
@@ -311,6 +327,7 @@ def _safe_response_payload(response: Mapping[str, Any]) -> dict[str, Any]:
         "graph_path_count": _sequence_length(graph_paths),
         "caveat_count": _sequence_length(caveats),
         "has_conversation_id": response.get("conversation_id") is not None,
+        "has_lead_agent_metadata": response.get("lead_agent_metadata") is not None,
     }
 
 
@@ -348,22 +365,6 @@ def _safe_span_name(name: str) -> str:
     if name in _SAFE_SPAN_NAMES:
         return name
     return f"span-{sha256(name.encode()).hexdigest()[:16]}"
-
-
-def policy_fingerprint(access_profile: Any) -> str:
-    """Return a stable policy identifier without logging the policy contents."""
-    policy = {
-        "products": access_profile.products,
-        "regions": access_profile.regions,
-        "tenant_scope": access_profile.tenant_scope,
-        "permitted_tenant_ids": access_profile.permitted_tenant_ids,
-        "permitted_columns": access_profile.permitted_columns,
-        "permitted_classifications": access_profile.permitted_classifications,
-        "permitted_identifiers": access_profile.permitted_identifiers,
-        "permitted_query_columns": access_profile.permitted_query_columns,
-    }
-    encoded = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
-    return sha256(encoded).hexdigest()[:16]
 
 
 def _load_mlflow() -> Any:

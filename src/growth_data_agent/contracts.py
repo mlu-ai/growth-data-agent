@@ -41,6 +41,51 @@ class AnalyticalRoute(StrEnum):
     LEGACY = "legacy"
 
 
+class InvestigationComplexity(StrEnum):
+    MEDIUM = "medium"
+    HARD = "hard"
+
+
+class PlanAction(StrEnum):
+    METRICFLOW = "metricflow"
+    CITED_EVIDENCE = "cited_evidence"
+    LIGHTRAG = "lightrag"
+    CAUSAL_GATE = "causal_gate"
+
+
+class ToolOutcomeStatus(StrEnum):
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+class PlanToolOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: PlanAction
+    status: ToolOutcomeStatus
+    error_type: str | None = Field(
+        default=None, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"
+    )
+
+
+class LeadAgentMetadata(BaseModel):
+    """Safe, bounded state that can be persisted and traced for one turn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str = Field(min_length=1, max_length=128)
+    complexity: InvestigationComplexity
+    actions: list[PlanAction] = Field(min_length=1, max_length=3)
+    current_action: PlanAction | None = None
+    plan_revision: int = Field(ge=0)
+    replan_count: int = Field(ge=0, le=2)
+    policy_fingerprint: str = Field(min_length=1, max_length=128)
+    semantic_current: bool
+    evidence_revision_fingerprints: list[str] = Field(max_length=32)
+    tool_outcomes: list[PlanToolOutcome] = Field(max_length=8)
+    last_replan_reason: str | None = Field(default=None, max_length=64)
+
+
 class AnalyticalIntent(BaseModel):
     """A validated interpretation of the request before specialist execution."""
 
@@ -93,6 +138,7 @@ class ConversationTurn(BaseModel):
     metric_name: str | None = Field(default=None, min_length=1, max_length=128)
     trace_id: str = Field(min_length=1, max_length=128)
     created_at: datetime
+    lead_agent_metadata: LeadAgentMetadata | None = None
 
 
 class ConversationContext(BaseModel):
@@ -395,6 +441,7 @@ class GovernedAnalyticalResponse(BaseModel):
     metric_definition_gap: MetricDefinitionGap | None = None
     provisional_metric: ProvisionalMetric | None = None
     data_team_verification_request: DataTeamVerificationRequest | None = None
+    lead_agent_metadata: LeadAgentMetadata | None = None
     source_freshness: SourceFreshness
     effective_access_scope: EffectiveAccessScope
     caveats: list[str]

@@ -28,6 +28,8 @@ from .contracts import (
     EvidenceSupportStatus,
     GovernedAnalyticalResponse,
     MetricDefinitionGap,
+    PlanAction,
+    PlanToolOutcome,
     ResultClassification,
     SensitiveIdentifier,
     SourceFreshness,
@@ -94,8 +96,10 @@ from .observability import (
     TraceSink,
     capture_trace,
     policy_fingerprint,
+    set_lead_agent_metadata,
     trace_span,
 )
+from .planning import LeadAgentPlanner, PlanningInvariantError, ToolOutcomeStatus
 from .policy import (
     AccessDeniedError,
     UnknownAgentUserError,
@@ -207,6 +211,7 @@ class AnswerQuestionService:
             metric_definition_gap_handler=self._answer_metric_definition_gap_specialist,
             legacy_handler=self._answer_legacy_question,
             clarification_handler=self._answer_intent_clarification,
+            semantic_freshness_provider=self._semantic_is_current,
             checkpointer=getattr(self.conversation_store, "checkpointer", None),
         )
 
@@ -235,6 +240,13 @@ class AnswerQuestionService:
                 response = self.execution_graph.answer_question(
                     request,
                     conversation_id=checkpoint.conversation_id,
+                )
+                response = self._attach_planning_tool_outcomes(
+                    response,
+                    trace_context,
+                    current_policy_fingerprint=policy_fingerprint(access_profile),
+                    semantic_current=self._semantic_is_current(),
+                    evidence_revision_keys=self._evidence_revision_keys(response),
                 )
                 response = self._draft_evidence_response(response)
                 response = response.model_copy(
@@ -271,6 +283,110 @@ class AnswerQuestionService:
             return self.conversation_store.create(principal)
         return self.conversation_store.load(request.conversation_id, principal)
 
+    def _attach_planning_tool_outcomes(
+        self,
+        response: GovernedAnalyticalResponse,
+        trace_context: TraceContext,
+        *,
+        current_policy_fingerprint: str,
+        semantic_current: bool,
+        evidence_revision_keys: Collection[tuple[str, str, str]],
+    ) -> GovernedAnalyticalResponse:
+        """Persist allowlisted tool outcome metadata, never tool arguments or content."""
+        metadata = response.lead_agent_metadata
+        if metadata is None:
+            return response
+        updated = self._planning_metadata_for_trace(
+            metadata,
+            trace_context,
+            current_policy_fingerprint=current_policy_fingerprint,
+            semantic_current=semantic_current,
+            evidence_revision_keys=evidence_revision_keys,
+        )
+        set_lead_agent_metadata(updated)
+        return response.model_copy(update={"lead_agent_metadata": updated})
+
+    @staticmethod
+    def _planning_metadata_for_trace(
+        metadata,
+        trace_context: TraceContext,
+        *,
+        current_policy_fingerprint: str,
+        semantic_current: bool,
+        evidence_revision_keys: Collection[tuple[str, str, str]],
+    ):
+        action_by_tool = {
+            "semantic_query": PlanAction.METRICFLOW,
+            "semantic_driver_decomposition": PlanAction.METRICFLOW,
+            "evidence_retrieval": PlanAction.CITED_EVIDENCE,
+            "graph_traversal": PlanAction.LIGHTRAG,
+            "causal_evaluation": PlanAction.CAUSAL_GATE,
+        }
+        outcomes: list[PlanToolOutcome] = []
+        seen_actions: set[PlanAction] = set()
+        for span in trace_context.tool_spans:
+            action = action_by_tool.get(span.name)
+            if action is None or action not in metadata.actions or action in seen_actions:
+                continue
+            seen_actions.add(action)
+            outcomes.append(
+                PlanToolOutcome(
+                    action=action,
+                    status=(
+                        ToolOutcomeStatus.SUCCESS
+                        if span.status == "success"
+                        else ToolOutcomeStatus.FAILED
+                    ),
+                    error_type=span.attributes.get("error_type")
+                    if span.status == "error"
+                    else None,
+                )
+            )
+        outcomes.sort(key=lambda outcome: metadata.actions.index(outcome.action))
+        if not outcomes:
+            return metadata
+        if not metadata.semantic_current:
+            return metadata.model_copy(
+                update={
+                    "tool_outcomes": outcomes,
+                    "last_replan_reason": "invariant_blocked",
+                }
+            )
+        planner = LeadAgentPlanner()
+        updated = metadata
+        for outcome in outcomes:
+            try:
+                updated = planner.replan(
+                    updated,
+                    outcome,
+                    current_policy_fingerprint=current_policy_fingerprint,
+                    semantic_current=semantic_current,
+                    evidence_revision_keys=evidence_revision_keys,
+                )
+            except PlanningInvariantError:
+                return metadata.model_copy(
+                    update={
+                        "tool_outcomes": outcomes,
+                        "last_replan_reason": "invariant_blocked",
+                    }
+                )
+        return updated
+
+    @staticmethod
+    def _evidence_revision_keys(
+        response: GovernedAnalyticalResponse,
+    ) -> tuple[tuple[str, str, str], ...]:
+        if response.evidence is None:
+            return ()
+        return tuple(
+            (
+                citation.source_document_id,
+                citation.source_revision,
+                citation.chunk_id,
+            )
+            for citation in response.evidence.citations
+        )
+
     @staticmethod
     def _conversation_metric_name(response: GovernedAnalyticalResponse) -> str | None:
         for value in (
@@ -298,6 +414,7 @@ class AnswerQuestionService:
             metric_name=cls._conversation_metric_name(response),
             trace_id=response.trace_id,
             created_at=datetime.now(UTC),
+            lead_agent_metadata=response.lead_agent_metadata,
         )
 
     @classmethod
@@ -414,6 +531,7 @@ class AnswerQuestionService:
                     "The local model failed closed; no model-generated prose or additional "
                     "evidence was returned."
                 ],
+                lead_agent_metadata=response.lead_agent_metadata,
                 trace_id=response.trace_id,
             )
         return response.model_copy(update={"answer": draft.answer})
@@ -793,6 +911,7 @@ class AnswerQuestionService:
                 else "not_evaluated"
             ),
             response=response.model_dump(mode="json"),
+            lead_agent_metadata=response.lead_agent_metadata,
             conversation_id=response.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
@@ -857,6 +976,14 @@ class AnswerQuestionService:
         self, request: AnswerQuestionRequest, trace_context: TraceContext
     ) -> str:
         trace_id = str(uuid4())
+        if trace_context.lead_agent_metadata is not None:
+            trace_context.lead_agent_metadata = self._planning_metadata_for_trace(
+                trace_context.lead_agent_metadata,
+                trace_context,
+                current_policy_fingerprint=self._policy_fingerprint_or_unknown(request),
+                semantic_current=self._semantic_is_current(),
+                evidence_revision_keys=(),
+            )
         source_versions: dict[str, str] = {}
         try:
             artifact = self.semantic_gateway.artifact_store.load()
@@ -882,6 +1009,7 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "dependency_unavailable",
             },
+            lead_agent_metadata=trace_context.lead_agent_metadata,
             conversation_id=trace_context.conversation_id or request.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
@@ -897,6 +1025,15 @@ class AnswerQuestionService:
             return policy_fingerprint(resolve_access_profile(request.agent_user_id))
         except UnknownAgentUserError:
             return "unknown-agent"
+
+    def _semantic_is_current(self, authorized_execution: AuthorizedExecution | None = None) -> bool:
+        """Provide planning with the same semantic freshness boundary as execution."""
+        del authorized_execution
+        try:
+            artifact = self.semantic_gateway.artifact_store.load()
+        except (OSError, ValueError):
+            return False
+        return self.semantic_gateway.freshness(artifact).is_current
 
     def _semantic_canonical_definition(self, metric_name: str):
         with trace_span(
