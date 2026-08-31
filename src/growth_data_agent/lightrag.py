@@ -34,6 +34,7 @@ from .graph import (
 )
 
 _MAX_LIGHTRAG_RESULTS = 3
+_MAX_LIGHTRAG_CHAIN_RESULTS = _MAX_LIGHTRAG_RESULTS * 3
 _REFERENCE_KINDS = Literal["chunk", "entity", "relation"]
 _AUTHORIZED_SCOPE_TOKEN: Final = object()
 _LIGHTRAG_CAPABILITY_TOKEN: Final = object()
@@ -137,7 +138,7 @@ class LightRAGEvidenceChain(BaseModel):
     supporting_chunks: list[LightRAGChunkRecord] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
     entities: list[LightRAGEntityRecord] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
     relations: list[LightRAGRelationRecord] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
-    references: list[LightRAGEvidenceReference] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
+    references: list[LightRAGEvidenceReference] = Field(max_length=_MAX_LIGHTRAG_CHAIN_RESULTS)
 
 
 class _ReferenceRecord(Protocol):
@@ -895,9 +896,11 @@ class LightRAGBackend:
         index = AuthorizedLightRAGIndex(self._store, authorized_scope, access_filter)
         self._last_query = query
         self._last_scope = authorized_scope
-        chunks = index.retrieve_chunks(query, limit=1)
-        entities = index.retrieve_entities(query, limit=1)
-        relations = index.retrieve_relations(query, limit=1)
+        result_limit = min(limit, _MAX_LIGHTRAG_CHAIN_RESULTS)
+        per_kind_limit = min(result_limit, _MAX_LIGHTRAG_RESULTS)
+        chunks = index.retrieve_chunks(query, limit=per_kind_limit)
+        entities = index.retrieve_entities(query, limit=per_kind_limit)
+        relations = index.retrieve_relations(query, limit=per_kind_limit)
         records = [*chunks, *entities, *relations]
         if any(
             record.reference.related_entity_references
@@ -908,7 +911,14 @@ class LightRAGBackend:
             raise LightRAGAuthorizationError(
                 "LightRAG returned a relation with unverifiable graph endpoint provenance."
             )
-        result_limit = _bounded_limit(limit)
+        records = []
+        for retrieval_index in range(_MAX_LIGHTRAG_RESULTS):
+            records.extend(
+                record
+                for collection in (chunks, entities, relations)
+                if retrieval_index < len(collection)
+                for record in [collection[retrieval_index]]
+            )
         ranked_records = []
         for rank, record in enumerate(records[:result_limit], start=1):
             ranked_reference = record.reference.model_copy(update={"rank": rank})
@@ -967,7 +977,7 @@ class LightRAGEvidenceAdapter:
         self,
         backend: object,
         *,
-        max_results: int = _MAX_LIGHTRAG_RESULTS,
+        max_results: int = _MAX_LIGHTRAG_CHAIN_RESULTS,
     ) -> None:
         if max_results < 1:
             raise ValueError("LightRAG max_results must be positive.")
@@ -976,7 +986,7 @@ class LightRAGEvidenceAdapter:
                 "LightRAG backend cannot prove pre-retrieval authorization enforcement."
             )
         self._backend = backend
-        self._max_results = min(max_results, _MAX_LIGHTRAG_RESULTS)
+        self._max_results = min(max_results, _MAX_LIGHTRAG_CHAIN_RESULTS)
 
     def retrieve(
         self,
@@ -1120,7 +1130,7 @@ def validate_authorized_lightrag_chain(
     if len(reference_by_id) != len(validated_references):
         raise LightRAGAuthorizationError("LightRAG evidence-chain references are duplicated.")
     record_ids = {record.reference.reference_id for record in records}
-    if len(records) > _MAX_LIGHTRAG_RESULTS or len(record_ids) != len(records):
+    if len(records) > _MAX_LIGHTRAG_CHAIN_RESULTS or len(record_ids) != len(records):
         raise LightRAGAuthorizationError("LightRAG evidence-chain record bound is exceeded.")
     record_reference_ids = {record.reference.reference_id for record in records}
     if record_reference_ids != set(reference_by_id):

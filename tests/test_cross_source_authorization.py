@@ -6,6 +6,7 @@ from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, writ
 from fastapi.testclient import TestClient
 from qdrant_client import QdrantClient
 
+from growth_data_agent.contracts import EvidenceSupportStatus
 from growth_data_agent.evidence import EvidenceDocument, EvidenceLifecycleState, QdrantEvidenceStore
 from growth_data_agent.graph import (
     ApacheAgeEvidenceGraphStore,
@@ -273,6 +274,42 @@ def test_public_chain_contains_only_the_authorized_apac_revision(client: TestCli
     assert "jira-apac-paid-provisioning-incident-restricted" not in response.text
 
 
+def test_public_chain_excludes_a_same_region_unauthorized_tenant_revision(
+    tmp_path: Path,
+) -> None:
+    allowed = evidence_corpus()[0]
+    unauthorized_tenant = allowed.model_copy(
+        update={
+            "document_id": "jira-apac-unauthorized-tenant-incident",
+            "source_document_id": "jira-apac-unauthorized-tenant-incident",
+            "source_url": "https://evidence.local/synthetic/jira-apac-unauthorized-tenant-incident",
+            "tenant_ids": ["tenant-0002"],
+        }
+    )
+    client, _, _ = _client(
+        tmp_path,
+        RecordingEvidenceStore([allowed, unauthorized_tenant]),
+        RecordingGraphStore(),
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "apac_regional_manager",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200
+    chain = response.json()["evidence_chain"]
+    assert chain["references"]
+    assert all(
+        reference["source_document_id"] == allowed.document_id
+        for reference in chain["references"]
+    ), chain
+    assert unauthorized_tenant.document_id not in response.text
+
+
 def test_public_chain_is_withheld_when_no_authorized_active_revision_matches(
     tmp_path: Path,
 ) -> None:
@@ -294,6 +331,39 @@ def test_public_chain_is_withheld_when_no_authorized_active_revision_matches(
     assert body["result_classification"] == "inconclusive"
     assert body["evidence_chain"]["references"] == []
     assert restricted.document_id not in response.text
+
+
+def test_inconclusive_response_does_not_publish_a_graph_hypothesis_chain(
+    tmp_path: Path,
+) -> None:
+    inconclusive = evidence_corpus()[0].model_copy(
+        update={"support_status": EvidenceSupportStatus.INCONCLUSIVE}
+    )
+    client, _, _ = _client(
+        tmp_path,
+        RecordingEvidenceStore([inconclusive]),
+        RecordingGraphStore(graph_corpus()),
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "apac_regional_manager",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_classification"] == "inconclusive"
+    assert body["evidence_chain"] == {
+        "supporting_chunks": [],
+        "entities": [],
+        "relations": [],
+        "references": [],
+    }
+    assert body["graph_paths"] == []
+    assert "tenant-" not in response.text
 
 
 def test_product_scope_is_checked_before_a_cross_product_metric_query(client: TestClient) -> None:
