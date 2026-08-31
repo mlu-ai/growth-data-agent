@@ -301,11 +301,6 @@ def test_driver_and_causal_requests_have_explicit_specialist_routes() -> None:
         agent_user_id="data_analyst",
         question="Estimate the causal effect of the Jira New MAU experiment.",
     )
-    explicit_experiment_request = AnswerQuestionRequest(
-        agent_user_id="data_analyst",
-        question="Estimate the causal effect.",
-        experiment_id="jira-new-mau-onboarding-experiment",
-    )
 
     assert (
         AnswerQuestionService._route_for_intent(
@@ -316,13 +311,6 @@ def test_driver_and_causal_requests_have_explicit_specialist_routes() -> None:
     assert (
         AnswerQuestionService._route_for_intent(
             causal_request, AnswerQuestionService._requested_metric_name(causal_request)
-        )
-        is AnalyticalRoute.CAUSAL_ANALYSIS
-    )
-    assert (
-        AnswerQuestionService._route_for_intent(
-            explicit_experiment_request,
-            AnswerQuestionService._requested_metric_name(explicit_experiment_request),
         )
         is AnalyticalRoute.CAUSAL_ANALYSIS
     )

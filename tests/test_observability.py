@@ -492,7 +492,6 @@ def test_governed_response_records_route_tools_and_source_versions(
         "retrieval": "success",
         "graph": "success",
         "direct_identifier_audit": "not_used",
-        "causal_pipeline": "not_used",
     }
     assert [span.name for span in trace.node_spans] == [
         "authorize",
@@ -538,5 +537,4 @@ def test_authorization_denial_is_traced_before_source_retrieval(tmp_path: Path) 
         "retrieval": "not_used",
         "graph": "not_used",
         "direct_identifier_audit": "not_used",
-        "causal_pipeline": "not_used",
     }

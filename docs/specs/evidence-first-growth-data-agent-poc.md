@@ -223,7 +223,13 @@ formula, inputs, scope, unverified status, and material caveats, then offer a
 verification request to the data team. Creating that request requires explicit
 Agent User confirmation.
 
-### Causal analysis
+### Causal analysis (superseded)
+
+> This section describes the original POC causal-eligibility design. It is
+> superseded by [ADR-0006](../adr/0006-retire-causal-analysis.md) and GitHub
+> issue #72/#73: the public causal-analysis workflow described below is
+> retired, and a causal-phrased request now receives a non-causal limitation
+> redirect. It is kept here as historical record of the original design.
 
 The POC supports causal eligibility assessment and safe language, not general
 causal automation. All-user pre/post comparisons are descriptive. A registered

@@ -17,9 +17,6 @@ class ResultClassification(StrEnum):
     DRIVER_DECOMPOSITION = "driver_decomposition"
     HYPOTHESIS = "hypothesis"
     INCONCLUSIVE = "inconclusive"
-    CAUSAL_ESTIMATE = "causal_estimate"
-    DESCRIPTIVE_RESULT = "descriptive_result"
-    ANALYSIS_PLAN = "analysis_plan"
     DIRECT_IDENTIFIER_RESPONSE = "direct_identifier_response"
     SAFE_REFUSAL = "safe_refusal"
     METRIC_DEFINITION_GAP = "metric_definition_gap"
@@ -50,7 +47,6 @@ class PlanAction(StrEnum):
     METRICFLOW = "metricflow"
     CITED_EVIDENCE = "cited_evidence"
     LIGHTRAG = "lightrag"
-    CAUSAL_GATE = "causal_gate"
 
 
 class ToolOutcomeStatus(StrEnum):
@@ -157,7 +153,6 @@ class AnswerQuestionPayload(BaseModel):
 
     question: str = Field(min_length=1)
     requested_metric_name: str | None = Field(default=None, min_length=1)
-    experiment_id: str | None = Field(default=None, min_length=1)
     conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
     verification_request_confirmation: VerificationRequestConfirmation | None = None
 
@@ -429,10 +424,6 @@ class GovernedAnalyticalResponse(BaseModel):
     driver_decomposition: DriverDecomposition | None = None
     evidence: EvidenceAnswer | None = None
     evidence_chain: EvidenceChain | None = None
-    causal_registration: CausalDesignRegistration | None = None
-    causal_estimate: CausalEstimate | None = None
-    descriptive_comparison: DescriptiveComparison | None = None
-    causal_analysis_plan: CausalAnalysisPlan | None = None
     graph_paths: list[GraphPathCitation] | None = None
     catalog_metadata: CatalogMetadata | None = None
     catalog_freshness: CatalogFreshness | None = None
@@ -447,119 +438,3 @@ class GovernedAnalyticalResponse(BaseModel):
     caveats: list[str]
     trace_id: str
     conversation_id: str | None = None
-
-
-class CausalDesignType(StrEnum):
-    RANDOMIZED_EXPERIMENT = "randomized_experiment"
-    OBSERVATIONAL = "observational"
-    QUASI_EXPERIMENTAL = "quasi_experimental"
-    ALL_USER_PRE_POST = "all_user_pre_post"
-
-
-class CausalReviewStatus(StrEnum):
-    APPROVED = "approved"
-    PENDING = "pending"
-    REJECTED = "rejected"
-
-
-class CausalSupportCheck(BaseModel):
-    name: str = Field(min_length=1)
-    passed: bool
-    details: str = Field(min_length=1)
-
-
-class CausalDiagnostic(BaseModel):
-    name: str = Field(min_length=1)
-    passed: bool
-    details: str = Field(min_length=1)
-
-
-class EstimatorApproval(BaseModel):
-    estimator: str = Field(min_length=1)
-    approved: bool
-    approved_by: str = Field(min_length=1)
-    approved_at: datetime
-
-
-class CausalReview(BaseModel):
-    status: CausalReviewStatus
-    reviewer: str | None = None
-    reviewed_at: datetime | None = None
-    decision: str = Field(min_length=1)
-
-
-class CausalDesignRegistration(BaseModel):
-    """The governance record required before causal estimation."""
-
-    experiment_id: str = Field(min_length=1)
-    product: str = Field(min_length=1)
-    metric_name: str = Field(min_length=1)
-    treatment: str = Field(min_length=1)
-    control: str = Field(min_length=1)
-    outcome: str = Field(min_length=1)
-    design_type: CausalDesignType
-    assignment_unit: str = Field(min_length=1)
-    regions: list[str] = Field(default_factory=list)
-    tenant_scope: str = ""
-    seat_tier: str | None = None
-    support_checks: list[CausalSupportCheck] = Field(default_factory=list)
-    estimator_approval: EstimatorApproval | None = None
-    diagnostics: list[CausalDiagnostic] = Field(default_factory=list)
-    review: CausalReview | None = None
-    assumptions: list[str] = Field(default_factory=list)
-
-
-class CausalOutcomeData(BaseModel):
-    """Bounded treatment/control outcome data supplied to the causal pipeline."""
-
-    treatment_value: float
-    control_value: float
-    standard_error: float = Field(ge=0)
-
-
-class CausalEstimate(BaseModel):
-    """A causal effect emitted only after the deterministic governance gate passes."""
-
-    experiment_id: str
-    treatment: str
-    control: str
-    outcome: str
-    estimator: str
-    estimate: float
-    standard_error: float
-    confidence_interval: tuple[float, float]
-    assumptions: list[str] = Field(min_length=1)
-    diagnostics: list[CausalDiagnostic] = Field(min_length=1)
-
-
-class DescriptiveComparison(BaseModel):
-    """Observed treatment/control values shown without causal interpretation."""
-
-    experiment_id: str
-    treatment: str
-    control: str
-    outcome: str
-    treatment_value: float
-    control_value: float
-    difference: float
-
-
-class CausalAnalysisPlan(BaseModel):
-    """A safe next step when a design cannot yet produce a Causal Estimate."""
-
-    experiment_id: str | None
-    design_type: CausalDesignType | None
-    proposed_estimator: str | None
-    review_status: CausalReviewStatus = CausalReviewStatus.PENDING
-    reason: str = Field(min_length=1)
-    required_actions: list[str] = Field(min_length=1)
-
-
-class CausalEvaluation(BaseModel):
-    """The deterministic pipeline outcome before it is rendered as an answer."""
-
-    outcome: Literal["causal_estimate", "descriptive_result", "analysis_plan"]
-    registration: CausalDesignRegistration | None
-    causal_estimate: CausalEstimate | None
-    analysis_plan: CausalAnalysisPlan | None
-    descriptive_comparison: DescriptiveComparison | None = None

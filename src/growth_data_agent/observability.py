@@ -23,7 +23,6 @@ _SAFE_SPAN_ATTRIBUTE_KEYS = frozenset(
         "metric_name",
         "result_limit",
         "entity_name",
-        "experiment_id",
         "returned_count",
         "error_type",
     }
@@ -49,7 +48,6 @@ _SAFE_SPAN_NAMES = frozenset(
         "lightrag_retrieval",
         "evidence_retrieval",
         "catalog_lookup",
-        "causal_evaluation",
         "direct_identifier_audit",
         "graph_traversal",
     }
@@ -348,7 +346,7 @@ def _safe_span_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
                 else f"[redacted entity {sha256(value.encode()).hexdigest()[:16]}]"
             )
             continue
-        if key in {"metric_name", "experiment_id"} and isinstance(value, str):
+        if key == "metric_name" and isinstance(value, str):
             safe[f"{key}_fingerprint"] = sha256(value.encode()).hexdigest()[:16]
             continue
         if isinstance(value, str):

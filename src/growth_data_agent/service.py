@@ -10,7 +10,6 @@ from typing import Any, cast
 from uuid import uuid4
 
 from .audit import DirectIdentifierAuditRecorder, InMemoryDirectIdentifierAuditRecorder
-from .causal import CausalAnalysisPipeline, default_causal_pipeline
 from .contracts import (
     AnalyticalIntent,
     AnalyticalRoute,
@@ -113,7 +112,6 @@ from .policy import (
     AccessDeniedError,
     UnknownAgentUserError,
     resolve_access_profile,
-    tenant_ids_for_segment,
 )
 from .reranking import (
     EvidenceReranker,
@@ -169,7 +167,6 @@ class AnswerQuestionService:
         graph_store: EvidenceGraphStore | None = None,
         catalog_store: DataHubCatalogStore | None = None,
         direct_identifier_audit_recorder: DirectIdentifierAuditRecorder | None = None,
-        causal_pipeline: CausalAnalysisPipeline | None = None,
         trace_sink: TraceSink | None = None,
         execution_graph: ExecutionGraph | None = None,
         local_model: LocalModelTransport | None = None,
@@ -217,7 +214,6 @@ class AnswerQuestionService:
         self.direct_identifier_audit_recorder = (
             direct_identifier_audit_recorder or InMemoryDirectIdentifierAuditRecorder()
         )
-        self.causal_pipeline = causal_pipeline or default_causal_pipeline()
         self.trace_sink = trace_sink or NoOpTraceSink()
         self.conversation_store = conversation_store or InMemoryConversationCheckpointStore()
         self.local_model = local_model
@@ -244,7 +240,7 @@ class AnswerQuestionService:
             intent_interpreter=configured_intent_interpreter,
             canonical_definition_handler=self._answer_canonical_definition,
             driver_decomposition_handler=self._answer_driver_decomposition,
-            causal_analysis_handler=self._answer_causal_specialist,
+            causal_analysis_handler=self._answer_causal_redirect_specialist,
             catalog_ownership_handler=self._answer_catalog_specialist,
             direct_identifier_handler=self._answer_direct_identifier_specialist,
             limitation_handler=self._answer_limitation_specialist,
@@ -954,15 +950,6 @@ class AnswerQuestionService:
                 trace_id=trace_id,
             )
 
-        if self._requests_causal_analysis(request):
-            access_profile.authorize_product("Jira")
-            return self._answer_causal_analysis(
-                request=request,
-                scope=scope,
-                access_profile=access_profile,
-                trace_id=trace_id,
-            )
-
         metric_name = self._requested_metric_name(request)
         if metric_name is None:
             artifact = self.semantic_gateway.artifact_store.load()
@@ -1134,14 +1121,23 @@ class AnswerQuestionService:
             trace_id=authorized_execution.trace_id,
         )
 
-    def _answer_causal_specialist(
+    def _answer_causal_redirect_specialist(
         self, authorized_execution: AuthorizedExecution
     ) -> GovernedAnalyticalResponse:
-        authorized_execution.access_profile.authorize_product("Jira")
-        return self._answer_causal_analysis(
-            request=authorized_execution.request,
-            scope=authorized_execution.effective_scope,
-            access_profile=authorized_execution.access_profile,
+        """The causal-estimate workflow is retired; redirect to evidence-first hypotheses."""
+        artifact = self.semantic_gateway.artifact_store.load()
+        return GovernedAnalyticalResponse(
+            answer=(
+                "This service no longer produces Causal Estimates, treatment effects, or root "
+                "causes. Ask to investigate the Driver Decomposition for a metric to review "
+                "documented, cited Hypotheses instead."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            source_freshness=self.semantic_gateway.freshness(artifact),
+            effective_access_scope=authorized_execution.effective_scope,
+            caveats=[
+                "Causal-analysis requests are retired; no causal estimator ran for this request."
+            ],
             trace_id=authorized_execution.trace_id,
         )
 
@@ -1277,12 +1273,6 @@ class AnswerQuestionService:
             "direct_identifier_audit": (
                 "success" if response.direct_identifier_audit is not None else "not_used"
             ),
-            "causal_pipeline": (
-                response.result_classification.value
-                if response.causal_registration is not None
-                or response.causal_analysis_plan is not None
-                else "not_used"
-            ),
         }
         retrieval_scores = (
             tuple(float(score) for score in getattr(self.evidence_store, "last_scores", ()))
@@ -1297,12 +1287,7 @@ class AnswerQuestionService:
             source_versions=source_versions,
             tool_outcomes=tool_outcomes,
             retrieval_scores=retrieval_scores,
-            evaluation_outcome=(
-                response.result_classification.value
-                if response.causal_registration is not None
-                or response.causal_analysis_plan is not None
-                else "not_evaluated"
-            ),
+            evaluation_outcome="not_evaluated",
             response=response.model_dump(mode="json"),
             lead_agent_metadata=response.lead_agent_metadata,
             conversation_id=response.conversation_id,
@@ -1343,11 +1328,6 @@ class AnswerQuestionService:
                 "retrieval": "not_used",
                 "graph": "not_used",
                 "direct_identifier_audit": "not_used",
-                "causal_pipeline": (
-                    "authorization_denied"
-                    if self._requests_causal_analysis(request)
-                    else "not_used"
-                ),
             },
             retrieval_scores=(),
             evaluation_outcome="not_evaluated",
@@ -1555,14 +1535,6 @@ class AnswerQuestionService:
         ):
             return self.catalog_store.get(entity_name)
 
-    def _causal_evaluate(self, experiment_id: str):
-        with trace_span(
-            "causal_evaluation",
-            kind="tool",
-            attributes={"experiment_id": experiment_id},
-        ):
-            return self.causal_pipeline.evaluate(experiment_id)
-
     def _audit_direct_identifiers(
         self,
         *,
@@ -1752,148 +1724,6 @@ class AnswerQuestionService:
                 "Catalog-dependent ownership, classification, and discovery details are not "
                 "available in this response.",
                 "Canonical metric logic is independent of DataHub availability.",
-            ],
-            trace_id=trace_id,
-        )
-
-    def _answer_causal_analysis(
-        self,
-        *,
-        request: AnswerQuestionRequest,
-        scope,
-        access_profile,
-        trace_id: str,
-    ) -> GovernedAnalyticalResponse:
-        question_experiment_id = self._requested_causal_experiment_id(request.question)
-        if request.experiment_id is not None and self._has_explicit_causal_variant(
-            request.question
-        ):
-            experiment_id = question_experiment_id
-        else:
-            experiment_id = request.experiment_id or question_experiment_id
-        evaluation = self._causal_evaluate(experiment_id)
-        if evaluation.registration is not None:
-            for region in evaluation.registration.regions:
-                if evaluation.registration.seat_tier is None:
-                    access_profile.authorize_region(region)
-                else:
-                    access_profile.authorize_tenant_scope(region, evaluation.registration.seat_tier)
-        definition = None
-        query_evidence = None
-        if evaluation.outcome == "causal_estimate":
-            definition, freshness = self._semantic_canonical_definition("jira_new_mau")
-            if definition is None:
-                return GovernedAnalyticalResponse(
-                    answer=(
-                        "The Jira New MAU causal request is limited because the canonical "
-                        "dbt/MetricFlow outcome is not currently validated."
-                    ),
-                    result_classification=ResultClassification.LIMITATION,
-                    causal_registration=evaluation.registration,
-                    causal_analysis_plan=evaluation.analysis_plan,
-                    source_freshness=freshness,
-                    effective_access_scope=scope,
-                    caveats=[
-                        "No Causal Estimate is produced without a current canonical outcome.",
-                    ],
-                    trace_id=trace_id,
-                )
-
-            query_evidence, freshness = self._semantic_execute_scoped_metric(
-                "jira_new_mau",
-                access_profile,
-                scoped_regions=tuple(evaluation.registration.regions),
-                scoped_seat_tier=evaluation.registration.seat_tier,
-                scoped_tenant_ids=tuple(
-                    tenant_id
-                    for region in evaluation.registration.regions
-                    for tenant_id in tenant_ids_for_segment(
-                        region, evaluation.registration.seat_tier
-                    )
-                ),
-                scoped_tenant_scope=evaluation.registration.tenant_scope,
-            )
-            if query_evidence is None:
-                return GovernedAnalyticalResponse(
-                    answer=(
-                        "The Jira New MAU causal request is limited because its scoped canonical "
-                        "outcome could not be queried."
-                    ),
-                    result_classification=ResultClassification.LIMITATION,
-                    canonical_definition=definition,
-                    causal_registration=evaluation.registration,
-                    causal_analysis_plan=evaluation.analysis_plan,
-                    source_freshness=freshness,
-                    effective_access_scope=scope,
-                    caveats=["No Causal Estimate is produced without a scoped outcome query."],
-                    trace_id=trace_id,
-                )
-        else:
-            try:
-                artifact = self.semantic_gateway.artifact_store.load()
-                freshness = self.semantic_gateway.freshness(artifact)
-            except (OSError, ValueError):
-                freshness = SourceFreshness(
-                    validated_at=datetime.now(UTC),
-                    maximum_age_seconds=86_400,
-                    is_current=False,
-                )
-
-        if evaluation.outcome == "causal_estimate":
-            assert evaluation.causal_estimate is not None
-            estimate = evaluation.causal_estimate
-            answer = (
-                "Causal Estimate: the registered Jira New MAU treatment/control experiment "
-                f"estimates a {estimate.estimate:+.2%} treatment effect using the pre-approved "
-                f"{estimate.estimator} estimator. Eligibility, assumptions, diagnostics, and "
-                "required review passed the governed gate."
-            )
-            classification = ResultClassification.CAUSAL_ESTIMATE
-        elif evaluation.registration is not None:
-            plan = evaluation.analysis_plan
-            reason = plan.reason if plan is not None else "The causal gate did not pass."
-            if evaluation.outcome == "descriptive_result":
-                descriptive = evaluation.descriptive_comparison
-                observed = ""
-                if descriptive is not None:
-                    observed = (
-                        f" Observed {descriptive.treatment} at {descriptive.treatment_value:.2%} "
-                        f"versus {descriptive.control} at {descriptive.control_value:.2%} "
-                        f"({descriptive.difference:+.2%}); this comparison is descriptive."
-                    )
-                answer = (
-                    "Descriptive result only: the Jira New MAU design was not eligible for a "
-                    f"Causal Estimate. {reason}{observed}"
-                )
-                classification = ResultClassification.DESCRIPTIVE_RESULT
-            else:
-                answer = (
-                    "Reviewable analysis plan: no Causal Estimate was produced for the Jira "
-                    f"New MAU design. {reason}"
-                )
-                classification = ResultClassification.ANALYSIS_PLAN
-        else:
-            plan = evaluation.analysis_plan
-            answer = (
-                "Reviewable analysis plan: no Causal Estimate was produced because the Jira "
-                f"New MAU design is unregistered. {plan.reason if plan is not None else ''}"
-            )
-            classification = ResultClassification.ANALYSIS_PLAN
-
-        return GovernedAnalyticalResponse(
-            answer=answer,
-            result_classification=classification,
-            canonical_definition=definition,
-            semantic_query_evidence=query_evidence,
-            causal_registration=evaluation.registration,
-            causal_estimate=evaluation.causal_estimate,
-            descriptive_comparison=evaluation.descriptive_comparison,
-            causal_analysis_plan=evaluation.analysis_plan,
-            source_freshness=freshness,
-            effective_access_scope=scope,
-            caveats=[
-                "Causal estimation is restricted to this deterministic governed pipeline.",
-                "A non-estimate outcome must remain descriptive or a reviewable analysis plan.",
             ],
             trace_id=trace_id,
         )
@@ -2450,9 +2280,6 @@ class AnswerQuestionService:
 
     @staticmethod
     def _requests_causal_analysis(request: AnswerQuestionRequest) -> bool:
-        if request.experiment_id is not None:
-            normalized = " ".join(request.question.casefold().split())
-            return "confluence" not in normalized or "jira" in normalized
         normalized = " ".join(request.question.casefold().split())
         return (
             "jira" in normalized
@@ -2473,55 +2300,6 @@ class AnswerQuestionService:
                     "all user",
                     "effect estimate",
                 )
-            )
-        )
-
-    @staticmethod
-    def _requested_causal_experiment_id(question: str) -> str:
-        normalized = " ".join(question.casefold().split())
-        if "unregistered" in normalized:
-            return "unregistered-jira-new-mau-design"
-        support_failed = "support" in normalized and any(
-            term in normalized for term in ("fail", "did not pass", "not pass")
-        )
-        if "failed support" in normalized or support_failed:
-            return "jira-new-mau-onboarding-experiment-failed-support"
-        if any(
-            term in normalized
-            for term in ("missing review", "review missing", "pending review", "not reviewed")
-        ):
-            return "jira-new-mau-onboarding-experiment-pending-review"
-        all_user_pre_post = (
-            "pre/post" in normalized
-            or "pre post" in normalized
-            or "all-user" in normalized
-            or ("all user" in normalized and "before" in normalized and "after" in normalized)
-        )
-        if all_user_pre_post:
-            return "jira-new-mau-all-user-pre-post"
-        if "observational" in normalized or "quasi-experimental" in normalized:
-            return "jira-new-mau-observational-design"
-        return "jira-new-mau-onboarding-experiment"
-
-    @staticmethod
-    def _has_explicit_causal_variant(question: str) -> bool:
-        normalized = " ".join(question.casefold().split())
-        return any(
-            term in normalized
-            for term in (
-                "unregistered",
-                "failed support",
-                "support check",
-                "missing review",
-                "review missing",
-                "pending review",
-                "not reviewed",
-                "observational",
-                "quasi-experimental",
-                "pre/post",
-                "pre post",
-                "before and after",
-                "all user",
             )
         )
 

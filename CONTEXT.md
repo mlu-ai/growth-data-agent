@@ -70,11 +70,6 @@ The cited path from a metric movement through an affected segment to related
 documents, incidents, campaigns, contracts, or accountable teams.
 _Avoid_: Proof, causal chain
 
-**Causal Estimate**:
-A quantified treatment effect produced only by an eligible, reviewed causal
-analysis.
-_Avoid_: Uplift, impact
-
 **Paid Tenant Tenure**:
 Elapsed time since the Product User's Tenant began its paid subscription.
 _Avoid_: Account age, user age, tenure

@@ -113,16 +113,6 @@ class AccessProfile:
         if region not in self.regions:
             raise AccessDeniedError(f"Access Profile is not entitled to {region} data.")
 
-    def authorize_tenant_scope(self, region: str, seat_tier: str) -> None:
-        """Authorize every Tenant in a registered causal analysis scope."""
-        self.authorize_region(region)
-        scoped_tenants = set(tenant_ids_for_segment(region, seat_tier))
-        if not scoped_tenants.issubset(self.permitted_tenant_ids):
-            raise AccessDeniedError(
-                f"Access Profile is not entitled to the {region} {seat_tier} Seat Tier "
-                "Tenant scope."
-            )
-
     def as_effective_scope(self) -> EffectiveAccessScope:
         return EffectiveAccessScope(
             products=list(self.products),
