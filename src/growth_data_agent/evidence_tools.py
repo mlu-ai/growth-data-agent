@@ -17,6 +17,8 @@ from .lightrag import (
     AuthorizedEvidenceRevisionSet,
     LightRAGAuthorizationError,
     LightRAGEvidenceAdapter,
+    require_governed_lightrag_adapter,
+    validate_authorized_lightrag_references,
 )
 from .observability import trace_span
 from .reranking import (
@@ -67,6 +69,7 @@ class BoundedEvidenceInvestigationTools:
             raise LightRAGAuthorizationError(
                 "Governed LightRAG evidence retrieval is unavailable."
             )
+        lightrag_adapter = require_governed_lightrag_adapter(self._lightrag_adapter)
 
         authorized_document_ids: set[str] | None = None
         authorized_revision_keys: set[tuple[str, str, str]] | None = None
@@ -94,11 +97,15 @@ class BoundedEvidenceInvestigationTools:
             evidence_filter,
             revision_source=revision_reader,
         )
-        references = self._lightrag_adapter.retrieve(
-            query,
+        references = validate_authorized_lightrag_references(
+            lightrag_adapter.retrieve(
+                query,
+                authorized_scope,
+                evidence_filter,
+                limit=_MAX_EVIDENCE_TOOL_RESULTS,
+            ),
             authorized_scope,
             evidence_filter,
-            limit=_MAX_EVIDENCE_TOOL_RESULTS,
         )
         authorized_document_ids = {
             reference.source_document_id for reference in references

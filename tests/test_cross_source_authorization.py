@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import cast
 
 from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, write_artifact
 from fastapi.testclient import TestClient
@@ -78,6 +79,18 @@ class RecordingGraphStore:
         self.last_filter = access_filter
         self.last_limit = limit
         return self.paths[:limit]
+
+
+class InjectedLightRAGAdapter:
+    """Duck-typed adapter that must never reach a model-facing retrieval seam."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def retrieve(self, *args, **kwargs):
+        del args, kwargs
+        self.calls += 1
+        raise AssertionError("injected LightRAG adapter was invoked")
 
 
 def _client(
@@ -375,6 +388,65 @@ def test_direct_identifier_requires_lightrag_before_any_source_retrieval(
     assert "graph" not in response.text.casefold()
 
 
+def test_injected_lightrag_adapter_is_rejected_before_model_evidence_retrieval(
+    tmp_path: Path,
+) -> None:
+    injected_adapter = InjectedLightRAGAdapter()
+    evidence_store = RecordingEvidenceStore(evidence_corpus())
+    graph_store = RecordingGraphStore(graph_corpus())
+    client, evidence_store, graph_store = _client(
+        tmp_path,
+        evidence_store,
+        graph_store,
+        cast(LightRAGEvidenceAdapter, injected_adapter),
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "apac_regional_manager",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 503
+    assert injected_adapter.calls == 0
+    assert evidence_store.calls == 0
+    assert graph_store.calls == 0
+    assert "tenant-" not in response.text
+    assert "jira-apac-paid-provisioning-incident" not in response.text
+    assert "path" not in response.text.casefold()
+
+
+def test_injected_lightrag_adapter_is_rejected_before_direct_identifier_graph_retrieval(
+    tmp_path: Path,
+) -> None:
+    injected_adapter = InjectedLightRAGAdapter()
+    evidence_store = RecordingEvidenceStore(evidence_corpus())
+    graph_store = RecordingGraphStore(graph_corpus())
+    client, evidence_store, graph_store = _client(
+        tmp_path,
+        evidence_store,
+        graph_store,
+        cast(LightRAGEvidenceAdapter, injected_adapter),
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "customer_success_manager",
+            "question": "Which Tenant IDs were affected by the Jira APAC incident?",
+        },
+    )
+
+    assert response.status_code == 503
+    assert injected_adapter.calls == 0
+    assert evidence_store.calls == 0
+    assert graph_store.calls == 0
+    assert "tenant-" not in response.text
+    assert "path" not in response.text.casefold()
+
+
 def test_canonical_definition_remains_available_without_lightrag(tmp_path: Path) -> None:
     evidence_store = RecordingEvidenceStore(evidence_corpus())
     graph_store = RecordingGraphStore(graph_corpus())
@@ -395,6 +467,34 @@ def test_canonical_definition_remains_available_without_lightrag(tmp_path: Path)
 
     assert response.status_code == 200
     assert response.json()["result_classification"] == "canonical_definition"
+    assert evidence_store.calls == 0
+    assert graph_store.calls == 0
+
+
+def test_canonical_definition_remains_available_with_injected_lightrag_adapter(
+    tmp_path: Path,
+) -> None:
+    injected_adapter = InjectedLightRAGAdapter()
+    evidence_store = RecordingEvidenceStore(evidence_corpus())
+    graph_store = RecordingGraphStore(graph_corpus())
+    client, evidence_store, graph_store = _client(
+        tmp_path,
+        evidence_store,
+        graph_store,
+        cast(LightRAGEvidenceAdapter, injected_adapter),
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "confluence_product_manager",
+            "question": "What is Confluence New PEU?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result_classification"] == "canonical_definition"
+    assert injected_adapter.calls == 0
     assert evidence_store.calls == 0
     assert graph_store.calls == 0
 

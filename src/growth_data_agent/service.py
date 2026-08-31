@@ -60,6 +60,8 @@ from .lightrag import (
     LightRAGBackend,
     LightRAGEvidenceAdapter,
     QdrantAGELightRAGStore,
+    require_governed_lightrag_adapter,
+    validate_authorized_lightrag_references,
 )
 from .local_model import (
     EvidenceDraftingAdapter,
@@ -938,8 +940,15 @@ class AnswerQuestionService:
                 raise LightRAGAuthorizationError(
                     "Governed LightRAG evidence retrieval is unavailable."
                 )
-            source_documents = getattr(self.evidence_store, "documents", None)
-            revision_reader = getattr(self.evidence_store, "authorized_revisions", None)
+            lightrag_adapter = require_governed_lightrag_adapter(self.lightrag_adapter)
+            source_documents = cast(
+                Iterable[EvidenceDocument] | None,
+                getattr(self.evidence_store, "documents", None),
+            )
+            revision_reader = cast(
+                Callable[[EvidenceAccessFilter], Iterable[EvidenceDocument]] | None,
+                getattr(self.evidence_store, "authorized_revisions", None),
+            )
             if not source_documents and callable(revision_reader):
                 source_documents = revision_reader(access_filter)
             if source_documents is None:
@@ -956,11 +965,15 @@ class AnswerQuestionService:
                 access_filter,
                 revision_source=revision_reader,
             )
-            references = self.lightrag_adapter.retrieve(
-                query,
+            references = validate_authorized_lightrag_references(
+                lightrag_adapter.retrieve(
+                    query,
+                    authorized_scope,
+                    access_filter,
+                    limit=limit,
+                ),
                 authorized_scope,
                 access_filter,
-                limit=limit,
             )
             allowed_document_ids = {
                 reference.source_document_id for reference in references

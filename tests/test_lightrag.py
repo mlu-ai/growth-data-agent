@@ -32,6 +32,7 @@ from growth_data_agent.lightrag import (
     LightRAGRelationRecord,
     LightRAGRetrievalStore,
     QdrantAGELightRAGStore,
+    validate_authorized_lightrag_references,
 )
 from growth_data_agent.policy import resolve_access_profile
 from growth_data_agent.synthetic import evidence_corpus, graph_corpus
@@ -233,6 +234,26 @@ def test_backend_cannot_override_the_scope_enforcing_retrieval_entrypoint() -> N
             "UnsafeLightRAGBackend",
             (LightRAGBackend,),
             {"retrieve": lambda self, query, *, authorized_scope, access_filter, limit: []},
+        )
+
+
+def test_evidence_adapter_cannot_be_bypassed_by_subclassing() -> None:
+    with pytest.raises(TypeError, match="adapter"):
+        type("UnsafeLightRAGEvidenceAdapter", (LightRAGEvidenceAdapter,), {})
+
+
+def test_entry_reference_validation_rejects_a_forged_revision() -> None:
+    document = evidence_corpus()[0]
+    access_filter = _access_filter()
+    forged_reference = _reference(document).model_copy(
+        update={"source_revision": "forged-active-revision"}
+    )
+
+    with pytest.raises(LightRAGAuthorizationError, match="outside"):
+        validate_authorized_lightrag_references(
+            [forged_reference],
+            _authorized_scope(document, access_filter),
+            access_filter,
         )
 
 

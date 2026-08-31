@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from growth_data_agent.evidence import (
@@ -55,6 +57,16 @@ class RecordingEvidenceStore:
         ][:limit]
 
 
+class InjectedLightRAGAdapter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def retrieve(self, *args, **kwargs):
+        del args, kwargs
+        self.calls += 1
+        raise AssertionError("injected LightRAG adapter was invoked")
+
+
 def test_investigation_fails_closed_before_graph_or_vector_retrieval_without_lightrag() -> None:
     evidence_store = RecordingEvidenceStore()
     graph_calls = 0
@@ -94,6 +106,52 @@ def test_investigation_fails_closed_before_graph_or_vector_retrieval_without_lig
             metric_name=document.metric_name or "jira_new_peu",
         )
 
+    assert evidence_store.calls == 0
+    assert graph_calls == 0
+
+
+def test_investigation_rejects_injected_lightrag_adapter_before_retrieval() -> None:
+    evidence_store = RecordingEvidenceStore()
+    graph_calls = 0
+    document = evidence_corpus()[0]
+    evidence_filter = EvidenceAccessFilter(
+        products=(document.product,),
+        regions=(document.region,),
+        tenant_ids=tuple(document.tenant_ids),
+        classifications=(document.classification,),
+        identifier_entitlements=(document.identifier_entitlement,),
+        groups=tuple(document.access_groups),
+    )
+    graph_filter = GraphAccessFilter(
+        products=(document.product,),
+        regions=(document.region,),
+        tenant_ids=tuple(document.tenant_ids),
+        classifications=(document.classification,),
+        identifier_entitlements=(document.identifier_entitlement,),
+    )
+    injected_adapter = InjectedLightRAGAdapter()
+
+    def traverse(query, access_filter, metric_name, limit):
+        nonlocal graph_calls
+        graph_calls += 1
+        return []
+
+    tools = BoundedEvidenceInvestigationTools(
+        evidence_store,
+        traverse,
+        DeterministicCrossEncoderReranker(),
+        cast(LightRAGEvidenceAdapter, injected_adapter),
+    )
+
+    with pytest.raises(LightRAGAuthorizationError, match="adapter|LightRAG"):
+        tools.investigate(
+            query="Jira APAC evidence",
+            evidence_filter=evidence_filter,
+            graph_filter=graph_filter,
+            metric_name=document.metric_name or "jira_new_peu",
+        )
+
+    assert injected_adapter.calls == 0
     assert evidence_store.calls == 0
     assert graph_calls == 0
 

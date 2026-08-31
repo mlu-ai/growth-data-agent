@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from math import sqrt
-from typing import Final, Literal, Protocol, TypeVar, final
+from typing import Final, Literal, Protocol, TypeVar, cast, final
 
 from pydantic import BaseModel, Field
 
@@ -896,6 +896,12 @@ class LightRAGBackend:
 class LightRAGEvidenceAdapter:
     """Call a controlled pre-authorized LightRAG backend and expose references only."""
 
+    __slots__ = ("_backend", "_max_results")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del kwargs
+        raise TypeError("LightRAG evidence adapter cannot be bypassed by subclassing.")
+
     def __init__(
         self,
         backend: object,
@@ -961,6 +967,48 @@ class LightRAGEvidenceAdapter:
                     "LightRAG returned a reference outside the authorized Evidence Revision set."
                 )
         return [reference.model_copy(deep=True) for reference in references]
+
+
+def require_governed_lightrag_adapter(adapter: object) -> LightRAGEvidenceAdapter:
+    """Admit only the sealed adapter bound to a concrete governed backend."""
+    if type(adapter) is not LightRAGEvidenceAdapter:
+        raise LightRAGAuthorizationError(
+            "LightRAG requires the concrete governed evidence adapter."
+        )
+    concrete_adapter = cast(LightRAGEvidenceAdapter, adapter)
+    backend = concrete_adapter._backend
+    if type(backend) is not LightRAGBackend or not _is_supported_store(backend._store):
+        raise LightRAGAuthorizationError(
+            "LightRAG adapter cannot prove backend-enforced retrieval."
+        )
+    return concrete_adapter
+
+
+def validate_authorized_lightrag_references(
+    references: Iterable[object],
+    authorized_scope: AuthorizedEvidenceRevisionSet,
+    access_filter: EvidenceAccessFilter,
+) -> list[LightRAGEvidenceReference]:
+    """Revalidate and prove every adapter reference belongs to the exact scope."""
+    authorized_scope.revalidate(access_filter)
+    try:
+        candidate_references = list(references)
+    except Exception as error:
+        raise LightRAGAuthorizationError(
+            "LightRAG returned an unreadable reference set for model context."
+        ) from error
+    validated: list[LightRAGEvidenceReference] = []
+    for reference in candidate_references:
+        if not isinstance(reference, LightRAGEvidenceReference):
+            raise LightRAGAuthorizationError(
+                "LightRAG returned a non-reference value for model context."
+            )
+        if not authorized_scope.allows_reference(reference):
+            raise LightRAGAuthorizationError(
+                "LightRAG returned a reference outside the authorized Evidence Revision set."
+            )
+        validated.append(reference.model_copy(deep=True))
+    return validated
 
 
 def _is_authorized_entity(
