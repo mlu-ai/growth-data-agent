@@ -148,3 +148,11 @@ _Avoid_: Role, access level
 A direct identifier that may be returned only to an entitled user through a
 bounded, audited response.
 _Avoid_: PII, personal data
+
+**Active Investigation**:
+A stored reference to one previously selected Candidate Causal Factor's
+`factor_id`, carried forward only as a lookup key; every subsequent turn
+reauthorizes the Agent User and revalidates it against freshly ranked,
+currently authorized Candidate Causal Factors before it is ever presented
+again.
+_Avoid_: Saved factor, cached hypothesis, remembered selection
