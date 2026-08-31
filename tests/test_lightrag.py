@@ -217,6 +217,33 @@ def test_adapter_returns_a_bounded_typed_chain_with_ranked_source_records() -> N
     )
 
 
+def test_chain_preserves_each_retriever_order_within_the_bounded_chain() -> None:
+    first, second = evidence_corpus()[0], evidence_corpus()[1]
+    access_filter = _access_filter()
+
+    chain = LightRAGEvidenceAdapter(
+        LightRAGBackend(_store(first, second)), max_results=6
+    ).retrieve_chain(
+        "APAC provisioning",
+        AuthorizedEvidenceRevisionSet.from_documents(
+            [first, second], access_filter
+        ),
+        access_filter,
+        limit=6,
+    )
+
+    assert len(chain.references) == 6
+    assert [reference.rank for reference in chain.references] == list(range(1, 7))
+    assert [reference.reference_kind for reference in chain.references] == [
+        "chunk",
+        "entity",
+        "relation",
+        "chunk",
+        "entity",
+        "relation",
+    ]
+
+
 def test_chain_validation_rejects_a_forged_source_revision_before_public_use() -> None:
     document = evidence_corpus()[0]
     access_filter = _access_filter()

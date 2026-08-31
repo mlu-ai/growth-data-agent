@@ -1546,9 +1546,11 @@ class AnswerQuestionService:
         if evidence.support_status == EvidenceSupportStatus.SUPPORTS:
             classification = ResultClassification.HYPOTHESIS
             answer = supported_answer
+            evidence_chain = self._public_evidence_chain(investigation.lightrag_chain)
         else:
             classification = ResultClassification.INCONCLUSIVE
             answer = f"{inconclusive_answer} {evidence.support_explanation}"
+            evidence_chain = self._empty_public_evidence_chain()
         return GovernedAnalyticalResponse(
             answer=answer,
             result_classification=classification,
@@ -1556,7 +1558,7 @@ class AnswerQuestionService:
             semantic_query_evidence=query_evidence,
             driver_decomposition=decomposition,
             evidence=evidence,
-            evidence_chain=self._public_evidence_chain(investigation.lightrag_chain),
+            evidence_chain=evidence_chain,
             graph_paths=self._graph_path_citations(investigation.graph_paths),
             source_freshness=freshness,
             effective_access_scope=scope,
@@ -1574,8 +1576,8 @@ class AnswerQuestionService:
 
     @staticmethod
     def _public_evidence_chain(chain) -> EvidenceChain:
-        def reference(source) -> EvidenceChainReference:
-            if source.rank is None:
+        def reference(source, *, require_rank: bool = True) -> EvidenceChainReference:
+            if require_rank and source.rank is None:
                 raise LightRAGAuthorizationError(
                     "LightRAG evidence-chain reference is missing its retrieval rank."
                 )
@@ -1615,6 +1617,8 @@ class AnswerQuestionService:
             relations=[
                 EvidenceChainRelation(
                     reference=reference(record.reference),
+                    source_entity=reference(record.source_entity, require_rank=False),
+                    target_entity=reference(record.target_entity, require_rank=False),
                     source_entity_reference_id=_IDENTIFIER_PATTERN.sub(
                         "[redacted identifier]", record.source_entity.reference_id
                     ),
@@ -1628,6 +1632,12 @@ class AnswerQuestionService:
                 for record in chain.relations
             ],
             references=[reference(source) for source in chain.references],
+        )
+
+    @staticmethod
+    def _empty_public_evidence_chain() -> EvidenceChain:
+        return EvidenceChain(
+            supporting_chunks=[], entities=[], relations=[], references=[]
         )
 
     def _answer_direct_identifier_request(

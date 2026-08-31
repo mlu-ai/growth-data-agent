@@ -270,7 +270,7 @@ class EvidenceChainReference(BaseModel):
 
     reference_id: str
     reference_kind: Literal["chunk", "entity", "relation"]
-    rank: int = Field(gt=0)
+    rank: int | None = Field(default=None, gt=0)
     source_document_id: str
     source_url: str
     source_revision: str
@@ -299,6 +299,8 @@ class EvidenceChainRelation(BaseModel):
     """A bounded graph relation whose endpoints are independently authorized."""
 
     reference: EvidenceChainReference
+    source_entity: EvidenceChainReference
+    target_entity: EvidenceChainReference
     source_entity_reference_id: str
     target_entity_reference_id: str
     description: str

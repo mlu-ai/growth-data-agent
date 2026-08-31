@@ -145,3 +145,20 @@ def test_public_hypothesis_contains_a_cited_lightrag_evidence_chain(client: Test
     ]
     assert chain["references"][0]["chunk_id"] == body["evidence"]["citations"][0]["chunk_id"]
     assert "Hypothesis" in body["answer"]
+
+
+def test_public_relation_carries_both_authorized_entity_provenances(client: TestClient) -> None:
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    relation = response.json()["evidence_chain"]["relations"][0]
+    assert relation["source_entity"]["reference_kind"] == "entity"
+    assert relation["target_entity"]["reference_kind"] == "entity"
+    assert relation["source_entity"]["source_revision"] == "synthetic-v1"
+    assert relation["target_entity"]["source_revision"] == "synthetic-v1"

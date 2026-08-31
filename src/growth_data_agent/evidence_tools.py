@@ -111,7 +111,10 @@ class BoundedEvidenceInvestigationTools:
             authorized_scope,
             evidence_filter,
         )
-        references = lightrag_chain.references
+        # Keep the downstream candidate set anchored to LightRAG's top-ranked
+        # reference; the remaining chain records are explanatory context, not
+        # permission to widen the vector candidate set.
+        references = lightrag_chain.references[:1]
         authorized_document_ids = {
             reference.source_document_id for reference in references
         }
