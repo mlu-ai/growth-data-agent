@@ -265,6 +265,54 @@ class EvidenceAnswer(BaseModel):
     support_explanation: str
 
 
+class EvidenceChainReference(BaseModel):
+    """Safe provenance projection for one ranked LightRAG chain reference."""
+
+    reference_id: str
+    reference_kind: Literal["chunk", "entity", "relation"]
+    rank: int = Field(gt=0)
+    source_document_id: str
+    source_url: str
+    source_revision: str
+    chunk_id: str
+    product: str
+    region: str
+    tenant_scope: str
+
+
+class EvidenceChainChunk(BaseModel):
+    """A raw supporting chunk retained with its exact source provenance."""
+
+    reference: EvidenceChainReference
+    text: str
+
+
+class EvidenceChainEntity(BaseModel):
+    """A bounded entity returned from the authorized graph view."""
+
+    reference: EvidenceChainReference
+    name: str
+    description: str
+
+
+class EvidenceChainRelation(BaseModel):
+    """A bounded graph relation whose endpoints are independently authorized."""
+
+    reference: EvidenceChainReference
+    source_entity_reference_id: str
+    target_entity_reference_id: str
+    description: str
+
+
+class EvidenceChain(BaseModel):
+    """Public graph-assisted evidence, explicitly subordinate to source citations."""
+
+    supporting_chunks: list[EvidenceChainChunk] = Field(max_length=3)
+    entities: list[EvidenceChainEntity] = Field(max_length=3)
+    relations: list[EvidenceChainRelation] = Field(max_length=3)
+    references: list[EvidenceChainReference] = Field(max_length=3)
+
+
 class GraphPathCitation(BaseModel):
     """Safe, bounded presentation of a permitted derived evidence path."""
 
@@ -332,6 +380,7 @@ class GovernedAnalyticalResponse(BaseModel):
     semantic_query_evidence: SemanticQueryEvidence | None = None
     driver_decomposition: DriverDecomposition | None = None
     evidence: EvidenceAnswer | None = None
+    evidence_chain: EvidenceChain | None = None
     causal_registration: CausalDesignRegistration | None = None
     causal_estimate: CausalEstimate | None = None
     descriptive_comparison: DescriptiveComparison | None = None

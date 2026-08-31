@@ -17,8 +17,9 @@ from .lightrag import (
     AuthorizedEvidenceRevisionSet,
     LightRAGAuthorizationError,
     LightRAGEvidenceAdapter,
+    LightRAGEvidenceChain,
     require_governed_lightrag_adapter,
-    validate_authorized_lightrag_references,
+    validate_authorized_lightrag_chain,
 )
 from .observability import trace_span
 from .reranking import (
@@ -39,6 +40,7 @@ class EvidenceInvestigation:
 
     documents: list[EvidenceDocument]
     graph_paths: list[GraphPath]
+    lightrag_chain: LightRAGEvidenceChain
 
 
 class BoundedEvidenceInvestigationTools:
@@ -91,14 +93,16 @@ class BoundedEvidenceInvestigationTools:
             document for document in source_documents if evidence_filter.allows(document)
         ]
         if not authorized_documents:
-            return EvidenceInvestigation(documents=[], graph_paths=[])
+            return EvidenceInvestigation(
+                documents=[], graph_paths=[], lightrag_chain=_empty_lightrag_chain()
+            )
         authorized_scope = AuthorizedEvidenceRevisionSet.from_documents(
             authorized_documents,
             evidence_filter,
             revision_source=revision_reader,
         )
-        references = validate_authorized_lightrag_references(
-            lightrag_adapter.retrieve(
+        lightrag_chain = validate_authorized_lightrag_chain(
+            lightrag_adapter.retrieve_chain(
                 query,
                 authorized_scope,
                 evidence_filter,
@@ -107,6 +111,7 @@ class BoundedEvidenceInvestigationTools:
             authorized_scope,
             evidence_filter,
         )
+        references = lightrag_chain.references
         authorized_document_ids = {
             reference.source_document_id for reference in references
         }
@@ -119,7 +124,9 @@ class BoundedEvidenceInvestigationTools:
             for reference in references
         }
         if not authorized_document_ids:
-            return EvidenceInvestigation(documents=[], graph_paths=[])
+            return EvidenceInvestigation(
+                documents=[], graph_paths=[], lightrag_chain=lightrag_chain
+            )
         graph_filter = GraphAccessFilter(
             products=graph_filter.products,
             regions=graph_filter.regions,
@@ -186,6 +193,7 @@ class BoundedEvidenceInvestigationTools:
                 for path in graph_paths
                 if graph_filter.allows(path)
             ][:_MAX_EVIDENCE_TOOL_RESULTS],
+            lightrag_chain=lightrag_chain,
         )
 
     def _rerank_authorized_documents(
@@ -228,3 +236,9 @@ class BoundedEvidenceInvestigationTools:
         if not ordered_documents:
             raise EvidenceRerankingError("The cross-encoder returned no evidence ranking.")
         return ordered_documents[:limit]
+
+
+def _empty_lightrag_chain() -> LightRAGEvidenceChain:
+    return LightRAGEvidenceChain(
+        supporting_chunks=[], entities=[], relations=[], references=[]
+    )
