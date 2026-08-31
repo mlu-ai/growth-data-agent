@@ -48,6 +48,7 @@ from .evidence import (
     EvidenceDocument,
     QdrantEvidenceStore,
     VectorEvidenceStore,
+    _document_revision_key,
     _evidence_revision_key,
     build_evidence_answer,
     embedding_readiness,
@@ -63,6 +64,7 @@ from .graph import (
     ApacheAgeEvidenceGraphStore,
     EvidenceGraphStore,
     EvidenceGraphUnavailableError,
+    GraphAccessFilter,
     InMemoryEvidenceGraphStore,
 )
 from .lightrag import (
@@ -105,6 +107,7 @@ from .observability import (
 from .planning import (
     PlanActionExecution,
     PlanExecutionSnapshot,
+    RevisionIdentity,
 )
 from .policy import (
     AccessDeniedError,
@@ -145,6 +148,9 @@ class _PlannedInvestigationState:
     evidence_filter: EvidenceAccessFilter | None = None
     graph_filter: Any = None
     cited_evidence: CitedEvidencePreparation | None = None
+    validated_evidence_revision_identities: tuple[RevisionIdentity, ...] = ()
+    current_evidence_filter: EvidenceAccessFilter | None = None
+    current_graph_filter: GraphAccessFilter | None = None
     graph_paths: list[Any] = field(default_factory=list)
     response: GovernedAnalyticalResponse | None = None
 
@@ -334,18 +340,87 @@ class AnswerQuestionService:
     def _planning_snapshot(
         self, authorized_execution: AuthorizedExecution, payload: object | None
     ) -> PlanExecutionSnapshot:
-        evidence_revision_keys: tuple[tuple[str, str, str], ...] = ()
-        if isinstance(payload, _PlannedInvestigationState) and payload.cited_evidence is not None:
-            evidence_revision_keys = tuple(
-                _evidence_revision_key(document)
-                for document in payload.cited_evidence.documents
-            )
+        current_profile = resolve_access_profile(authorized_execution.request.agent_user_id)
+        semantic_current = self._semantic_is_current(authorized_execution)
+        evidence_revision_keys: tuple[RevisionIdentity, ...] = ()
+        if isinstance(payload, _PlannedInvestigationState) and payload.region is not None:
+            try:
+                current_filter = self._current_planned_evidence_filter(payload, current_profile)
+                payload.current_evidence_filter = current_filter
+                evidence_revision_keys = self._authorized_active_evidence_manifest(current_filter)
+                if (
+                    payload.validated_evidence_revision_identities
+                    and payload.cited_evidence is not None
+                ):
+                    payload.current_graph_filter = self._current_planned_graph_filter(
+                        payload, current_profile, current_filter
+                    )
+            except Exception:
+                # A missing authoritative manifest is itself a failed freshness proof.
+                semantic_current = False
+                if payload.validated_evidence_revision_identities:
+                    evidence_revision_keys = (("__manifest_unavailable__", "", "", ""),)
         return PlanExecutionSnapshot(
-            policy_fingerprint=policy_fingerprint(
-                resolve_access_profile(authorized_execution.request.agent_user_id)
-            ),
-            semantic_current=self._semantic_is_current(authorized_execution),
+            policy_fingerprint=policy_fingerprint(current_profile),
+            semantic_current=semantic_current,
             evidence_revision_keys=evidence_revision_keys,
+        )
+
+    def _current_planned_evidence_filter(
+        self, state: _PlannedInvestigationState, profile
+    ) -> EvidenceAccessFilter:
+        product = cast(str, self._metric_product(state.metric_name))
+        return profile.evidence_filter(
+            product,
+            cast(str, state.region),
+            seat_tier=state.seat_tier if state.scope_evidence_to_seat_tier else None,
+            metric_name=state.metric_name,
+            agent_user_id=state.authorized_execution.request.agent_user_id,
+        )
+
+    def _authorized_active_evidence_manifest(
+        self, access_filter: EvidenceAccessFilter
+    ) -> tuple[RevisionIdentity, ...]:
+        """Read current active revision identity from the authoritative evidence source."""
+        revision_reader = getattr(self.evidence_store, "authorized_revisions", None)
+        if callable(revision_reader):
+            documents = tuple(revision_reader(access_filter))
+        else:
+            source_documents = getattr(self.evidence_store, "documents", None)
+            if source_documents is None:
+                raise LightRAGAuthorizationError(
+                    "Current authorized evidence revisions are unavailable."
+                )
+            documents = tuple(source_documents)
+        return tuple(
+            sorted(
+                _document_revision_key(document)
+                for document in documents
+                if access_filter.allows(document)
+            )
+        )
+
+    def _current_planned_graph_filter(
+        self,
+        state: _PlannedInvestigationState,
+        profile,
+        evidence_filter: EvidenceAccessFilter,
+    ) -> GraphAccessFilter:
+        if state.cited_evidence is None or state.cited_evidence.graph_filter is None:
+            raise LightRAGAuthorizationError("The graph scope is unavailable.")
+        graph_filter = profile.graph_filter(
+            cast(str, self._metric_product(state.metric_name)),
+            cast(str, state.region),
+            seat_tier=state.seat_tier if state.scope_evidence_to_seat_tier else None,
+        )
+        cited_graph_filter = state.cited_evidence.graph_filter
+        return replace(
+            graph_filter,
+            groups=evidence_filter.groups,
+            agent_user_id=evidence_filter.agent_user_id,
+            as_of=evidence_filter.as_of,
+            authorized_document_ids=cited_graph_filter.authorized_document_ids,
+            authorized_revision_keys=cited_graph_filter.authorized_revision_keys,
         )
 
     @staticmethod
@@ -554,18 +629,20 @@ class AnswerQuestionService:
             state.region,
             seat_tier=state.seat_tier if state.scope_evidence_to_seat_tier else None,
         )
+        if state.current_evidence_filter is not None:
+            state.evidence_filter = state.current_evidence_filter
         state.cited_evidence = self.evidence_tools.retrieve_cited_evidence(
             query=state.evidence_query,
             evidence_filter=state.evidence_filter,
             graph_filter=state.graph_filter,
             metric_name=state.metric_name,
         )
+        state.validated_evidence_revision_identities = (
+            state.cited_evidence.authorized_revision_identities
+        )
         return PlanActionExecution(
             payload=state,
-            evidence_revision_keys=tuple(
-                _evidence_revision_key(document)
-                for document in state.cited_evidence.documents
-            ),
+            evidence_revision_keys=state.validated_evidence_revision_identities,
         )
 
     def _run_plan_lightrag(
@@ -573,10 +650,10 @@ class AnswerQuestionService:
     ) -> PlanActionExecution:
         if state.cited_evidence is None:
             raise RuntimeError("LightRAG requires a successful cited-evidence action.")
-        if state.cited_evidence.graph_filter is not None and state.evidence_query is not None:
+        if state.current_graph_filter is not None and state.evidence_query is not None:
             state.graph_paths = self._traverse_graph(
                 state.evidence_query,
-                state.cited_evidence.graph_filter,
+                state.current_graph_filter,
                 limit=3,
                 metric_name=state.metric_name,
             )
@@ -584,10 +661,7 @@ class AnswerQuestionService:
         return PlanActionExecution(
             value=response,
             payload=state,
-            evidence_revision_keys=tuple(
-                _evidence_revision_key(document)
-                for document in state.cited_evidence.documents
-            ),
+            evidence_revision_keys=state.validated_evidence_revision_identities,
         )
 
     def _driver_response_from_plan(self, state: _PlannedInvestigationState):

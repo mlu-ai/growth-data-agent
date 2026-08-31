@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 _MAX_PLAN_ACTIONS = 3
 _MAX_REPLANS = 2
+RevisionIdentity = tuple[str, str, str, str]
 
 
 class PlanningInvariantError(ValueError):
@@ -36,7 +37,7 @@ class PlanExecutionSnapshot:
 
     policy_fingerprint: str
     semantic_current: bool
-    evidence_revision_keys: tuple[tuple[str, str, str], ...]
+    evidence_revision_keys: tuple[RevisionIdentity, ...]
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class PlanActionExecution:
 
     value: object | None = None
     payload: object | None = None
-    evidence_revision_keys: tuple[tuple[str, str, str], ...] = ()
+    evidence_revision_keys: tuple[RevisionIdentity, ...] = ()
     stop: bool = False
 
 
@@ -66,7 +67,7 @@ class LeadAgentPlanner:
         authorized_execution: AuthorizedExecution,
         *,
         semantic_current: bool,
-        evidence_revision_keys: Iterable[tuple[str, str, str]] = (),
+        evidence_revision_keys: Iterable[tuple[str, ...]] = (),
     ) -> LeadAgentMetadata | None:
         if intent.route not in {
             AnalyticalRoute.DRIVER_DECOMPOSITION,
@@ -95,7 +96,7 @@ class LeadAgentPlanner:
         *,
         current_policy_fingerprint: str,
         semantic_current: bool,
-        evidence_revision_keys: Iterable[tuple[str, str, str]],
+        evidence_revision_keys: Iterable[tuple[str, ...]],
     ) -> LeadAgentMetadata:
         """Record one result and select only the next action already in the plan."""
         if metadata.current_action is None:
@@ -233,14 +234,23 @@ def _plan_for_route(
 
 
 def _fingerprint_revision_keys(
-    revision_keys: Iterable[tuple[str, str, str]],
+    revision_keys: Iterable[tuple[str, ...]],
 ) -> list[str]:
     return sorted(
         {
-            sha256("\x1f".join(key).encode("utf-8")).hexdigest()
+            sha256("\x1f".join(_normalize_revision_identity(key)).encode("utf-8")).hexdigest()
             for key in revision_keys
         }
     )
+
+
+def _normalize_revision_identity(key: tuple[str, ...]) -> RevisionIdentity:
+    """Keep old three-part callers compatible while hashing the full identity."""
+    if len(key) == 3:
+        return (*key, "")
+    if len(key) == 4:
+        return key
+    raise ValueError("Evidence revision identity must contain three or four parts.")
 
 
 def _validate_snapshot(metadata: LeadAgentMetadata, snapshot: PlanExecutionSnapshot) -> None:

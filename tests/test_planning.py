@@ -253,6 +253,28 @@ def test_replan_rejects_stale_semantic_or_evidence_state() -> None:
         )
 
 
+def test_revision_fingerprint_is_part_of_the_planning_identity() -> None:
+    planner = LeadAgentPlanner()
+    authorized = _authorized()
+
+    first = planner.start(
+        AnalyticalIntent(route=AnalyticalRoute.LEGACY, metric_name="jira_new_peu"),
+        authorized,
+        semantic_current=True,
+        evidence_revision_keys=(("doc-1", "revision-1", "chunk-1", "fingerprint-a"),),
+    )
+    second = planner.start(
+        AnalyticalIntent(route=AnalyticalRoute.LEGACY, metric_name="jira_new_peu"),
+        authorized,
+        semantic_current=True,
+        evidence_revision_keys=(("doc-1", "revision-1", "chunk-1", "fingerprint-b"),),
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.evidence_revision_fingerprints != second.evidence_revision_fingerprints
+
+
 def test_replan_rejects_entitlement_expansion() -> None:
     planner = LeadAgentPlanner()
     metadata = planner.start(

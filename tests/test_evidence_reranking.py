@@ -71,6 +71,52 @@ class RecordingEvidenceStore:
         ][:limit]
 
 
+class RevokingEvidenceStore(RecordingEvidenceStore):
+    """Revoke the validated source scope after cited retrieval completes."""
+
+    def __init__(self, documents: list[EvidenceDocument]) -> None:
+        super().__init__(documents)
+        self.revoked = False
+
+    def authorized_revisions(self, access_filter):
+        if self.revoked:
+            return []
+        return [
+            document.model_copy(deep=True)
+            for document in self.documents
+            if access_filter.allows(document)
+        ]
+
+    def retrieve_scoped(
+        self,
+        query,
+        access_filter,
+        authorized_document_ids,
+        *,
+        limit,
+        authorized_revision_keys,
+    ):
+        result = super().retrieve_scoped(
+            query,
+            access_filter,
+            authorized_document_ids,
+            limit=limit,
+            authorized_revision_keys=authorized_revision_keys,
+        )
+        self.revoked = True
+        return result
+
+
+class RecordingGraphStore:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def traverse(self, query, access_filter, *, limit):
+        del query, access_filter, limit
+        self.calls += 1
+        return []
+
+
 class RecordingReranker:
     model_name = "test-cross-encoder"
     model_version = "1"
@@ -124,6 +170,7 @@ def _client(
     tmp_path: Path,
     evidence_store: RecordingEvidenceStore,
     reranker=None,
+    graph_store=None,
 ) -> TestClient:
     artifact_path = write_artifact(tmp_path / "semantic.json")
     gateway = ValidatedMetricFlowGateway(
@@ -151,6 +198,7 @@ def _client(
                 gateway,
                 evidence_store=evidence_store,
                 evidence_reranker=reranker,
+                graph_store=graph_store,
                 lightrag_adapter=lightrag_adapter,
             )
         )
@@ -217,6 +265,30 @@ def test_only_active_driver_candidates_reach_the_cross_encoder_and_response(
     assert "wrong-metric-evidence" not in response.text
     assert response.json()["evidence"]["citations"][0]["source_url"] == second_supporting.source_url
     assert response.json()["evidence"]["citations"][0]["source_revision"] == "43"
+
+
+def test_revoked_authoritative_revision_blocks_graph_traversal_after_cited_retrieval(
+    tmp_path: Path,
+) -> None:
+    evidence_store = RevokingEvidenceStore(list(evidence_corpus()))
+    graph_store = RecordingGraphStore()
+    client = _client(
+        tmp_path,
+        evidence_store,
+        reranker=RecordingReranker(),
+        graph_store=graph_store,
+    )
+
+    response = client.post(
+        "/answer_question",
+        json={"agent_user_id": "data_analyst", "question": _evidence_question()},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result_classification"] == "limitation"
+    assert graph_store.calls == 0
+    metadata = response.json()["lead_agent_metadata"]
+    assert metadata["last_replan_reason"] == "invariant_blocked"
 
 
 def test_reranker_cannot_introduce_a_candidate_outside_the_authorized_set(

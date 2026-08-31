@@ -10,6 +10,7 @@ from .evidence import (
     EvidenceAccessFilter,
     EvidenceDocument,
     VectorEvidenceStore,
+    _document_revision_key,
     _evidence_revision_key,
 )
 from .graph import GraphAccessFilter, GraphPath
@@ -50,6 +51,7 @@ class CitedEvidencePreparation:
     documents: list[EvidenceDocument]
     graph_filter: GraphAccessFilter | None
     lightrag_chain: LightRAGEvidenceChain
+    authorized_revision_identities: tuple[tuple[str, str, str, str], ...] = ()
 
 
 class BoundedEvidenceInvestigationTools:
@@ -136,9 +138,15 @@ class BoundedEvidenceInvestigationTools:
         authorized_documents = [
             document for document in source_documents if evidence_filter.allows(document)
         ]
+        authorized_revision_identities = tuple(
+            sorted(_document_revision_key(document) for document in authorized_documents)
+        )
         if not authorized_documents:
             return CitedEvidencePreparation(
-                documents=[], graph_filter=None, lightrag_chain=_empty_lightrag_chain()
+                documents=[],
+                graph_filter=None,
+                lightrag_chain=_empty_lightrag_chain(),
+                authorized_revision_identities=authorized_revision_identities,
             )
         authorized_scope = AuthorizedEvidenceRevisionSet.from_documents(
             authorized_documents,
@@ -177,7 +185,10 @@ class BoundedEvidenceInvestigationTools:
         }
         if not authorized_document_ids:
             return CitedEvidencePreparation(
-                documents=[], graph_filter=None, lightrag_chain=lightrag_chain
+                documents=[],
+                graph_filter=None,
+                lightrag_chain=lightrag_chain,
+                authorized_revision_identities=authorized_revision_identities,
             )
         graph_filter = GraphAccessFilter(
             products=graph_filter.products,
@@ -236,6 +247,7 @@ class BoundedEvidenceInvestigationTools:
                 documents=documents,
                 graph_filter=graph_filter,
                 lightrag_chain=lightrag_chain,
+                authorized_revision_identities=authorized_revision_identities,
             )
 
     def _rerank_authorized_documents(
