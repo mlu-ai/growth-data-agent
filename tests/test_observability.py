@@ -10,6 +10,13 @@ from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, writ
 from fastapi.testclient import TestClient
 
 from growth_data_agent.graph import EvidenceGraphUnavailableError
+from growth_data_agent.lightrag import (
+    InMemoryLightRAGStore,
+    LightRAGBackend,
+    LightRAGChunkRecord,
+    LightRAGEvidenceAdapter,
+    LightRAGEvidenceReference,
+)
 from growth_data_agent.main import create_app
 from growth_data_agent.observability import (
     MlflowTraceSink,
@@ -21,6 +28,7 @@ from growth_data_agent.policy import resolve_access_profile
 from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
+from growth_data_agent.synthetic import evidence_corpus
 
 
 class RecordingMlflow:
@@ -189,9 +197,7 @@ def test_mlflow_trace_drops_unstructured_prose_and_arbitrary_identifier_values()
             "support_explanation": raw_source,
             "page_content": raw_source,
             "direct_identifier_answer": {
-                "identifiers": [
-                    {"identifier_type": "tenant_id", "value": raw_identifier}
-                ]
+                "identifiers": [{"identifier_type": "tenant_id", "value": raw_identifier}]
             },
         },
         node_spans=(
@@ -409,6 +415,19 @@ def test_dependency_failure_is_fail_closed_and_traced(tmp_path: Path) -> None:
             AnswerQuestionService(
                 gateway,
                 graph_store=FailingGraphStore(),
+                lightrag_adapter=LightRAGEvidenceAdapter(
+                    LightRAGBackend(
+                        InMemoryLightRAGStore(
+                            chunks=[
+                                LightRAGChunkRecord(
+                                    reference=LightRAGEvidenceReference.from_document(document),
+                                    text=document.text,
+                                )
+                                for document in evidence_corpus()
+                            ]
+                        )
+                    )
+                ),
                 trace_sink=trace_sink,
             )
         )
@@ -497,9 +516,7 @@ def test_authorization_denial_is_traced_before_source_retrieval(tmp_path: Path) 
         now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
     )
     trace_sink = RecordingTraceSink()
-    client = TestClient(
-        create_app(AnswerQuestionService(gateway, trace_sink=trace_sink))
-    )
+    client = TestClient(create_app(AnswerQuestionService(gateway, trace_sink=trace_sink)))
 
     response = client.post(
         "/answer_question",

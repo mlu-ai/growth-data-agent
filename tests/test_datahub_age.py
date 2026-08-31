@@ -17,10 +17,11 @@ from growth_data_agent.datahub import (
     DataHubMetadataPublisher,
     InMemoryDataHubCatalog,
 )
-from growth_data_agent.evidence import EvidenceAccessFilter
+from growth_data_agent.evidence import EvidenceAccessFilter, EvidenceDocument
 from growth_data_agent.graph import (
     ApacheAgeEvidenceGraphMaterializer,
     ApacheAgeEvidenceGraphStore,
+    DerivedEvidenceGraphBuilder,
     EvidenceGraphUnavailableError,
     GraphAccessFilter,
     GraphNode,
@@ -564,6 +565,33 @@ def test_apache_age_query_is_parameterized_with_the_pre_authorized_scope() -> No
     assert "graph_namespace" in cypher
 
 
+def test_apache_age_empty_group_scope_matches_python_policy() -> None:
+    path = graph_corpus()[0].model_copy(deep=True)
+    for node in path.nodes:
+        node.access_groups = ["regional-managers"]
+    metric = path.nodes[0]
+    executor = RecordingAgeQueryExecutor([path])
+    store = ApacheAgeEvidenceGraphStore(executor)
+    access_filter = GraphAccessFilter(
+        products=(metric.product,),
+        regions=(metric.region,),
+        tenant_ids=tuple(metric.tenant_ids),
+        classifications=(metric.classification,),
+        identifier_entitlements=(metric.identifier_entitlement,),
+        groups=(),
+    )
+
+    assert store.traverse(
+        "Jira APAC evidence",
+        access_filter,
+        limit=3,
+        metric_name=metric.node_id,
+    ) == [path]
+    cypher, parameters = executor.calls[0]
+    assert "size($groups) = 0 OR" in cypher
+    assert parameters["groups"] == []
+
+
 def test_age_post_filter_rejects_a_chain_for_the_wrong_metric() -> None:
     wrong_metric = GraphPath(
         path_id="wrong-metric-chain",
@@ -944,6 +972,85 @@ def test_age_materializer_replaces_graph_from_approved_metadata() -> None:
     empty_result = ApacheAgeEvidenceGraphMaterializer(empty_executor).replace([], [])
     assert empty_result.path_count == 0
     assert empty_executor.calls[0][1] == {"graph_namespace": "growth-data-agent"}
+
+
+def test_same_scope_revisions_remain_independent_in_materialized_graph() -> None:
+    base_document = evidence_corpus()[0]
+    revision_one = base_document.model_copy(
+        update={"source_revision": "revision-1", "revision_fingerprint": "fingerprint-1"}
+    )
+    revision_two = base_document.model_copy(
+        update={"source_revision": "revision-2", "revision_fingerprint": "fingerprint-2"}
+    )
+    catalog_entity = DataHubEntityMetadata(
+        entity_name="jira_new_peu",
+        entity_type="metric",
+        urn="urn:li:dataset:(urn:li:dataPlatform:dbt,metric/jira_new_peu,PROD)",
+        product="Jira",
+        owners=["growth-data"],
+        classification="internal",
+        discovery_tags=["canonical-metric"],
+        description="Jira New PEU.",
+        semantic_version="1.0.0",
+        source_artifact_sha256="artifact",
+        published_at="2026-08-25T00:00:00Z",
+    )
+    mutation_executor = RecordingAgeMutationExecutor()
+
+    result = ApacheAgeEvidenceGraphMaterializer(mutation_executor).replace(
+        [catalog_entity], [revision_one, revision_two]
+    )
+
+    assert result.path_count == 2
+    assert result.node_count == 8
+    nodes = mutation_executor.calls[1][1]["nodes"]
+    incident_nodes = [node for node in nodes if node["node_type"] == "incident"]
+    assert len(incident_nodes) == 2
+    assert {node["source_revision"] for node in incident_nodes} == {
+        "revision-1",
+        "revision-2",
+    }
+    assert len({node["node_key"] for node in incident_nodes}) == 2
+
+    paths = DerivedEvidenceGraphBuilder().build(
+        [catalog_entity], [revision_one, revision_two]
+    )
+    graph_store = InMemoryEvidenceGraphStore(paths)
+
+    def traverse_revision(document: EvidenceDocument, revision: str) -> list[GraphPath]:
+        return graph_store.traverse(
+            "Jira APAC provisioning",
+            GraphAccessFilter(
+                products=(document.product,),
+                regions=(document.region,),
+                tenant_ids=tuple(document.tenant_ids),
+                classifications=(document.classification,),
+                identifier_entitlements=(document.identifier_entitlement,),
+                groups=tuple(document.access_groups),
+                agent_user_id="apac_regional_manager",
+                as_of=datetime(2026, 8, 25, tzinfo=UTC),
+                authorized_document_ids=(document.source_document_id or document.document_id,),
+                authorized_revision_keys=(
+                    (
+                        document.source_document_id or document.document_id,
+                        revision,
+                        document.chunk_id or f"{document.document_id}:chunk:0",
+                    ),
+                ),
+            ),
+            limit=3,
+            metric_name=document.metric_name,
+        )
+
+    revision_one_paths = traverse_revision(revision_one, "revision-1")
+    revision_two_paths = traverse_revision(revision_two, "revision-2")
+    assert len(revision_one_paths) == len(revision_two_paths) == 1
+    assert {
+        node.source_revision for node in revision_one_paths[0].nodes
+    } == {"revision-1"}
+    assert {
+        node.source_revision for node in revision_two_paths[0].nodes
+    } == {"revision-2"}
 
 
 def test_graph_filter_is_derived_before_traversal_and_restricted_paths_are_not_returned(

@@ -6,15 +6,21 @@ import json
 import os
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import LiteralString, Protocol, cast
 
 import psycopg
 from psycopg import sql
 from pydantic import BaseModel, Field, model_validator
 
 from .datahub import DataHubEntityMetadata, _metric_name_for_model
-from .evidence import EvidenceDocument
+from .evidence import (
+    EvidenceDocument,
+    EvidenceLifecycleState,
+    EvidencePrincipalGrant,
+    _provenance_for,
+)
 
 
 class GraphNode(BaseModel):
@@ -30,6 +36,17 @@ class GraphNode(BaseModel):
     identifier_entitlement: str
     seat_tiers: list[str] = Field(default_factory=list)
     graph_namespace: str | None = None
+    source_document_id: str | None = None
+    source_url: str | None = None
+    source_revision: str | None = None
+    chunk_id: str | None = None
+    revision_fingerprint: str | None = None
+    source_page_id: str | None = None
+    metric_name: str | None = None
+    access_groups: list[str] = Field(default_factory=list)
+    direct_principal_grants: list[EvidencePrincipalGrant] = Field(default_factory=list)
+    policy_expires_at: datetime | None = None
+    lifecycle_state: EvidenceLifecycleState | None = None
 
 
 class GraphPath(BaseModel):
@@ -90,6 +107,11 @@ class GraphAccessFilter:
     classifications: tuple[str, ...]
     identifier_entitlements: tuple[str, ...]
     seat_tiers: tuple[str, ...] = ()
+    authorized_document_ids: tuple[str, ...] = ()
+    authorized_revision_keys: tuple[tuple[str, str, str], ...] = ()
+    groups: tuple[str, ...] = ()
+    agent_user_id: str | None = None
+    as_of: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def allows(self, path: GraphPath) -> bool:
         """Apply the policy to every node before a path reaches response generation."""
@@ -101,10 +123,50 @@ class GraphAccessFilter:
             and node.classification in self.classifications
             and node.identifier_entitlement in self.identifier_entitlements
             and (
+                not self.authorized_revision_keys
+                or node.lifecycle_state is EvidenceLifecycleState.ACTIVE
+            )
+            and (
+                not self.authorized_revision_keys
+                or (node.policy_expires_at is not None and node.policy_expires_at > self.as_of)
+            )
+            and (
+                not self.groups
+                or not node.access_groups
+                or bool(set(node.access_groups).intersection(self.groups))
+            )
+            and (
+                not node.direct_principal_grants
+                or any(
+                    grant.principal_id == self.agent_user_id
+                    and grant.expires_at > self.as_of
+                    for grant in node.direct_principal_grants
+                )
+            )
+            and (
                 not self.seat_tiers
                 or (
                     bool(node.seat_tiers)
                     and set(node.seat_tiers).issubset(self.seat_tiers)
+                )
+            )
+            and (
+                not self.authorized_document_ids and not self.authorized_revision_keys
+                or (
+                    bool(self.authorized_revision_keys)
+                    and all(
+                        candidate.source_document_id is not None
+                        and _graph_node_matches_authorized_scope(candidate, self)
+                        for candidate in path.nodes
+                    )
+                )
+                or (
+                    not self.authorized_revision_keys
+                    and any(
+                        _graph_node_matches_authorized_scope(candidate, self)
+                        for candidate in path.nodes
+                        if candidate.node_type in {"incident", "team"}
+                    )
                 )
             )
             for node in path.nodes
@@ -142,9 +204,11 @@ WHERE metric.node_type = $metric_node_type
   AND nodes(path)[1].node_type = $segment_node_type
   AND nodes(path)[2].node_type = $tenant_node_type
   AND (
-    (size(nodes(path)) = 4 AND {node_filters_4})
+    (size(nodes(path)) = 4 AND {node_filters_4}
+      AND {authorized_revision_filter_4})
     OR (size(nodes(path)) = 5 AND nodes(path)[3].node_type = $campaign_node_type
-        AND nodes(path)[4].node_type = $team_node_type AND {node_filters_5})
+        AND nodes(path)[4].node_type = $team_node_type AND {node_filters_5}
+        AND {authorized_revision_filter_5})
   )
 RETURN path
 LIMIT {limit}
@@ -201,7 +265,10 @@ class ApacheAgeEvidenceGraphStore:
         """Push every entitlement into AGE and defensively filter returned paths."""
         self.last_filter = access_filter
         query_limit = min(max(limit * 10, limit), _MAX_GRAPH_RESULT_LIMIT)
-        self.last_query = _age_evidence_chain_query(query_limit)
+        self.last_query = _age_evidence_chain_query(
+            query_limit,
+            access_filter.authorized_revision_keys,
+        )
         if not access_filter.tenant_ids or not metric_name:
             self.last_parameters = None
             return []
@@ -222,6 +289,12 @@ class ApacheAgeEvidenceGraphStore:
             "classifications": list(access_filter.classifications),
             "identifier_entitlements": list(access_filter.identifier_entitlements),
             "seat_tiers": list(access_filter.seat_tiers),
+            "groups": list(access_filter.groups),
+            "agent_user_id": access_filter.agent_user_id,
+            "as_of": access_filter.as_of,
+            "active_lifecycle_state": EvidenceLifecycleState.ACTIVE.value,
+            "authorized_document_ids": list(access_filter.authorized_document_ids),
+            **_authorized_revision_parameters(access_filter.authorized_revision_keys),
         }
         paths = self.query_executor.query(self.last_query, self.last_parameters)
         return [
@@ -432,7 +505,7 @@ def _age_cstring_literal(value: str) -> sql.SQL:
     for tag in ("gda", "gda1", "gda2", "gda3", "gda4"):
         delimiter = f"${tag}$"
         if delimiter not in value:
-            return sql.SQL(f"{delimiter}{value}{delimiter}")
+            return sql.SQL(cast(LiteralString, f"{delimiter}{value}{delimiter}"))
     raise ValueError("AGE Cypher query contains an unsupported dollar-quote delimiter.")
 
 
@@ -511,6 +584,7 @@ class DerivedEvidenceGraphBuilder:
                     classification=metric.classification,
                     identifier_entitlement="none",
                     seat_tier=seat_tier,
+                    evidence_document=document,
                 ),
                 _derived_node(
                     node_id=f"segment-{_slug(document.tenant_scope)}",
@@ -522,6 +596,7 @@ class DerivedEvidenceGraphBuilder:
                     classification=classification,
                     identifier_entitlement=document.identifier_entitlement,
                     seat_tier=seat_tier,
+                    evidence_document=document,
                 ),
                 _derived_node(
                     node_id=tenant_id,
@@ -533,6 +608,7 @@ class DerivedEvidenceGraphBuilder:
                     classification=classification,
                     identifier_entitlement=document.identifier_entitlement,
                     seat_tier=seat_tier,
+                    evidence_document=document,
                 ),
             ]
             document_node_type = "team" if "campaign" in document.document_id else "incident"
@@ -551,6 +627,7 @@ class DerivedEvidenceGraphBuilder:
                     classification=classification,
                     identifier_entitlement=document.identifier_entitlement,
                     seat_tier=seat_tier,
+                    evidence_document=document,
                 )
             )
             path_id = (
@@ -598,7 +675,10 @@ def _query_terms(query: str) -> list[str]:
     return terms or [""]
 
 
-def _age_evidence_chain_query(limit: int) -> str:
+def _age_evidence_chain_query(
+    limit: int,
+    authorized_revision_keys: tuple[tuple[str, str, str], ...] = (),
+) -> str:
     """Bound the AGE result limit as a SQL/Cypher literal, not an external variable."""
     if not 1 <= limit <= _MAX_GRAPH_RESULT_LIMIT:
         raise ValueError(f"AGE graph result limit must be between 1 and {_MAX_GRAPH_RESULT_LIMIT}.")
@@ -606,7 +686,59 @@ def _age_evidence_chain_query(limit: int) -> str:
         limit=limit,
         node_filters_4=" AND ".join(_age_node_access_filter(index) for index in range(4)),
         node_filters_5=" AND ".join(_age_node_access_filter(index) for index in range(5)),
+        authorized_revision_filter_4=_authorized_revision_filter(
+            tuple(range(4)), authorized_revision_keys
+        ),
+        authorized_revision_filter_5=_authorized_revision_filter(
+            tuple(range(5)), authorized_revision_keys
+        ),
     )
+
+
+def _authorized_revision_filter(
+    indices: tuple[int, ...],
+    revision_keys: tuple[tuple[str, str, str], ...],
+) -> str:
+    if not revision_keys:
+        if not indices:
+            return "TRUE"
+        return " AND ".join(
+            "(size($authorized_document_ids) = 0 OR " \
+            "(size($authorized_document_ids) > 0 AND COALESCE(" \
+            f"nodes(path)[{index}].source_document_id, nodes(path)[{index}].node_id) " \
+            "IN $authorized_document_ids))"
+            for index in indices
+        ) or "TRUE"
+    return " AND ".join(
+        "(" + " OR ".join(
+            " AND ".join(
+                (
+                    f"COALESCE(nodes(path)[{index}].source_document_id, "
+                    f"nodes(path)[{index}].node_id) = "
+                    f"$authorized_source_document_id_{position}",
+                    f"nodes(path)[{index}].source_revision = "
+                    f"$authorized_source_revision_{position}",
+                    f"nodes(path)[{index}].chunk_id = $authorized_chunk_id_{position}",
+                )
+            )
+            for position, _ in enumerate(revision_keys)
+        ) + ")"
+        for index in indices
+    ) or "FALSE"
+
+
+def _authorized_revision_parameters(
+    revision_keys: tuple[tuple[str, str, str], ...],
+) -> dict[str, object]:
+    return {
+        f"authorized_{field}_{position}": value
+        for position, revision_key in enumerate(revision_keys)
+        for field, value in zip(
+            ("source_document_id", "source_revision", "chunk_id"),
+            revision_key,
+            strict=True,
+        )
+    }
 
 
 def _age_node_access_filter(index: int) -> str:
@@ -621,6 +753,13 @@ def _age_node_access_filter(index: int) -> str:
             f"{node}.tenant_ids[0] IN $tenant_ids",
             f"{node}.classification IN $classifications",
             f"{node}.identifier_entitlement IN $identifier_entitlements",
+            f"{node}.lifecycle_state = $active_lifecycle_state",
+            f"{node}.policy_expires_at > $as_of",
+            f"(size($groups) = 0 OR size(coalesce({node}.access_groups, [])) = 0 OR "
+            f"ANY(group IN {node}.access_groups WHERE group IN $groups))",
+            f"(size(coalesce({node}.direct_principal_grants, [])) = 0 OR "
+            f"ANY(grant IN {node}.direct_principal_grants WHERE "
+            f"grant.principal_id = $agent_user_id AND grant.expires_at > $as_of))",
         )
     )
 
@@ -629,6 +768,25 @@ def _path_matches_query(path: GraphPath, query: str) -> bool:
     """Apply text matching after bounded retrieval when AGE lacks any()/all()."""
     terms = _query_terms(query)
     return any(term in node.label.casefold() for node in path.nodes for term in terms)
+
+
+def _graph_node_matches_authorized_scope(
+    node: GraphNode,
+    access_filter: GraphAccessFilter,
+) -> bool:
+    if access_filter.authorized_revision_keys:
+        return any(
+            (node.source_document_id or node.node_id) == source_document_id
+            and node.source_revision == source_revision
+            and node.chunk_id == chunk_id
+            for source_document_id, source_revision, chunk_id in (
+                access_filter.authorized_revision_keys
+            )
+        )
+    return (
+        node.node_id in access_filter.authorized_document_ids
+        or node.source_document_id in access_filter.authorized_document_ids
+    )
 
 
 def _is_supported_evidence_chain(path: GraphPath, *, metric_name: str | None = None) -> bool:
@@ -663,8 +821,25 @@ def _derived_node(
     classification: str,
     identifier_entitlement: str,
     seat_tier: str | None,
+    evidence_document: EvidenceDocument | None = None,
     graph_namespace: str = "growth-data-agent",
 ) -> GraphNode:
+    evidence_metadata = {}
+    if evidence_document is not None:
+        provenance = _provenance_for(evidence_document)
+        evidence_metadata = {
+            "source_document_id": provenance.source_document_id,
+            "source_url": provenance.source_url,
+            "source_revision": provenance.source_revision,
+            "chunk_id": provenance.chunk_id,
+            "revision_fingerprint": evidence_document.revision_fingerprint,
+            "source_page_id": evidence_document.source_page_id,
+            "metric_name": evidence_document.metric_name,
+            "access_groups": list(evidence_document.access_groups),
+            "direct_principal_grants": list(evidence_document.direct_principal_grants),
+            "policy_expires_at": evidence_document.policy_expires_at,
+            "lifecycle_state": evidence_document.lifecycle_state,
+        }
     return GraphNode(
         node_id=node_id,
         node_type=node_type,
@@ -676,6 +851,7 @@ def _derived_node(
         identifier_entitlement=identifier_entitlement,
         seat_tiers=[seat_tier] if seat_tier else [],
         graph_namespace=graph_namespace,
+        **evidence_metadata,
     )
 
 
@@ -691,6 +867,13 @@ def _slug(value: str) -> str:
 def _graph_node_key(node: GraphNode) -> str:
     tenant_scope = ",".join(sorted(node.tenant_ids))
     seat_scope = ",".join(sorted(node.seat_tiers))
+    revision_scope = ":".join(
+        (
+            node.source_document_id or "",
+            node.source_revision or "",
+            node.chunk_id or "",
+        )
+    )
     return ":".join(
         (
             node.product,
@@ -701,6 +884,7 @@ def _graph_node_key(node: GraphNode) -> str:
             node.identifier_entitlement,
             tenant_scope,
             seat_scope,
+            revision_scope,
         )
     )
 

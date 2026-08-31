@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from hashlib import sha256
 from math import sqrt
-from typing import Protocol
+from typing import Any, Protocol, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from llama_index.core.schema import TextNode
@@ -38,6 +38,7 @@ class EvidenceLifecycleState(StrEnum):
 _VECTOR_SIZE = 32
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
+_MAX_AUTHORIZED_REVISION_SNAPSHOT = 1_000
 
 
 class EvidencePrincipalGrant(BaseModel):
@@ -116,6 +117,7 @@ class EvidenceAccessFilter:
             and document.region in self.regions
             and bool(document.tenant_ids)
             and set(document.tenant_ids).issubset(self.tenant_ids)
+            and not set(document.tenant_ids).intersection(self.excluded_tenant_ids)
             and document.classification in self.classifications
             and document.identifier_entitlement in self.identifier_entitlements
             and document.lifecycle_state is EvidenceLifecycleState.ACTIVE
@@ -135,8 +137,86 @@ class EvidenceAccessFilter:
             and document.policy_expires_at > self.as_of
         )
 
-    def as_qdrant_filter(self) -> models.Filter:
-        must_not = []
+    def as_qdrant_filter(
+        self,
+        *,
+        authorized_document_ids: Collection[str] = (),
+        authorized_revision_keys: Collection[tuple[str, str, str]] = (),
+    ) -> models.Filter:
+        """Build the source-side filter, optionally pinning an authorized revision set."""
+        must_not: list[Any] = []
+        must: list[Any] = [
+            models.FieldCondition(
+                key="product",
+                match=models.MatchAny(any=list(self.products)),
+            ),
+            models.FieldCondition(
+                key="policy_expires_at",
+                range=models.DatetimeRange(gt=self.as_of),
+            ),
+            models.FieldCondition(
+                key="region",
+                match=models.MatchAny(any=list(self.regions)),
+            ),
+            models.FieldCondition(
+                key="tenant_ids",
+                match=models.MatchAny(any=list(self.tenant_ids)),
+            ),
+            models.FieldCondition(
+                key="classification",
+                match=models.MatchAny(any=list(self.classifications)),
+            ),
+            models.FieldCondition(
+                key="identifier_entitlement",
+                match=models.MatchAny(any=list(self.identifier_entitlements)),
+            ),
+            models.FieldCondition(
+                key="lifecycle_state",
+                match=models.MatchValue(value=EvidenceLifecycleState.ACTIVE.value),
+            ),
+        ]
+        if self.metric_names:
+            must.append(
+                models.FieldCondition(
+                    key="metric_name",
+                    match=models.MatchAny(any=list(self.metric_names)),
+                )
+            )
+        if authorized_revision_keys:
+            revision_conditions = [
+                models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="source_document_id",
+                            match=models.MatchValue(value=source_document_id),
+                        ),
+                        models.FieldCondition(
+                            key="source_revision",
+                            match=models.MatchValue(value=source_revision),
+                        ),
+                        models.FieldCondition(
+                            key="chunk_id",
+                            match=models.MatchValue(value=chunk_id),
+                        ),
+                    ]
+                )
+                for source_document_id, source_revision, chunk_id in authorized_revision_keys
+            ]
+            must.append(
+                models.Filter(
+                    should=cast(Any, revision_conditions),
+                    min_should=models.MinShould(
+                        conditions=cast(Any, revision_conditions), min_count=1
+                    ),
+                )
+            )
+        elif authorized_document_ids:
+            must.append(
+                models.FieldCondition(
+                    key="source_document_id",
+                    match=models.MatchAny(any=list(authorized_document_ids)),
+                )
+            )
         if self.excluded_tenant_ids:
             must_not.append(
                 models.FieldCondition(
@@ -144,85 +224,53 @@ class EvidenceAccessFilter:
                     match=models.MatchAny(any=list(self.excluded_tenant_ids)),
                 )
             )
-        return models.Filter(
-            must=[
+        policy_must = []
+        if self.groups:
+            group_conditions = [
+                models.IsEmptyCondition(is_empty=models.PayloadField(key="access_groups")),
                 models.FieldCondition(
-                    key="product",
-                    match=models.MatchAny(any=list(self.products)),
+                    key="access_groups",
+                    match=models.MatchAny(any=list(self.groups)),
                 ),
-                models.FieldCondition(
-                    key="policy_expires_at",
-                    range=models.DatetimeRange(gt=self.as_of),
+            ]
+            policy_must.append(
+                models.Filter(
+                    should=group_conditions,
+                    min_should=models.MinShould(conditions=group_conditions, min_count=1),
+                )
+            )
+        if self.agent_user_id:
+            direct_conditions = [
+                models.IsEmptyCondition(
+                    is_empty=models.PayloadField(key="direct_principal_grants")
                 ),
-                models.FieldCondition(
-                    key="region",
-                    match=models.MatchAny(any=list(self.regions)),
-                ),
-                models.FieldCondition(
-                    key="tenant_ids",
-                    match=models.MatchAny(any=list(self.tenant_ids)),
-                ),
-                models.FieldCondition(
-                    key="classification",
-                    match=models.MatchAny(any=list(self.classifications)),
-                ),
-                models.FieldCondition(
-                    key="identifier_entitlement",
-                    match=models.MatchAny(any=list(self.identifier_entitlements)),
-                ),
-                models.FieldCondition(
-                    key="lifecycle_state",
-                    match=models.MatchValue(value=EvidenceLifecycleState.ACTIVE.value),
-                ),
-                *(
-                    [
-                        models.FieldCondition(
-                            key="metric_name",
-                            match=models.MatchAny(any=list(self.metric_names)),
-                        )
-                    ]
-                    if self.metric_names
-                    else []
-                ),
-            ],
-            must_not=must_not,
-            should=[
-                *(
-                    [
-                        models.FieldCondition(
-                            key="access_groups",
-                            match=models.MatchAny(any=list(self.groups)),
-                        )
-                    ]
-                    if self.groups
-                    else []
-                ),
-                *(
-                    [
-                        models.NestedCondition(
-                            nested=models.Nested(
-                                key="direct_principal_grants",
-                                filter=models.Filter(
-                                    must=[
-                                        models.FieldCondition(
-                                            key="principal_id",
-                                            match=models.MatchValue(
-                                                value=self.agent_user_id
-                                            ),
-                                        ),
-                                        models.FieldCondition(
-                                            key="expires_at",
-                                            range=models.DatetimeRange(gt=self.as_of),
-                                        ),
-                                    ]
+                models.NestedCondition(
+                    nested=models.Nested(
+                        key="direct_principal_grants",
+                        filter=models.Filter(
+                            must=[
+                                models.FieldCondition(
+                                    key="principal_id",
+                                    match=models.MatchValue(value=self.agent_user_id),
                                 ),
-                            )
-                        )
-                    ]
-                    if self.agent_user_id
-                    else []
+                                models.FieldCondition(
+                                    key="expires_at",
+                                    range=models.DatetimeRange(gt=self.as_of),
+                                ),
+                            ]
+                        ),
+                    )
                 ),
-            ],
+            ]
+            policy_must.append(
+                models.Filter(
+                    should=direct_conditions,
+                    min_should=models.MinShould(conditions=direct_conditions, min_count=1),
+                )
+            )
+        return models.Filter(
+            must=[*must, *policy_must],
+            must_not=must_not,
         )
 
 
@@ -274,13 +322,17 @@ class QdrantEvidenceStore:
         embedding_provider: EmbeddingProvider | None = None,
     ):
         self._documents = tuple(documents)
-        self._documents_by_id = {document.document_id: document for document in self._documents}
+        self._documents_by_revision_key = {
+            _document_revision_key(document): document for document in self._documents
+        }
         self._nodes = tuple(_evidence_node(document) for document in self._documents)
         self._client = client or QdrantClient(location=":memory:")
         self._collection_name = collection_name
         self._external = external
         self._embedding_provider = embedding_provider or HashEmbeddingProvider()
         self.last_filter: EvidenceAccessFilter | None = None
+        self.last_authorized_document_ids: tuple[str, ...] = ()
+        self.last_authorized_revision_keys: tuple[tuple[str, str, str], ...] = ()
         self._last_scores: ContextVar[tuple[float, ...]] = ContextVar(
             "growth_data_agent_last_retrieval_scores", default=()
         )
@@ -300,7 +352,93 @@ class QdrantEvidenceStore:
         limit: int,
     ) -> list[EvidenceDocument]:
         """Return only filtered documents; ranking happens after Qdrant filtering."""
+        return self._retrieve(
+            query,
+            access_filter,
+            limit=limit,
+            authorized_document_ids=(),
+            authorized_revision_keys=(),
+        )
+
+    def retrieve_scoped(
+        self,
+        query: str,
+        access_filter: EvidenceAccessFilter,
+        authorized_document_ids: Collection[str],
+        *,
+        limit: int,
+        authorized_revision_keys: Collection[tuple[str, str, str]] = (),
+    ) -> list[EvidenceDocument]:
+        """Query Qdrant with both policy predicates and an exact authorized revision set."""
+        if not authorized_document_ids:
+            return []
+        return self._retrieve(
+            query,
+            access_filter,
+            limit=limit,
+            authorized_document_ids=authorized_document_ids,
+            authorized_revision_keys=authorized_revision_keys,
+        )
+
+    def authorized_revisions(
+        self,
+        access_filter: EvidenceAccessFilter,
+        *,
+        limit: int = _MAX_AUTHORIZED_REVISION_SNAPSHOT,
+    ) -> list[EvidenceDocument]:
+        """Read an authorizable revision manifest without retrieving model content."""
+        if self._documents:
+            return [
+                document.model_copy(deep=True)
+                for document in self._documents
+                if access_filter.allows(document)
+            ]
+        if not self._external:
+            return []
+        if not 1 <= limit <= _MAX_AUTHORIZED_REVISION_SNAPSHOT:
+            raise ValueError("Authorized revision snapshot limit is out of bounds.")
+        try:
+            records, next_offset = self._client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=access_filter.as_qdrant_filter(),
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as error:
+            raise EvidenceStoreUnavailableError(
+                "Qdrant evidence revision manifest is unavailable."
+            ) from error
+        if next_offset is not None:
+            raise EvidenceStoreUnavailableError(
+                "Qdrant evidence revision manifest exceeded the bounded authorization snapshot."
+            )
+        revisions: list[EvidenceDocument] = []
+        for record in records:
+            metadata = _qdrant_point_metadata(record.payload or {})
+            if not _has_explicit_active_revision_metadata(metadata):
+                continue
+            try:
+                document = EvidenceDocument.model_validate(metadata)
+            except Exception:
+                continue
+            if access_filter.allows(document):
+                revisions.append(document)
+                self._documents_by_revision_key[_document_revision_key(document)] = document
+        return revisions
+
+    def _retrieve(
+        self,
+        query: str,
+        access_filter: EvidenceAccessFilter,
+        *,
+        limit: int,
+        authorized_document_ids: Collection[str],
+        authorized_revision_keys: Collection[tuple[str, str, str]],
+    ) -> list[EvidenceDocument]:
         self.last_filter = access_filter
+        self.last_authorized_document_ids = tuple(sorted(authorized_document_ids))
+        self.last_authorized_revision_keys = tuple(sorted(authorized_revision_keys))
         self._last_scores.set(())
         if not self._documents and not self._external:
             return []
@@ -308,7 +446,10 @@ class QdrantEvidenceStore:
             result = self._client.query_points(
                 collection_name=self._collection_name,
                 query=self._embedding_provider.embed(query),
-                query_filter=access_filter.as_qdrant_filter(),
+                query_filter=access_filter.as_qdrant_filter(
+                    authorized_document_ids=authorized_document_ids,
+                    authorized_revision_keys=authorized_revision_keys,
+                ),
                 limit=max(limit, len(self._documents)),
                 with_payload=True,
                 with_vectors=False,
@@ -320,8 +461,13 @@ class QdrantEvidenceStore:
         candidates = []
         for point in result.points or []:
             metadata = _qdrant_point_metadata(point.payload or {})
-            document_id = str(metadata.get("document_id", ""))
-            document = self._documents_by_id.get(document_id)
+            revision_key = (
+                str(metadata.get("source_document_id", "")),
+                str(metadata.get("source_revision", "")),
+                str(metadata.get("chunk_id", "")),
+                str(metadata.get("revision_fingerprint") or ""),
+            )
+            document = self._documents_by_revision_key.get(revision_key)
             if document is None:
                 if not _has_explicit_active_revision_metadata(metadata):
                     continue
@@ -331,7 +477,7 @@ class QdrantEvidenceStore:
                     continue
                 if document.lifecycle_state is not EvidenceLifecycleState.ACTIVE:
                     continue
-                self._documents_by_id[document_id] = document
+                self._documents_by_revision_key[_document_revision_key(document)] = document
             if access_filter.allows(document):
                 candidates.append((document, float(point.score)))
         ranked = sorted(
@@ -343,6 +489,11 @@ class QdrantEvidenceStore:
         )[:limit]
         self._last_scores.set(tuple(score for _, score in ranked))
         return [document for document, _ in ranked]
+
+    @property
+    def documents(self) -> tuple[EvidenceDocument, ...]:
+        """Return the indexed revision snapshot for authorization-scope construction."""
+        return tuple(document.model_copy(deep=True) for document in self._documents)
 
     @property
     def nodes(self) -> tuple[TextNode, ...]:
@@ -478,7 +629,14 @@ def _evidence_node(
         }
     )
     return TextNode(
-        id_=str(uuid5(NAMESPACE_URL, node_identity or provenance.chunk_id)),
+        id_=str(
+            uuid5(
+                NAMESPACE_URL,
+                node_identity
+                or f"{provenance.source_document_id}:{provenance.source_revision}:"
+                f"{provenance.chunk_id}:{document.revision_fingerprint or ''}",
+            )
+        ),
         text=document.text,
         metadata=metadata,
         embedding=(
@@ -496,6 +654,15 @@ def _provenance_for(document: EvidenceDocument) -> EvidenceProvenance:
         source_revision=document.source_revision,
         chunk_id=document.chunk_id or f"{document.document_id}:chunk:0",
     )
+
+
+def _document_revision_key(document: EvidenceDocument) -> tuple[str, str, str, str]:
+    return (*_evidence_revision_key(document), document.revision_fingerprint or "")
+
+
+def _evidence_revision_key(document: EvidenceDocument) -> tuple[str, str, str]:
+    provenance = _provenance_for(document)
+    return (provenance.source_document_id, provenance.source_revision, provenance.chunk_id)
 
 
 def _has_explicit_active_revision_metadata(metadata: dict[str, object]) -> bool:
