@@ -117,6 +117,9 @@ class ConversationSummary(BaseModel):
     agent_user_goal: str = Field(default="", max_length=256)
     resolved_scope: EffectiveAccessScope | None = None
     metric_name: str | None = Field(default=None, min_length=1, max_length=128)
+    active_investigation_factor_id: str | None = Field(
+        default=None, min_length=1, max_length=256
+    )
     evidence_revision_ids: list[str] = Field(default_factory=list, max_length=32)
     qualified_conclusions: list[str] = Field(default_factory=list, max_length=32)
     open_questions: list[str] = Field(default_factory=list, max_length=16)
@@ -153,6 +156,7 @@ class AnswerQuestionPayload(BaseModel):
 
     question: str = Field(min_length=1)
     requested_metric_name: str | None = Field(default=None, min_length=1)
+    selected_factor_id: str | None = Field(default=None, min_length=1, max_length=256)
     conversation_id: str | None = Field(default=None, min_length=1, max_length=128)
     verification_request_confirmation: VerificationRequestConfirmation | None = None
 

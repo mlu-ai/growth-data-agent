@@ -239,6 +239,7 @@ def create_app(
             agent_user_id=principal.principal_id,
             question=payload.question,
             requested_metric_name=payload.requested_metric_name,
+            selected_factor_id=payload.selected_factor_id,
             conversation_id=payload.conversation_id,
             verification_request_confirmation=payload.verification_request_confirmation,
             verified_principal=principal,

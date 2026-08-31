@@ -698,6 +698,16 @@ class AnswerQuestionService:
             contribution=state.matching_contribution,
             metric_name=state.metric_name,
         )
+        selected_factor_id = self._active_selected_factor_id(
+            state.authorized_execution.request, state.metric_name
+        )
+        if selected_factor_id is not None:
+            matched = [
+                card for card in candidate_causal_factors if card.factor_id == selected_factor_id
+            ]
+            if not matched:
+                return self._selection_lost_response(state, selected_factor_id)
+            candidate_causal_factors = matched
         evidence_chain = self._empty_public_evidence_chain()
         graph_paths: list[Any] = []
 
@@ -749,6 +759,45 @@ class AnswerQuestionService:
                 ),
                 "Only evidence permitted by product, Region, Tenant, classification, and "
                 "identifier entitlements was retrieved.",
+            ],
+            trace_id=state.authorized_execution.trace_id,
+        )
+
+    def _selection_lost_response(
+        self, state: _PlannedInvestigationState, selected_factor_id: str
+    ) -> GovernedAnalyticalResponse:
+        """The Active Investigation reference is a lookup key, never trusted content —
+        this turn re-authorized and re-ranked from scratch, and the previously
+        selected factor no longer matched an eligible, currently authorized card."""
+        assert state.cited_evidence is not None
+        evidence = build_evidence_answer(state.cited_evidence.documents)
+        return GovernedAnalyticalResponse(
+            answer=(
+                "Limitation: the previously selected Candidate Causal Factor for the "
+                f"{state.region} {state.seat_tier} Seat Tier "
+                f"{self._metric_label(state.metric_name)} investigation could not be "
+                "revalidated against currently authorized evidence and entitlements, "
+                "so no Candidate Causal Factor is returned this turn."
+            ),
+            result_classification=ResultClassification.LIMITATION,
+            canonical_definition=state.definition,
+            semantic_query_evidence=state.query_evidence,
+            driver_decomposition=state.decomposition,
+            evidence=evidence,
+            evidence_chain=self._empty_public_evidence_chain(),
+            candidate_causal_factors=[],
+            graph_paths=[],
+            source_freshness=state.freshness,
+            effective_access_scope=state.authorized_execution.effective_scope,
+            caveats=[
+                (
+                    "The Active Investigation reference is never trusted on its own; this "
+                    "turn re-authorized the Agent User and re-ranked evidence, and Factor ID "
+                    f"{selected_factor_id!r} no longer matched an eligible, currently "
+                    "authorized Candidate Causal Factor."
+                ),
+                "Only evidence permitted by product, Region, Tenant, classification, "
+                "and identifier entitlements was retrieved.",
             ],
             trace_id=state.authorized_execution.trace_id,
         )
@@ -821,6 +870,42 @@ class AnswerQuestionService:
             lead_agent_metadata=response.lead_agent_metadata,
         )
 
+    @staticmethod
+    def _next_active_investigation_factor_id(
+        request: AnswerQuestionRequest,
+        response: GovernedAnalyticalResponse,
+        metric_name: str | None,
+        prior: ConversationSummary | None,
+    ) -> str | None:
+        """Decide what Active Investigation reference (if any) carries into the next turn.
+
+        Never stores card content — only the opaque `factor_id` lookup key, and only
+        when this turn itself resolved a selection (explicit or reasserted) and it was
+        successfully revalidated against a currently eligible, authorized candidate.
+        """
+        if (
+            response.result_classification == ResultClassification.LIMITATION
+            and response.candidate_causal_factors is not None
+        ):
+            # This turn specifically tried and failed to revalidate a selection —
+            # forget it rather than keep retrying a permanently invalid reference.
+            return None
+        if (
+            metric_name is not None
+            and response.candidate_causal_factors is not None
+            and len(response.candidate_causal_factors) == 1
+        ):
+            resolved = AnswerQuestionService._active_selected_factor_id(request, metric_name)
+            if resolved is not None:
+                return response.candidate_causal_factors[0].factor_id
+        # Only carry the stored reference forward when this turn's metric context is
+        # unchanged from when it was stored — otherwise a detour to an unrelated metric
+        # would pair a stale factor_id with a new metric_name, and a later turn on that
+        # new metric could wrongly reject it as a "lost" selection no one ever made.
+        if prior is not None and prior.metric_name == metric_name:
+            return prior.active_investigation_factor_id
+        return None
+
     @classmethod
     def _conversation_summary(
         cls, request: AnswerQuestionRequest, response: GovernedAnalyticalResponse
@@ -828,6 +913,9 @@ class AnswerQuestionService:
         prior = request.conversation_context.summary if request.conversation_context else None
         metric_name = cls._conversation_metric_name(response) or (
             prior.metric_name if prior else None
+        )
+        active_investigation_factor_id = cls._next_active_investigation_factor_id(
+            request, response, metric_name, prior
         )
         revision_ids = list(prior.evidence_revision_ids) if prior else []
         if response.evidence is not None:
@@ -848,6 +936,7 @@ class AnswerQuestionService:
             ),
             resolved_scope=response.effective_access_scope,
             metric_name=metric_name,
+            active_investigation_factor_id=active_investigation_factor_id,
             evidence_revision_ids=list(dict.fromkeys(revision_ids))[-32:],
             qualified_conclusions=list(dict.fromkeys(conclusions))[-32:],
             open_questions=list(prior.open_questions) if prior else [],
@@ -2293,6 +2382,26 @@ class AnswerQuestionService:
         named_metric = _named_metric_question(request.question)
         if named_metric is not None:
             return _metric_identifier(named_metric)
+        return None
+
+    @staticmethod
+    def _active_selected_factor_id(
+        request: AnswerQuestionRequest, investigation_metric_name: str
+    ) -> str | None:
+        """Resolve which Candidate Causal Factor this turn should filter to, if any.
+
+        Never trusted as content — only ever a lookup key the caller must revalidate
+        against this turn's freshly recomputed ranked candidates.
+        """
+        if request.selected_factor_id is not None:
+            return request.selected_factor_id
+        prior = request.conversation_context.summary if request.conversation_context else None
+        if (
+            prior is not None
+            and prior.active_investigation_factor_id is not None
+            and prior.metric_name == investigation_metric_name
+        ):
+            return prior.active_investigation_factor_id
         return None
 
     @staticmethod
