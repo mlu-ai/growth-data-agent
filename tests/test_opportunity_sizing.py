@@ -210,6 +210,9 @@ def test_selection_without_a_scenario_is_unaffected_by_sizing(tmp_path: Path) ->
     assert body["opportunity_estimate"] is None
     assert body["opportunity_sizing_gap"] is None
     assert [card["factor_id"] for card in body["candidate_causal_factors"]] == [factor_id]
+    # A forgotten scenario on an otherwise-valid selection turn is surfaced as
+    # guidance, not silently dropped and not a spurious LIMITATION.
+    assert any("opportunity_scenario_percentage_points" in caveat for caveat in body["caveats"])
 
 
 def test_ungoverned_category_offers_a_mapping_request_instead_of_an_estimate(

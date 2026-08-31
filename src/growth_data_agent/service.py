@@ -753,6 +753,29 @@ class AnswerQuestionService:
             evidence_chain = self._public_evidence_chain(state.cited_evidence.lightrag_chain)
             graph_paths = self._graph_path_citations(state.graph_paths)
 
+        caveats = [
+            (
+                f"The {state.region} {state.seat_tier} Seat Tier result is an observed "
+                "Driver Decomposition; each Candidate Causal Factor is a cited "
+                "Hypothesis, not a causal conclusion."
+            ),
+            "Only evidence permitted by product, Region, Tenant, classification, and "
+            "identifier entitlements was retrieved.",
+        ]
+        if (
+            selected_factor_id is not None
+            and len(candidate_causal_factors) == 1
+            and candidate_causal_factors[0].sizing_eligible
+        ):
+            # A confirmed selection of this turn is itself a complete, valid action
+            # (matching #75's Active Investigation contract) — this is guidance for
+            # a possibly-forgotten scenario input, never an error classification.
+            caveats.append(
+                "This Candidate Causal Factor is Sizing Eligible; supply "
+                "opportunity_scenario_percentage_points to receive an Opportunity "
+                "Estimate for it."
+            )
+
         return GovernedAnalyticalResponse(
             answer=answer,
             result_classification=classification,
@@ -765,15 +788,7 @@ class AnswerQuestionService:
             graph_paths=graph_paths,
             source_freshness=state.freshness,
             effective_access_scope=state.authorized_execution.effective_scope,
-            caveats=[
-                (
-                    f"The {state.region} {state.seat_tier} Seat Tier result is an observed "
-                    "Driver Decomposition; each Candidate Causal Factor is a cited "
-                    "Hypothesis, not a causal conclusion."
-                ),
-                "Only evidence permitted by product, Region, Tenant, classification, and "
-                "identifier entitlements was retrieved.",
-            ],
+            caveats=caveats,
             trace_id=state.authorized_execution.trace_id,
         )
 

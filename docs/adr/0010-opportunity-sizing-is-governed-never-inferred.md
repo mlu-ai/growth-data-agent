@@ -28,3 +28,16 @@ document/graph-derived approximation. It remains a Hypothesis and the
 response offers a data-team mapping request instead — extending ADR-0007's
 "Provisional Factor Record is never a source or permission authority"
 principle to the audience side of a sizing scenario.
+
+## Sizing trigger is asymmetric by design
+
+An explicit `opportunity_scenario_percentage_points` value is the only signal
+that a turn is attempting sizing. A turn that selects or reasserts a factor
+without one is not treated as a sizing attempt at all — it is ADR-0009's
+Active Investigation reference confirmation, a complete and valid action on
+its own that must keep returning `HYPOTHESIS`, not `LIMITATION`. Only the
+reverse gap — a scenario supplied with no resolved selection — produces the
+explicit `LIMITATION` "missing input" response. A confirmed single selection
+that is Sizing Eligible still gets a caveat naming the scenario field it can
+supply, so a forgotten scenario is surfaced as guidance rather than either a
+silent no-op or a spurious error on an otherwise-ordinary selection turn.
