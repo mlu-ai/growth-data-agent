@@ -13,6 +13,7 @@ from growth_data_agent.evidence import (
     EvidenceDocument,
     QdrantEvidenceStore,
     VectorEvidenceStore,
+    _citation,
     _evidence_revision_key,
 )
 from growth_data_agent.lightrag import (
@@ -293,7 +294,7 @@ def test_contradictory_evidence_is_inconclusive(tmp_path: Path) -> None:
     contradicting = supporting.model_copy(
         update={
             "document_id": "jira-apac-paid-provisioning-incident-contradiction",
-            "title": "Jira APAC incident review contradicts overlap",
+            "title": "Jira APAC provisioning incident review contradicts overlap",
             "support_status": EvidenceSupportStatus.CONTRADICTS,
             "support_explanation": (
                 "The review says the incident did not overlap the APAC 51-200 Seat Tier "
@@ -314,3 +315,10 @@ def test_contradictory_evidence_is_inconclusive(tmp_path: Path) -> None:
     assert body["evidence"]["support_status"] == "inconclusive"
     assert "contradictory" in body["evidence"]["support_explanation"]
     assert "does not establish causation" not in body["answer"]
+
+
+def test_high_authority_flag_defaults_false_and_is_not_a_citation_field() -> None:
+    document = evidence_corpus()[1]
+    assert document.is_high_authority_operational_record is False
+    citation = _citation(document)
+    assert "is_high_authority_operational_record" not in citation.model_dump()

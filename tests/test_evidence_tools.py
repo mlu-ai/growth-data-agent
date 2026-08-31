@@ -16,6 +16,7 @@ from growth_data_agent.lightrag import (
     LightRAGAuthorizationError,
     LightRAGBackend,
     LightRAGChunkRecord,
+    LightRAGEntityRecord,
     LightRAGEvidenceAdapter,
     LightRAGEvidenceReference,
 )
@@ -282,3 +283,73 @@ def test_investigation_rejects_a_scoped_store_revision_mismatch() -> None:
             graph_filter=graph_filter,
             metric_name=authorized.metric_name or "jira_new_peu",
         )
+
+
+def test_retrieve_cited_evidence_widens_to_top_chunk_references_not_interleaved_kinds() -> None:
+    """The widened top-3 candidate set (#75) must source from chunk-kind LightRAG
+    references only — entity/relation records interleaved in `chain.references` must
+    never be treated as additional authorized candidate documents."""
+    document_a = evidence_corpus()[0]
+    document_b = document_a.model_copy(
+        update={
+            "document_id": "jira-apac-paid-provisioning-incident-follow-up",
+            "source_document_id": "jira-apac-paid-provisioning-incident-follow-up",
+            "source_url": "https://evidence.example/jira/apac-follow-up",
+            "source_revision": "2",
+            "chunk_id": "jira-apac-paid-provisioning-incident-follow-up:chunk:0",
+        }
+    )
+    evidence_store = RecordingEvidenceStore([document_a, document_b])
+    evidence_filter = EvidenceAccessFilter(
+        products=(document_a.product,),
+        regions=(document_a.region,),
+        tenant_ids=tuple(document_a.tenant_ids),
+        classifications=(document_a.classification,),
+        identifier_entitlements=(document_a.identifier_entitlement,),
+        groups=tuple(document_a.access_groups),
+    )
+    graph_filter = GraphAccessFilter(
+        products=(document_a.product,),
+        regions=(document_a.region,),
+        tenant_ids=tuple(document_a.tenant_ids),
+        classifications=(document_a.classification,),
+        identifier_entitlements=(document_a.identifier_entitlement,),
+    )
+    light_rag_store = InMemoryLightRAGStore(
+        chunks=[
+            LightRAGChunkRecord(
+                reference=LightRAGEvidenceReference.from_document(document_a), text=document_a.text
+            ),
+            LightRAGChunkRecord(
+                reference=LightRAGEvidenceReference.from_document(document_b), text=document_b.text
+            ),
+        ],
+        entities=[
+            LightRAGEntityRecord(
+                reference=LightRAGEvidenceReference.from_document(
+                    document_a,
+                    reference_kind="entity",
+                    reference_id=f"entity:{document_a.document_id}",
+                ),
+                name="Jira APAC provisioning",
+                description=document_a.text,
+            ),
+        ],
+    )
+    tools = BoundedEvidenceInvestigationTools(
+        evidence_store,
+        lambda query, access_filter, metric_name, limit: [],
+        DeterministicCrossEncoderReranker(),
+        LightRAGEvidenceAdapter(LightRAGBackend(light_rag_store)),
+    )
+
+    prepared = tools.retrieve_cited_evidence(
+        query="Jira APAC evidence",
+        evidence_filter=evidence_filter,
+        graph_filter=graph_filter,
+        metric_name=document_a.metric_name or "jira_new_peu",
+    )
+
+    returned_ids = {document.document_id for document in prepared.documents}
+    assert returned_ids == {document_a.document_id, document_b.document_id}
+    assert f"entity:{document_a.document_id}" not in returned_ids

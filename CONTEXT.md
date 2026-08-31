@@ -94,6 +94,26 @@ campaign, or incident) used to guide evidence retrieval for a Candidate
 Causal Factor; it is not causal or metric authority.
 _Avoid_: Root-cause taxonomy, category authority
 
+**Ranking Signal**:
+One of five named, typed, and bounded inputs (temporal alignment, population
+overlap, metric-mechanism fit, independent source coverage, counterevidence)
+used to order and cap Candidate Causal Factor cards; never collapsed into a
+single opaque confidence score.
+_Avoid_: Confidence score, relevance score
+
+**Factor Support Status**:
+A candidate card's deterministic outcome — supported, contradicted, or
+inconclusive — based on independent supporting Evidence Revision count, high
+authority operational records, and material contradiction; distinct from a
+single citation's Evidence Support Status.
+_Avoid_: Verified, confirmed, causal confidence
+
+**High-Authority Operational Record**:
+An Evidence Revision explicitly marked as a system-of-record operational
+document, sufficient on its own to reach supported status without a second
+independent source.
+_Avoid_: Trusted source, verified document
+
 **Paid Tenant Tenure**:
 Elapsed time since the Product User's Tenant began its paid subscription.
 _Avoid_: Account age, user age, tenure

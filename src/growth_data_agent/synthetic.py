@@ -78,6 +78,7 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "2026 decline period."
             ),
             accountable_team="Jira Platform Provisioning Team",
+            is_high_authority_operational_record=True,
         ),
         EvidenceDocument(
             document_id="jira-apac-small-tenant-maintenance",
@@ -176,6 +177,7 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "2026 New PEU increase period."
             ),
             accountable_team="Confluence Growth Acquisition Team",
+            is_high_authority_operational_record=True,
             source_document_id="confluence-americas-acquisition-campaign",
             source_url="https://evidence.local/synthetic/confluence-americas-acquisition-campaign",
             source_revision="synthetic-v1",
@@ -321,6 +323,7 @@ def evidence_corpus() -> tuple[EvidenceDocument, ...]:
                 "scope and the June 2026 New MAU decline period."
             ),
             accountable_team="Confluence Growth Activation Team",
+            is_high_authority_operational_record=True,
             source_document_id="confluence-emea-onboarding-email-regression",
             source_url="https://evidence.local/synthetic/confluence-emea-onboarding-email-regression",
             source_revision="synthetic-v1",
