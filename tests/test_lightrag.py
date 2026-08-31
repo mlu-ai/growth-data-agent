@@ -32,6 +32,7 @@ from growth_data_agent.lightrag import (
     LightRAGRelationRecord,
     LightRAGRetrievalStore,
     QdrantAGELightRAGStore,
+    validate_authorized_lightrag_chain,
     validate_authorized_lightrag_references,
 )
 from growth_data_agent.policy import resolve_access_profile
@@ -123,7 +124,7 @@ def _store(*documents: EvidenceDocument) -> InMemoryLightRAGStore:
     chunks = [
         LightRAGChunkRecord(
             reference=_reference(document),
-            text=f"{document.title} {document.text}",
+            text=document.text,
         )
         for document in documents
     ]
@@ -186,6 +187,78 @@ def test_adapter_passes_authorized_active_scope_before_real_retrieval() -> None:
         frozenset({"entity:jira-apac-paid-provisioning-incident"}),
         frozenset({"relation:jira-apac-paid-provisioning-incident"}),
     ]
+
+
+def test_adapter_returns_a_bounded_typed_chain_with_ranked_source_records() -> None:
+    document = evidence_corpus()[0]
+    store = _store(document)
+    access_filter = _access_filter()
+
+    chain = LightRAGEvidenceAdapter(LightRAGBackend(store)).retrieve_chain(
+        "APAC provisioning",
+        _authorized_scope(document, access_filter),
+        access_filter,
+    )
+    assert [reference.reference_kind for reference in chain.references] == [
+        "chunk",
+        "entity",
+        "relation",
+    ]
+    assert [reference.rank for reference in chain.references] == [1, 2, 3]
+    assert len(chain.supporting_chunks) == 1
+    assert chain.supporting_chunks[0].text == document.text
+    assert chain.entities[0].name == "Jira APAC provisioning"
+    assert chain.relations[0].source_entity.source_document_id == document.document_id
+    assert all(
+        reference.source_url == f"https://evidence.local/synthetic/{document.document_id}"
+        and reference.source_revision == document.source_revision
+        and reference.chunk_id == f"{document.document_id}:chunk:0"
+        for reference in chain.references
+    )
+
+
+def test_chain_validation_rejects_a_forged_source_revision_before_public_use() -> None:
+    document = evidence_corpus()[0]
+    access_filter = _access_filter()
+    scope = _authorized_scope(document, access_filter)
+    chain = LightRAGEvidenceAdapter(LightRAGBackend(_store(document))).retrieve_chain(
+        "APAC provisioning", scope, access_filter
+    )
+    forged_reference = chain.references[0].model_copy(
+        update={"source_revision": "forged-active-revision"}
+    )
+    forged_chain = chain.model_copy(
+        update={"references": [forged_reference, *chain.references[1:]]}
+    )
+
+    with pytest.raises(LightRAGAuthorizationError, match="outside"):
+        validate_authorized_lightrag_chain(forged_chain, scope, access_filter)
+
+
+def test_chain_validation_rejects_forged_chunk_content_and_duplicate_records() -> None:
+    document = evidence_corpus()[0]
+    access_filter = _access_filter()
+    scope = _authorized_scope(document, access_filter)
+    chain = LightRAGEvidenceAdapter(LightRAGBackend(_store(document))).retrieve_chain(
+        "APAC provisioning", scope, access_filter
+    )
+
+    forged_chunk = chain.supporting_chunks[0].model_copy(update={"text": "forged source text"})
+    with pytest.raises(LightRAGAuthorizationError, match="chunk content"):
+        validate_authorized_lightrag_chain(
+            chain.model_copy(update={"supporting_chunks": [forged_chunk]}),
+            scope,
+            access_filter,
+        )
+
+    with pytest.raises(LightRAGAuthorizationError, match="record bound"):
+        validate_authorized_lightrag_chain(
+            chain.model_copy(
+                update={"supporting_chunks": [chain.supporting_chunks[0]] * 2}
+            ),
+            scope,
+            access_filter,
+        )
 
 
 def test_query_drives_chunk_entity_and_relation_retrieval() -> None:

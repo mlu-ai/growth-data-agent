@@ -250,6 +250,52 @@ def test_apac_manager_cannot_expand_scope_through_broad_evidence_wording(
     assert "EMEA" not in response.text
 
 
+def test_public_chain_contains_only_the_authorized_apac_revision(client: TestClient) -> None:
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "apac_regional_manager",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200
+    chain = response.json()["evidence_chain"]
+    assert chain["references"]
+    assert all(reference["region"] == "APAC" for reference in chain["references"])
+    assert all(
+        reference["source_revision"] == "synthetic-v1" for reference in chain["references"]
+    )
+    assert all(
+        chunk["reference"]["source_document_id"] == "jira-apac-paid-provisioning-incident"
+        for chunk in chain["supporting_chunks"]
+    )
+    assert "jira-apac-paid-provisioning-incident-restricted" not in response.text
+
+
+def test_public_chain_is_withheld_when_no_authorized_active_revision_matches(
+    tmp_path: Path,
+) -> None:
+    restricted = evidence_corpus()[3]
+    evidence_store = RecordingEvidenceStore([restricted])
+    graph_store = RecordingGraphStore(graph_corpus())
+    client, _, _ = _client(tmp_path, evidence_store, graph_store)
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "apac_regional_manager",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_classification"] == "inconclusive"
+    assert body["evidence_chain"]["references"] == []
+    assert restricted.document_id not in response.text
+
+
 def test_product_scope_is_checked_before_a_cross_product_metric_query(client: TestClient) -> None:
     response = client.post(
         "/answer_question",

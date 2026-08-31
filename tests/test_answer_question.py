@@ -114,3 +114,34 @@ def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClien
     )
     assert "does not establish causation" in body["answer"]
     assert body["effective_access_scope"]["regions"] == ["Americas", "APAC", "EMEA"]
+
+
+def test_public_hypothesis_contains_a_cited_lightrag_evidence_chain(client: TestClient) -> None:
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    chain = body["evidence_chain"]
+    assert body["result_classification"] == "hypothesis"
+    assert [reference["rank"] for reference in chain["references"]] == [1, 2, 3]
+    assert [reference["reference_kind"] for reference in chain["references"]] == [
+        "chunk",
+        "entity",
+        "relation",
+    ]
+    assert chain["supporting_chunks"][0]["text"]
+    assert chain["references"][0]["source_url"] == (
+        "https://evidence.local/synthetic/jira-apac-paid-provisioning-incident"
+    )
+    assert chain["references"][0]["source_revision"] == "synthetic-v1"
+    assert chain["references"][0]["source_document_id"] == body["evidence"]["citations"][0][
+        "source_document_id"
+    ]
+    assert chain["references"][0]["chunk_id"] == body["evidence"]["citations"][0]["chunk_id"]
+    assert "Hypothesis" in body["answer"]

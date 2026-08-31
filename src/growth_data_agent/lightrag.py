@@ -71,6 +71,7 @@ class LightRAGEvidenceReference(BaseModel):
     policy_expires_at: datetime
     lifecycle_state: EvidenceLifecycleState = EvidenceLifecycleState.ACTIVE
     related_entity_references: list[LightRAGEvidenceReference] = Field(default_factory=list)
+    rank: int | None = Field(default=None, ge=1)
 
     @classmethod
     def from_document(
@@ -128,6 +129,15 @@ class LightRAGRelationRecord(BaseModel):
     source_entity: LightRAGEvidenceReference
     target_entity: LightRAGEvidenceReference
     description: str = ""
+
+
+class LightRAGEvidenceChain(BaseModel):
+    """Bounded typed LightRAG output; it contains evidence records, never answer prose."""
+
+    supporting_chunks: list[LightRAGChunkRecord] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
+    entities: list[LightRAGEntityRecord] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
+    relations: list[LightRAGRelationRecord] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
+    references: list[LightRAGEvidenceReference] = Field(max_length=_MAX_LIGHTRAG_RESULTS)
 
 
 class _ReferenceRecord(Protocol):
@@ -589,7 +599,7 @@ class QdrantAGELightRAGStore(LightRAGRetrievalStore):
         chunk_records = tuple(
             LightRAGChunkRecord(
                 reference=LightRAGEvidenceReference.from_document(document),
-                text=f"{document.title} {document.text}",
+                text=document.text,
             )
             for document in scope_documents
         )
@@ -645,7 +655,7 @@ class QdrantAGELightRAGStore(LightRAGRetrievalStore):
         return [
             LightRAGChunkRecord(
                 reference=LightRAGEvidenceReference.from_document(document),
-                text=f"{document.title} {document.text}",
+                text=document.text,
             )
             for document in documents
             if capability.scope.allows_reference(
@@ -822,7 +832,13 @@ class AuthorizedLightRAGIndex:
 class LightRAGBackend:
     """Closed LightRAG backend whose only path uses the governed retrieval view."""
 
-    __slots__ = ("_store", "_last_query", "_last_scope", "_last_candidate_references")
+    __slots__ = (
+        "_store",
+        "_last_query",
+        "_last_scope",
+        "_last_candidate_references",
+        "_last_chain",
+    )
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del kwargs
@@ -844,6 +860,23 @@ class LightRAGBackend:
         access_filter: EvidenceAccessFilter,
         limit: int,
     ) -> Iterable[LightRAGEvidenceReference]:
+        return self.retrieve_chain(
+            query,
+            authorized_scope=authorized_scope,
+            access_filter=access_filter,
+            limit=limit,
+        ).references
+
+    @final
+    def retrieve_chain(
+        self,
+        query: str,
+        *,
+        authorized_scope: AuthorizedEvidenceRevisionSet,
+        access_filter: EvidenceAccessFilter,
+        limit: int,
+    ) -> LightRAGEvidenceChain:
+        """Retrieve typed chunks and graph records without generating an answer."""
         if not isinstance(authorized_scope, AuthorizedEvidenceRevisionSet):
             raise LightRAGAuthorizationError(
                 "LightRAG requires an authorized Evidence Revision set before retrieval."
@@ -855,16 +888,17 @@ class LightRAGBackend:
         if limit < 1:
             raise ValueError("LightRAG result limit must be positive.")
         if not authorized_scope.revisions:
-            return []
+            return LightRAGEvidenceChain(
+                supporting_chunks=[], entities=[], relations=[], references=[]
+            )
 
         index = AuthorizedLightRAGIndex(self._store, authorized_scope, access_filter)
         self._last_query = query
         self._last_scope = authorized_scope
-        records = [
-            *index.retrieve_chunks(query, limit=1),
-            *index.retrieve_entities(query, limit=1),
-            *index.retrieve_relations(query, limit=1),
-        ]
+        chunks = index.retrieve_chunks(query, limit=1)
+        entities = index.retrieve_entities(query, limit=1)
+        relations = index.retrieve_relations(query, limit=1)
+        records = [*chunks, *entities, *relations]
         if any(
             record.reference.related_entity_references
             != [record.source_entity, record.target_entity]
@@ -874,11 +908,34 @@ class LightRAGBackend:
             raise LightRAGAuthorizationError(
                 "LightRAG returned a relation with unverifiable graph endpoint provenance."
             )
-        references = [record.reference for record in records]
-        self._last_candidate_references = tuple(
-            reference.model_copy(deep=True) for reference in references[:_bounded_limit(limit)]
+        result_limit = _bounded_limit(limit)
+        ranked_records = []
+        for rank, record in enumerate(records[:result_limit], start=1):
+            ranked_reference = record.reference.model_copy(update={"rank": rank})
+            ranked_records.append(record.model_copy(update={"reference": ranked_reference}))
+        chain = LightRAGEvidenceChain(
+            supporting_chunks=[
+                cast(LightRAGChunkRecord, record)
+                for record in ranked_records
+                if isinstance(record, LightRAGChunkRecord)
+            ],
+            entities=[
+                cast(LightRAGEntityRecord, record)
+                for record in ranked_records
+                if isinstance(record, LightRAGEntityRecord)
+            ],
+            relations=[
+                cast(LightRAGRelationRecord, record)
+                for record in ranked_records
+                if isinstance(record, LightRAGRelationRecord)
+            ],
+            references=[record.reference for record in ranked_records],
         )
-        return [reference.model_copy(deep=True) for reference in self._last_candidate_references]
+        self._last_chain = chain.model_copy(deep=True)
+        self._last_candidate_references = tuple(
+            reference.model_copy(deep=True) for reference in chain.references
+        )
+        return chain
 
     @property
     def last_scope(self) -> AuthorizedEvidenceRevisionSet | None:
@@ -892,9 +949,13 @@ class LightRAGBackend:
     def last_candidate_references(self) -> tuple[LightRAGEvidenceReference, ...]:
         return getattr(self, "_last_candidate_references", ())
 
+    @property
+    def last_chain(self) -> LightRAGEvidenceChain | None:
+        return getattr(self, "_last_chain", None)
+
 
 class LightRAGEvidenceAdapter:
-    """Call a controlled pre-authorized LightRAG backend and expose references only."""
+    """Call a controlled pre-authorized LightRAG backend and expose typed evidence only."""
 
     __slots__ = ("_backend", "_max_results")
 
@@ -925,6 +986,21 @@ class LightRAGEvidenceAdapter:
         *,
         limit: int = _MAX_LIGHTRAG_RESULTS,
     ) -> list[LightRAGEvidenceReference]:
+        return self.retrieve_chain(
+            query,
+            authorized_scope,
+            access_filter,
+            limit=limit,
+        ).references
+
+    def retrieve_chain(
+        self,
+        query: str,
+        authorized_scope: AuthorizedEvidenceRevisionSet,
+        access_filter: EvidenceAccessFilter,
+        *,
+        limit: int = _MAX_LIGHTRAG_RESULTS,
+    ) -> LightRAGEvidenceChain:
         """Retrieve bounded references only after current authorization is revalidated."""
         if not isinstance(authorized_scope, AuthorizedEvidenceRevisionSet):
             raise LightRAGAuthorizationError(
@@ -937,17 +1013,17 @@ class LightRAGEvidenceAdapter:
         if limit < 1:
             raise ValueError("LightRAG result limit must be positive.")
         if not authorized_scope.revisions:
-            return []
+            return LightRAGEvidenceChain(
+                supporting_chunks=[], entities=[], relations=[], references=[]
+            )
         authorized_scope.revalidate(access_filter)
         result_limit = min(limit, self._max_results)
         try:
-            raw_references = list(
-                self._backend.retrieve(
-                    query,
-                    authorized_scope=authorized_scope,
-                    access_filter=access_filter,
-                    limit=result_limit,
-                )
+            chain = self._backend.retrieve_chain(
+                query,
+                authorized_scope=authorized_scope,
+                access_filter=access_filter,
+                limit=result_limit,
             )
         except LightRAGAuthorizationError:
             raise
@@ -956,17 +1032,7 @@ class LightRAGEvidenceAdapter:
                 "LightRAG retrieval failed closed before producing model context."
             ) from error
 
-        references = raw_references[:result_limit]
-        for reference in references:
-            if not isinstance(reference, LightRAGEvidenceReference):
-                raise LightRAGAuthorizationError(
-                    "LightRAG returned a non-reference value for model context."
-                )
-            if not authorized_scope.allows_reference(reference):
-                raise LightRAGAuthorizationError(
-                    "LightRAG returned a reference outside the authorized Evidence Revision set."
-                )
-        return [reference.model_copy(deep=True) for reference in references]
+        return validate_authorized_lightrag_chain(chain, authorized_scope, access_filter)
 
 
 def require_governed_lightrag_adapter(adapter: object) -> LightRAGEvidenceAdapter:
@@ -1028,6 +1094,87 @@ def validate_authorized_lightrag_references(
             )
         validated.append(reference.model_copy(deep=True))
     return validated
+
+
+def validate_authorized_lightrag_chain(
+    chain: object,
+    authorized_scope: AuthorizedEvidenceRevisionSet,
+    access_filter: EvidenceAccessFilter,
+) -> LightRAGEvidenceChain:
+    """Independently validate every chain record before it reaches a response."""
+    if not isinstance(chain, LightRAGEvidenceChain):
+        raise LightRAGAuthorizationError("LightRAG returned an unreadable evidence chain.")
+    validated_references = validate_authorized_lightrag_references(
+        chain.references, authorized_scope, access_filter
+    )
+    if [reference.rank for reference in validated_references] != list(
+        range(1, len(validated_references) + 1)
+    ):
+        raise LightRAGAuthorizationError("LightRAG evidence-chain ranks are invalid.")
+    records: list[_ReferenceRecord] = [
+        *chain.supporting_chunks,
+        *chain.entities,
+        *chain.relations,
+    ]
+    reference_by_id = {reference.reference_id: reference for reference in validated_references}
+    if len(reference_by_id) != len(validated_references):
+        raise LightRAGAuthorizationError("LightRAG evidence-chain references are duplicated.")
+    record_ids = {record.reference.reference_id for record in records}
+    if len(records) > _MAX_LIGHTRAG_RESULTS or len(record_ids) != len(records):
+        raise LightRAGAuthorizationError("LightRAG evidence-chain record bound is exceeded.")
+    record_reference_ids = {record.reference.reference_id for record in records}
+    if record_reference_ids != set(reference_by_id):
+        raise LightRAGAuthorizationError(
+            "LightRAG evidence-chain records and references do not match."
+        )
+    for record in records:
+        reference = record.reference
+        if reference.reference_id not in reference_by_id:
+            raise LightRAGAuthorizationError(
+                "LightRAG evidence-chain record is not represented by a validated reference."
+            )
+        if reference_by_id[reference.reference_id] != reference:
+            raise LightRAGAuthorizationError(
+                "LightRAG evidence-chain record provenance differs from its reference."
+            )
+        if isinstance(record, LightRAGChunkRecord):
+            expected_document = next(
+                (
+                    document
+                    for document in authorized_scope.revisions
+                    if authorized_scope.allows_reference(
+                        reference.model_copy(update={"rank": None})
+                    )
+                    and _revision_key(document)
+                    == (reference.source_document_id, reference.source_revision, reference.chunk_id)
+                ),
+                None,
+            )
+            if expected_document is None or record.text != expected_document.text:
+                raise LightRAGAuthorizationError(
+                    "LightRAG evidence-chain chunk content is not from the authorized revision."
+                )
+        expected_kind = (
+            "chunk"
+            if isinstance(record, LightRAGChunkRecord)
+            else "entity"
+            if isinstance(record, LightRAGEntityRecord)
+            else "relation"
+        )
+        if reference.reference_kind != expected_kind:
+            raise LightRAGAuthorizationError("LightRAG evidence-chain reference kind is invalid.")
+    for relation in chain.relations:
+        if relation.reference.related_entity_references != [
+            relation.source_entity,
+            relation.target_entity,
+        ] or any(
+            not _is_authorized_entity(entity, authorized_scope)
+            for entity in [relation.source_entity, relation.target_entity]
+        ):
+            raise LightRAGAuthorizationError(
+                "LightRAG evidence-chain relation endpoint provenance is invalid."
+            )
+    return chain.model_copy(deep=True)
 
 
 def _is_authorized_entity(

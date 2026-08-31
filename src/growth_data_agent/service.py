@@ -20,6 +20,11 @@ from .contracts import (
     ConversationSummary,
     ConversationTurn,
     DirectIdentifierAnswer,
+    EvidenceChain,
+    EvidenceChainChunk,
+    EvidenceChainEntity,
+    EvidenceChainReference,
+    EvidenceChainRelation,
     EvidenceSupportStatus,
     GovernedAnalyticalResponse,
     MetricDefinitionGap,
@@ -1551,6 +1556,7 @@ class AnswerQuestionService:
             semantic_query_evidence=query_evidence,
             driver_decomposition=decomposition,
             evidence=evidence,
+            evidence_chain=self._public_evidence_chain(investigation.lightrag_chain),
             graph_paths=self._graph_path_citations(investigation.graph_paths),
             source_freshness=freshness,
             effective_access_scope=scope,
@@ -1564,6 +1570,64 @@ class AnswerQuestionService:
                 "identifier entitlements was retrieved.",
             ],
             trace_id=trace_id,
+        )
+
+    @staticmethod
+    def _public_evidence_chain(chain) -> EvidenceChain:
+        def reference(source) -> EvidenceChainReference:
+            if source.rank is None:
+                raise LightRAGAuthorizationError(
+                    "LightRAG evidence-chain reference is missing its retrieval rank."
+                )
+            return EvidenceChainReference(
+                reference_id=_IDENTIFIER_PATTERN.sub("[redacted identifier]", source.reference_id),
+                reference_kind=source.reference_kind,
+                rank=source.rank,
+                source_document_id=_IDENTIFIER_PATTERN.sub(
+                    "[redacted identifier]", source.source_document_id
+                ),
+                source_url=_IDENTIFIER_PATTERN.sub("[redacted identifier]", source.source_url),
+                source_revision=source.source_revision,
+                chunk_id=_IDENTIFIER_PATTERN.sub("[redacted identifier]", source.chunk_id),
+                product=source.product,
+                region=source.region,
+                tenant_scope=_IDENTIFIER_PATTERN.sub("[redacted identifier]", source.tenant_scope),
+            )
+
+        return EvidenceChain(
+            supporting_chunks=[
+                EvidenceChainChunk(
+                    reference=reference(record.reference),
+                    text=_IDENTIFIER_PATTERN.sub("[redacted identifier]", record.text),
+                )
+                for record in chain.supporting_chunks
+            ],
+            entities=[
+                EvidenceChainEntity(
+                    reference=reference(record.reference),
+                    name=_IDENTIFIER_PATTERN.sub("[redacted identifier]", record.name),
+                    description=_IDENTIFIER_PATTERN.sub(
+                        "[redacted identifier]", record.description
+                    ),
+                )
+                for record in chain.entities
+            ],
+            relations=[
+                EvidenceChainRelation(
+                    reference=reference(record.reference),
+                    source_entity_reference_id=_IDENTIFIER_PATTERN.sub(
+                        "[redacted identifier]", record.source_entity.reference_id
+                    ),
+                    target_entity_reference_id=_IDENTIFIER_PATTERN.sub(
+                        "[redacted identifier]", record.target_entity.reference_id
+                    ),
+                    description=_IDENTIFIER_PATTERN.sub(
+                        "[redacted identifier]", record.description
+                    ),
+                )
+                for record in chain.relations
+            ],
+            references=[reference(source) for source in chain.references],
         )
 
     def _answer_direct_identifier_request(
