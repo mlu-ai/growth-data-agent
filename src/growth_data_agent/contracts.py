@@ -306,6 +306,33 @@ class EvidenceAnswer(BaseModel):
     support_explanation: str
 
 
+class FactorVocabularyCategory(StrEnum):
+    """The small, reviewed Factor Vocabulary from spec #72; hardcoded, not a live taxonomy."""
+
+    PROVISIONING_OR_ENTITLEMENT = "provisioning_or_entitlement"
+    BILLING_OR_SUBSCRIPTION = "billing_or_subscription"
+    IDENTITY_OR_ACCESS = "identity_or_access"
+    PRODUCT_RELEASE_OR_REGRESSION = "product_release_or_regression"
+    ONBOARDING = "onboarding"
+    CAMPAIGN = "campaign"
+    INCIDENT = "incident"
+
+
+class CandidateCausalFactor(BaseModel):
+    """A cited, falsifiable Hypothesis about a known driver; never proof of causation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    factor_id: str = Field(min_length=1, max_length=256)
+    category: FactorVocabularyCategory
+    documented_change: DriverContribution
+    affected_population: EvidenceScope
+    proposed_mechanism: str = Field(min_length=1, max_length=2_000)
+    factor_occurrence_time: date
+    citation: EvidenceCitation
+    non_causal_caveat: str = Field(min_length=1, max_length=512)
+
+
 class EvidenceChainReference(BaseModel):
     """Safe provenance projection for one ranked LightRAG chain reference."""
 
@@ -424,6 +451,7 @@ class GovernedAnalyticalResponse(BaseModel):
     driver_decomposition: DriverDecomposition | None = None
     evidence: EvidenceAnswer | None = None
     evidence_chain: EvidenceChain | None = None
+    candidate_causal_factor: CandidateCausalFactor | None = None
     graph_paths: list[GraphPathCitation] | None = None
     catalog_metadata: CatalogMetadata | None = None
     catalog_freshness: CatalogFreshness | None = None

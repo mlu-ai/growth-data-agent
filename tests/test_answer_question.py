@@ -112,8 +112,20 @@ def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClien
         citation["document_id"] != "jira-apac-paid-provisioning-incident-restricted"
         for citation in body["evidence"]["citations"]
     )
-    assert "does not establish causation" in body["answer"]
+    assert "does not establish that it caused" in body["answer"]
     assert body["effective_access_scope"]["regions"] == ["Americas", "APAC", "EMEA"]
+    factor = body["candidate_causal_factor"]
+    assert factor["category"] == "provisioning_or_entitlement"
+    assert factor["factor_id"] == "jira:jira-apac-paid-provisioning-incident:2026-06"
+    assert factor["factor_occurrence_time"] == "2026-06-12"
+    assert factor["affected_population"] == {
+        "product": "Jira",
+        "region": "APAC",
+        "tenant_scope": "APAC 51-200 Seat Tier Tenants",
+    }
+    assert factor["documented_change"] == body["driver_decomposition"]["contributions"][0]
+    assert factor["citation"]["source_document_id"] == "jira-apac-paid-provisioning-incident"
+    assert "not proof" in factor["non_causal_caveat"]
 
 
 def test_public_hypothesis_contains_a_cited_lightrag_evidence_chain(client: TestClient) -> None:
