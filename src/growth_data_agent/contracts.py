@@ -318,6 +318,41 @@ class FactorVocabularyCategory(StrEnum):
     INCIDENT = "incident"
 
 
+class FactorSupportStatus(StrEnum):
+    """A candidate card's deterministic outcome; distinct from a citation's support status."""
+
+    SUPPORTED = "supported"
+    CONTRADICTED = "contradicted"
+    INCONCLUSIVE = "inconclusive"
+
+
+class TemporalAlignment(StrEnum):
+    WITHIN_MOVEMENT_WINDOW = "within_movement_window"
+    WITHIN_INITIAL_LOOKBACK = "within_initial_lookback"
+
+
+class PopulationOverlap(StrEnum):
+    EXACT_SEGMENT_MATCH = "exact_segment_match"
+    PARTIAL_OR_BROADER_SCOPE = "partial_or_broader_scope"
+
+
+class CounterevidenceLevel(StrEnum):
+    NONE = "none"
+    MATERIAL = "material"
+
+
+class RankingSignals(BaseModel):
+    """Visible, interpretable ranking inputs — never collapsed into one opaque score."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    temporal_alignment: TemporalAlignment
+    population_overlap: PopulationOverlap
+    metric_mechanism_fit: bool
+    independent_source_count: int = Field(ge=0, le=3)
+    counterevidence: CounterevidenceLevel
+
+
 class CandidateCausalFactor(BaseModel):
     """A cited, falsifiable Hypothesis about a known driver; never proof of causation."""
 
@@ -329,7 +364,9 @@ class CandidateCausalFactor(BaseModel):
     affected_population: EvidenceScope
     proposed_mechanism: str = Field(min_length=1, max_length=2_000)
     factor_occurrence_time: date
-    citation: EvidenceCitation
+    citations: list[EvidenceCitation] = Field(min_length=1, max_length=3)
+    status: FactorSupportStatus
+    ranking_signals: RankingSignals
     non_causal_caveat: str = Field(min_length=1, max_length=512)
 
 
@@ -451,7 +488,7 @@ class GovernedAnalyticalResponse(BaseModel):
     driver_decomposition: DriverDecomposition | None = None
     evidence: EvidenceAnswer | None = None
     evidence_chain: EvidenceChain | None = None
-    candidate_causal_factor: CandidateCausalFactor | None = None
+    candidate_causal_factors: list[CandidateCausalFactor] | None = Field(default=None, max_length=3)
     graph_paths: list[GraphPathCitation] | None = None
     catalog_metadata: CatalogMetadata | None = None
     catalog_freshness: CatalogFreshness | None = None

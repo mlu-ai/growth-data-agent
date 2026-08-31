@@ -30,6 +30,10 @@ from .reranking import (
 )
 
 _MAX_EVIDENCE_TOOL_RESULTS = 3
+# Bounds how many independently-ranked LightRAG chunk references may anchor the
+# authorized candidate set — distinct from _MAX_EVIDENCE_TOOL_RESULTS (the retrieval
+# budget), even though both happen to be 3 today. See ADR-0008.
+_MAX_CANDIDATE_DOCUMENTS = 3
 
 GraphTraversalTool = Callable[[str, GraphAccessFilter, str, int], list[GraphPath]]
 RevisionReader = Callable[[EvidenceAccessFilter], Iterable[EvidenceDocument]]
@@ -168,10 +172,16 @@ class BoundedEvidenceInvestigationTools:
                 authorized_scope,
                 evidence_filter,
             )
-        # Keep the downstream candidate set anchored to LightRAG's top-ranked
-        # reference; the remaining chain records are explanatory context, not
-        # permission to widen the vector candidate set.
-        references = lightrag_chain.references[:1]
+        # Anchor the downstream candidate set to LightRAG's top-ranked *chunk*
+        # references only (up to _MAX_CANDIDATE_DOCUMENTS) — never `chain.references`,
+        # which interleaves chunk/entity/relation kinds and would let graph-context
+        # records masquerade as additional authorized documents. Entity/relation
+        # records remain explanatory context, not permission to widen the candidate
+        # set beyond chunk-backed, independently-ranked sources. See ADR-0008.
+        references = [
+            chunk.reference
+            for chunk in lightrag_chain.supporting_chunks[:_MAX_CANDIDATE_DOCUMENTS]
+        ]
         authorized_document_ids = {
             reference.source_document_id for reference in references
         }

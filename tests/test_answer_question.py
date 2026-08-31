@@ -114,9 +114,13 @@ def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClien
     )
     assert "does not establish that it caused" in body["answer"]
     assert body["effective_access_scope"]["regions"] == ["Americas", "APAC", "EMEA"]
-    factor = body["candidate_causal_factor"]
+    factors = body["candidate_causal_factors"]
+    assert len(factors) == 1
+    factor = factors[0]
     assert factor["category"] == "provisioning_or_entitlement"
-    assert factor["factor_id"] == "jira:jira-apac-paid-provisioning-incident:2026-06"
+    assert factor["factor_id"] == (
+        "jira:apac:apac-51-200-seat-tier-tenants:provisioning_or_entitlement:2026-06-12"
+    )
     assert factor["factor_occurrence_time"] == "2026-06-12"
     assert factor["affected_population"] == {
         "product": "Jira",
@@ -124,7 +128,12 @@ def test_data_analyst_receives_scoped_apac_evidence_hypothesis(client: TestClien
         "tenant_scope": "APAC 51-200 Seat Tier Tenants",
     }
     assert factor["documented_change"] == body["driver_decomposition"]["contributions"][0]
-    assert factor["citation"]["source_document_id"] == "jira-apac-paid-provisioning-incident"
+    assert factor["status"] == "supported"
+    assert factor["ranking_signals"]["independent_source_count"] == 1
+    assert factor["ranking_signals"]["counterevidence"] == "none"
+    assert [citation["source_document_id"] for citation in factor["citations"]] == [
+        "jira-apac-paid-provisioning-incident"
+    ]
     assert "not proof" in factor["non_causal_caveat"]
 
 

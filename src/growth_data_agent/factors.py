@@ -14,13 +14,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal, Protocol
 
-from .contracts import (
-    CandidateCausalFactor,
-    DriverContribution,
-    EvidenceScope,
-    FactorVocabularyCategory,
-)
-from .evidence import EvidenceAccessFilter, EvidenceDocument, _citation
+from .contracts import EvidenceScope, FactorVocabularyCategory
+from .evidence import EvidenceAccessFilter, EvidenceDocument
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -162,34 +157,6 @@ def validate_ranking_eligibility(
     if not access_filter.allows(record.document):
         reasons.append("source_not_currently_authorized")
     return FactorEligibility(eligible=not reasons, blocked_reasons=tuple(reasons))
-
-
-def build_candidate_causal_factor(
-    record: ProvisionalFactorRecord,
-    *,
-    contribution: DriverContribution,
-) -> CandidateCausalFactor:
-    """Project an eligible Provisional Factor Record into the public card.
-
-    Callers must only invoke this after `validate_ranking_eligibility` reports eligible.
-    """
-    assert record.category is not None
-    assert record.factor_occurrence_time is not None
-    assert record.scope is not None
-    return CandidateCausalFactor(
-        factor_id=record.factor_id,
-        category=record.category,
-        documented_change=contribution,
-        affected_population=record.scope,
-        proposed_mechanism=record.proposed_mechanism,
-        factor_occurrence_time=record.factor_occurrence_time,
-        citation=_citation(record.document),
-        non_causal_caveat=(
-            "This Candidate Causal Factor is a falsifiable Hypothesis label, not proof; "
-            "the cited evidence supports it but does not establish that it caused the "
-            "observed movement."
-        ),
-    )
 
 
 def build_evidence_investigation_query(

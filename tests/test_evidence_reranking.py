@@ -253,12 +253,16 @@ def test_only_active_driver_candidates_reach_the_cross_encoder_and_response(
     assert len(reranker.calls) == 1
     _, candidates, limit = reranker.calls[0]
     assert limit == 3
-    assert [document.document_id for document in candidates] == [
+    # Both `supporting` and `second_supporting` are equally active, correctly-scoped
+    # candidates now that retrieval is widened to top-3 (#75) — only the expired,
+    # deleted, wrong-segment, wrong-metric, and restricted documents are excluded.
+    assert {document.document_id for document in candidates} == {
+        supporting.document_id,
         second_supporting.document_id,
-    ]
-    assert [citation["document_id"] for citation in response.json()["evidence"]["citations"]] == [
-        second_supporting.document_id,
-    ]
+    }
+    assert {
+        citation["document_id"] for citation in response.json()["evidence"]["citations"]
+    } == {supporting.document_id, second_supporting.document_id}
     assert "restricted" not in response.text
     assert "expired-driver-evidence" not in response.text
     assert "deleted-driver-evidence" not in response.text

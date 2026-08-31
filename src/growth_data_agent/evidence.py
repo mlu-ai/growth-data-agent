@@ -77,6 +77,7 @@ class EvidenceDocument(BaseModel):
     support_explanation: str
     sensitive_identifiers: list[str] = Field(default_factory=list)
     accountable_team: str | None = None
+    is_high_authority_operational_record: bool = False
     source_document_id: str | None = None
     source_url: str | None = None
     source_revision: str = "synthetic-v1"

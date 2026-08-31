@@ -103,10 +103,15 @@ def test_data_analyst_receives_scoped_confluence_campaign_evidence(client: TestC
     assert "decline" not in body["evidence"]["support_explanation"]
     assert "does not establish that it caused" in body["answer"]
     assert body["source_freshness"]["is_current"] is True
-    factor = body["candidate_causal_factor"]
+    factors = body["candidate_causal_factors"]
+    assert len(factors) == 1
+    factor = factors[0]
     assert factor["category"] == "campaign"
+    assert factor["status"] == "supported"
     assert factor["factor_occurrence_time"] == "2026-06-15"
-    assert factor["citation"]["source_document_id"] == "confluence-americas-acquisition-campaign"
+    assert [c["source_document_id"] for c in factor["citations"]] == [
+        "confluence-americas-acquisition-campaign"
+    ]
     assert all(
         item["affected_scope"]["product"] == "Confluence"
         and item["affected_scope"]["region"] == "Americas"

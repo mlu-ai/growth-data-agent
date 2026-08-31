@@ -14,7 +14,6 @@ from .contracts import (
     AnalyticalIntent,
     AnalyticalRoute,
     AnswerQuestionRequest,
-    CandidateCausalFactor,
     CatalogFreshness,
     CatalogMetadata,
     ConversationSummary,
@@ -25,7 +24,7 @@ from .contracts import (
     EvidenceChainEntity,
     EvidenceChainReference,
     EvidenceChainRelation,
-    EvidenceSupportStatus,
+    FactorSupportStatus,
     GovernedAnalyticalResponse,
     MetricDefinitionGap,
     PlanAction,
@@ -60,12 +59,10 @@ from .execution import (
     IntentInterpreter,
     RuleBasedIntentInterpreter,
 )
+from .factor_ranking import rank_candidate_causal_factors
 from .factors import (
     DriverMovementWindow,
-    RuleBasedFactorExtractor,
-    build_candidate_causal_factor,
     build_evidence_investigation_query,
-    validate_ranking_eligibility,
 )
 from .graph import (
     ApacheAgeEvidenceGraphStore,
@@ -691,42 +688,46 @@ class AnswerQuestionService:
     def _evidence_response_from_plan(self, state: _PlannedInvestigationState):
         assert state.cited_evidence is not None
         assert state.matching_contribution is not None
+        assert state.evidence_filter is not None
+        assert state.driver_window is not None
         evidence = build_evidence_answer(state.cited_evidence.documents)
-        candidate_causal_factor = None
+        candidate_causal_factors = rank_candidate_causal_factors(
+            state.cited_evidence.documents,
+            driver_window=state.driver_window,
+            access_filter=state.evidence_filter,
+            contribution=state.matching_contribution,
+            metric_name=state.metric_name,
+        )
         evidence_chain = self._empty_public_evidence_chain()
         graph_paths: list[Any] = []
 
-        if evidence.support_status != EvidenceSupportStatus.SUPPORTS:
+        if not candidate_causal_factors:
             classification = ResultClassification.INCONCLUSIVE
             answer = (
-                "Inconclusive: the permitted evidence does not support a reliable "
-                f"explanation for the observed {state.region} {state.seat_tier} Seat Tier "
-                f"movement. {evidence.support_explanation}"
+                "Inconclusive: no rank-eligible Candidate Causal Factor was found for the "
+                f"{state.region} {state.seat_tier} Seat Tier movement. "
+                f"{evidence.support_explanation}"
             )
         else:
-            candidate_causal_factor, blocked_reasons = self._build_eligible_candidate_causal_factor(
-                state
+            top_card = candidate_causal_factors[0]
+            classification = (
+                ResultClassification.HYPOTHESIS
+                if top_card.status == FactorSupportStatus.SUPPORTED
+                else ResultClassification.INCONCLUSIVE
             )
-            if candidate_causal_factor is None:
-                classification = ResultClassification.INCONCLUSIVE
-                answer = (
-                    "Inconclusive: the retrieved evidence did not produce a rank-eligible "
-                    f"Candidate Causal Factor for the {state.region} {state.seat_tier} Seat "
-                    f"Tier movement ({blocked_reasons})."
-                )
-            else:
-                classification = ResultClassification.HYPOTHESIS
-                category_label = candidate_causal_factor.category.value.replace("_", " ")
-                answer = (
-                    f"Candidate Causal Factor ({category_label}): "
-                    f"{candidate_causal_factor.proposed_mechanism} This may help explain the "
-                    f"{state.region} {state.seat_tier} Seat Tier "
-                    f"{self._metric_label(state.metric_name)} movement observed on "
-                    f"{candidate_causal_factor.factor_occurrence_time.isoformat()}. "
-                    f"{candidate_causal_factor.non_causal_caveat}"
-                )
-                evidence_chain = self._public_evidence_chain(state.cited_evidence.lightrag_chain)
-                graph_paths = self._graph_path_citations(state.graph_paths)
+            card_summaries = "; ".join(
+                f"{card.category.value.replace('_', ' ')} ({card.status.value}): "
+                f"{card.proposed_mechanism}"
+                for card in candidate_causal_factors
+            )
+            answer = (
+                f"{len(candidate_causal_factors)} Candidate Causal Factor(s) for the "
+                f"{state.region} {state.seat_tier} Seat Tier "
+                f"{self._metric_label(state.metric_name)} movement: {card_summaries} "
+                f"{top_card.non_causal_caveat}"
+            )
+            evidence_chain = self._public_evidence_chain(state.cited_evidence.lightrag_chain)
+            graph_paths = self._graph_path_citations(state.graph_paths)
 
         return GovernedAnalyticalResponse(
             answer=answer,
@@ -736,56 +737,21 @@ class AnswerQuestionService:
             driver_decomposition=state.decomposition,
             evidence=evidence,
             evidence_chain=evidence_chain,
-            candidate_causal_factor=candidate_causal_factor,
+            candidate_causal_factors=candidate_causal_factors,
             graph_paths=graph_paths,
             source_freshness=state.freshness,
             effective_access_scope=state.authorized_execution.effective_scope,
             caveats=[
                 (
                     f"The {state.region} {state.seat_tier} Seat Tier result is an observed "
-                    "Driver Decomposition; the Candidate Causal Factor is a cited Hypothesis, "
-                    "not a causal conclusion."
+                    "Driver Decomposition; each Candidate Causal Factor is a cited "
+                    "Hypothesis, not a causal conclusion."
                 ),
                 "Only evidence permitted by product, Region, Tenant, classification, and "
                 "identifier entitlements was retrieved.",
             ],
             trace_id=state.authorized_execution.trace_id,
         )
-
-    @staticmethod
-    def _build_eligible_candidate_causal_factor(
-        state: _PlannedInvestigationState,
-    ) -> tuple[CandidateCausalFactor | None, str | None]:
-        """Extract and validate a Candidate Causal Factor from the SUPPORTS document.
-
-        Returns `(None, blocked_reasons)` when no rank-eligible factor can be built — the
-        caller then classifies INCONCLUSIVE using the returned reason text.
-        """
-        assert state.cited_evidence is not None
-        assert state.evidence_filter is not None
-        assert state.driver_window is not None
-        assert state.matching_contribution is not None
-        supporting_document = next(
-            (
-                document
-                for document in state.cited_evidence.documents
-                if document.support_status == EvidenceSupportStatus.SUPPORTS
-            ),
-            None,
-        )
-        if supporting_document is None:
-            return None, "no_supporting_document"
-        record = RuleBasedFactorExtractor().extract(supporting_document)
-        if record is None:
-            return None, "extraction_failed"
-        eligibility = validate_ranking_eligibility(
-            record,
-            driver_window=state.driver_window,
-            access_filter=state.evidence_filter,
-        )
-        if not eligibility.eligible:
-            return None, ", ".join(eligibility.blocked_reasons)
-        return build_candidate_causal_factor(record, contribution=state.matching_contribution), None
 
     def _unresolved_plan_response(self, state: _PlannedInvestigationState):
         return GovernedAnalyticalResponse(
