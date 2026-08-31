@@ -65,7 +65,13 @@ def test_data_analyst_receives_emea_confluence_new_mau_regression_hypothesis(
     )
     assert "Hypothesis" in body["answer"]
     assert "onboarding-email regression" in body["answer"]
-    assert "does not establish causation" in body["answer"]
+    assert "does not establish that it caused" in body["answer"]
+    factor = body["candidate_causal_factor"]
+    assert factor["category"] == "onboarding"
+    assert factor["factor_occurrence_time"] == "2026-06-20"
+    assert factor["citation"]["source_document_id"] == (
+        "confluence-emea-onboarding-email-regression"
+    )
 
 
 def test_apac_regional_manager_receives_only_apac_jira_new_mau_rows(

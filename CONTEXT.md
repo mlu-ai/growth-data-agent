@@ -70,6 +70,30 @@ The cited path from a metric movement through an affected segment to related
 documents, incidents, campaigns, contracts, or accountable teams.
 _Avoid_: Proof, causal chain
 
+**Candidate Causal Factor**:
+A cited, falsifiable Hypothesis about a specific documented change that may
+help explain a known Driver Decomposition movement; it is not proof of
+causation.
+_Avoid_: Cause, root cause, confirmed factor
+
+**Factor Occurrence Time**:
+The date a Candidate Causal Factor's documented change is recorded as having
+occurred, used to test whether it could plausibly explain an observed
+movement.
+_Avoid_: Timestamp, event time
+
+**Provisional Factor Record**:
+A revision-linked derived projection extracted from one Evidence Revision,
+never a source or permission authority; deterministic validation decides
+whether it is ranking eligible.
+_Avoid_: Verified factor, confirmed record
+
+**Factor Vocabulary**:
+The small, reviewed set of categories (such as provisioning or entitlement,
+campaign, or incident) used to guide evidence retrieval for a Candidate
+Causal Factor; it is not causal or metric authority.
+_Avoid_: Root-cause taxonomy, category authority
+
 **Paid Tenant Tenure**:
 Elapsed time since the Product User's Tenant began its paid subscription.
 _Avoid_: Account age, user age, tenure

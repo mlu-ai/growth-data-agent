@@ -14,6 +14,7 @@ from .contracts import (
     AnalyticalIntent,
     AnalyticalRoute,
     AnswerQuestionRequest,
+    CandidateCausalFactor,
     CatalogFreshness,
     CatalogMetadata,
     ConversationSummary,
@@ -58,6 +59,13 @@ from .execution import (
     ExecutionGraph,
     IntentInterpreter,
     RuleBasedIntentInterpreter,
+)
+from .factors import (
+    DriverMovementWindow,
+    RuleBasedFactorExtractor,
+    build_candidate_causal_factor,
+    build_evidence_investigation_query,
+    validate_ranking_eligibility,
 )
 from .graph import (
     ApacheAgeEvidenceGraphStore,
@@ -137,8 +145,8 @@ class _PlannedInvestigationState:
     seat_tier: str | None = None
     evidence_query: str | None = None
     scope_evidence_to_seat_tier: bool = False
-    supported_answer: str | None = None
-    inconclusive_answer: str | None = None
+    matching_contribution: Any = None
+    driver_window: Any = None
     definition: Any = None
     decomposition: Any = None
     query_evidence: Any = None
@@ -496,17 +504,7 @@ class AnswerQuestionService:
                 metric_name="jira_new_peu",
                 region="APAC",
                 seat_tier="51-200",
-                evidence_query="Jira APAC 51-200 paid provisioning June 2026 decline",
                 scope_evidence_to_seat_tier=True,
-                supported_answer=(
-                    "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
-                    "part of the observed APAC 51-200 Seat Tier Tenant decline. The evidence "
-                    "supports this Hypothesis but does not establish causation."
-                ),
-                inconclusive_answer=(
-                    "Inconclusive: the permitted evidence does not support a reliable explanation "
-                    "for the observed APAC 51-200 Seat Tier Tenant decline."
-                ),
             )
         if self._requests_confluence_campaign_evidence(question):
             return _PlannedInvestigationState(
@@ -515,19 +513,7 @@ class AnswerQuestionService:
                 metric_name="confluence_new_peu",
                 region="Americas",
                 seat_tier="11-50",
-                evidence_query=(
-                    "Confluence Americas 11-50 acquisition campaign June 2026 New PEU movement"
-                ),
                 scope_evidence_to_seat_tier=True,
-                supported_answer=(
-                    "Hypothesis: the permitted Confluence Americas acquisition campaign may help "
-                    "explain the observed Americas 11-50 Seat Tier Tenant movement. The evidence "
-                    "supports this Hypothesis but does not establish causation."
-                ),
-                inconclusive_answer=(
-                    "Inconclusive: the permitted evidence does not support a reliable explanation "
-                    "for the observed Americas 11-50 Seat Tier Tenant movement."
-                ),
             )
         return _PlannedInvestigationState(
             authorized_execution=authorized_execution,
@@ -535,19 +521,7 @@ class AnswerQuestionService:
             metric_name="confluence_new_mau",
             region="EMEA",
             seat_tier="51-200",
-            evidence_query=(
-                "Confluence EMEA 51-200 onboarding-email regression June 2026 New MAU decline"
-            ),
             scope_evidence_to_seat_tier=True,
-            supported_answer=(
-                "Hypothesis: the permitted Confluence EMEA onboarding-email regression may help "
-                "explain the observed 51-200 Seat Tier Tenant New MAU decline. The evidence "
-                "supports this Hypothesis but does not establish causation."
-            ),
-            inconclusive_answer=(
-                "Inconclusive: the permitted evidence does not support a reliable explanation "
-                "for the observed Confluence EMEA 51-200 Seat Tier Tenant New MAU decline."
-            ),
         )
 
     def _run_plan_metricflow(
@@ -591,7 +565,6 @@ class AnswerQuestionService:
             or state.query_evidence is None
             or state.region is None
             or state.seat_tier is None
-            or state.evidence_query is None
         ):
             raise RuntimeError("Cited evidence requires a successful MetricFlow action.")
         profile = state.authorized_execution.access_profile
@@ -613,6 +586,19 @@ class AnswerQuestionService:
             return PlanActionExecution(
                 value=self._unresolved_plan_response(state), payload=state, stop=True
             )
+        state.matching_contribution = matching
+        state.driver_window = DriverMovementWindow.from_periods(
+            state.decomposition.baseline_period, state.decomposition.comparison_period
+        )
+        state.evidence_query = build_evidence_investigation_query(
+            metric_label=self._metric_label(state.metric_name),
+            product=product,
+            region=state.region,
+            seat_tier=state.seat_tier,
+            driver_window=state.driver_window,
+            canonical_time_rule=state.definition.time_rule,
+            movement_direction="decline" if matching.change < 0 else "increase",
+        )
         state.evidence_filter = profile.evidence_filter(
             product,
             state.region,
@@ -704,17 +690,44 @@ class AnswerQuestionService:
 
     def _evidence_response_from_plan(self, state: _PlannedInvestigationState):
         assert state.cited_evidence is not None
+        assert state.matching_contribution is not None
         evidence = build_evidence_answer(state.cited_evidence.documents)
-        if evidence.support_status == EvidenceSupportStatus.SUPPORTS:
-            classification = ResultClassification.HYPOTHESIS
-            answer = cast(str, state.supported_answer)
-            evidence_chain = self._public_evidence_chain(state.cited_evidence.lightrag_chain)
-            graph_paths = self._graph_path_citations(state.graph_paths)
-        else:
+        candidate_causal_factor = None
+        evidence_chain = self._empty_public_evidence_chain()
+        graph_paths: list[Any] = []
+
+        if evidence.support_status != EvidenceSupportStatus.SUPPORTS:
             classification = ResultClassification.INCONCLUSIVE
-            answer = f"{state.inconclusive_answer} {evidence.support_explanation}"
-            evidence_chain = self._empty_public_evidence_chain()
-            graph_paths = []
+            answer = (
+                "Inconclusive: the permitted evidence does not support a reliable "
+                f"explanation for the observed {state.region} {state.seat_tier} Seat Tier "
+                f"movement. {evidence.support_explanation}"
+            )
+        else:
+            candidate_causal_factor, blocked_reasons = self._build_eligible_candidate_causal_factor(
+                state
+            )
+            if candidate_causal_factor is None:
+                classification = ResultClassification.INCONCLUSIVE
+                answer = (
+                    "Inconclusive: the retrieved evidence did not produce a rank-eligible "
+                    f"Candidate Causal Factor for the {state.region} {state.seat_tier} Seat "
+                    f"Tier movement ({blocked_reasons})."
+                )
+            else:
+                classification = ResultClassification.HYPOTHESIS
+                category_label = candidate_causal_factor.category.value.replace("_", " ")
+                answer = (
+                    f"Candidate Causal Factor ({category_label}): "
+                    f"{candidate_causal_factor.proposed_mechanism} This may help explain the "
+                    f"{state.region} {state.seat_tier} Seat Tier "
+                    f"{self._metric_label(state.metric_name)} movement observed on "
+                    f"{candidate_causal_factor.factor_occurrence_time.isoformat()}. "
+                    f"{candidate_causal_factor.non_causal_caveat}"
+                )
+                evidence_chain = self._public_evidence_chain(state.cited_evidence.lightrag_chain)
+                graph_paths = self._graph_path_citations(state.graph_paths)
+
         return GovernedAnalyticalResponse(
             answer=answer,
             result_classification=classification,
@@ -723,20 +736,56 @@ class AnswerQuestionService:
             driver_decomposition=state.decomposition,
             evidence=evidence,
             evidence_chain=evidence_chain,
+            candidate_causal_factor=candidate_causal_factor,
             graph_paths=graph_paths,
             source_freshness=state.freshness,
             effective_access_scope=state.authorized_execution.effective_scope,
             caveats=[
                 (
-                    f"The {state.region} {state.seat_tier} Seat Tier result is an observed Driver "
-                    "Decomposition; the retrieved material is a Hypothesis, not a causal "
-                    "conclusion."
+                    f"The {state.region} {state.seat_tier} Seat Tier result is an observed "
+                    "Driver Decomposition; the Candidate Causal Factor is a cited Hypothesis, "
+                    "not a causal conclusion."
                 ),
                 "Only evidence permitted by product, Region, Tenant, classification, and "
                 "identifier entitlements was retrieved.",
             ],
             trace_id=state.authorized_execution.trace_id,
         )
+
+    @staticmethod
+    def _build_eligible_candidate_causal_factor(
+        state: _PlannedInvestigationState,
+    ) -> tuple[CandidateCausalFactor | None, str | None]:
+        """Extract and validate a Candidate Causal Factor from the SUPPORTS document.
+
+        Returns `(None, blocked_reasons)` when no rank-eligible factor can be built — the
+        caller then classifies INCONCLUSIVE using the returned reason text.
+        """
+        assert state.cited_evidence is not None
+        assert state.evidence_filter is not None
+        assert state.driver_window is not None
+        assert state.matching_contribution is not None
+        supporting_document = next(
+            (
+                document
+                for document in state.cited_evidence.documents
+                if document.support_status == EvidenceSupportStatus.SUPPORTS
+            ),
+            None,
+        )
+        if supporting_document is None:
+            return None, "no_supporting_document"
+        record = RuleBasedFactorExtractor().extract(supporting_document)
+        if record is None:
+            return None, "extraction_failed"
+        eligibility = validate_ranking_eligibility(
+            record,
+            driver_window=state.driver_window,
+            access_filter=state.evidence_filter,
+        )
+        if not eligibility.eligible:
+            return None, ", ".join(eligibility.blocked_reasons)
+        return build_candidate_causal_factor(record, contribution=state.matching_contribution), None
 
     def _unresolved_plan_response(self, state: _PlannedInvestigationState):
         return GovernedAnalyticalResponse(
@@ -964,34 +1013,6 @@ class AnswerQuestionService:
                 effective_access_scope=scope,
                 caveats=["The request did not identify a governed metric."],
                 trace_id=trace_id,
-            )
-
-        if metric_name == "jira_new_peu" and self._requests_apac_decline_evidence(request.question):
-            return self._answer_apac_decline_evidence(
-                scope=scope,
-                access_profile=access_profile,
-                trace_id=trace_id,
-                agent_user_id=request.agent_user_id,
-            )
-
-        if metric_name == "confluence_new_peu" and self._requests_confluence_campaign_evidence(
-            request.question
-        ):
-            return self._answer_confluence_campaign_evidence(
-                scope=scope,
-                access_profile=access_profile,
-                trace_id=trace_id,
-                agent_user_id=request.agent_user_id,
-            )
-
-        if metric_name == "confluence_new_mau" and self._requests_confluence_emea_regression(
-            request.question
-        ):
-            return self._answer_confluence_emea_regression_evidence(
-                scope=scope,
-                access_profile=access_profile,
-                trace_id=trace_id,
-                agent_user_id=request.agent_user_id,
             )
 
         if metric_name in {
@@ -1724,207 +1745,6 @@ class AnswerQuestionService:
                 "Catalog-dependent ownership, classification, and discovery details are not "
                 "available in this response.",
                 "Canonical metric logic is independent of DataHub availability.",
-            ],
-            trace_id=trace_id,
-        )
-
-    def _answer_apac_decline_evidence(
-        self, *, scope, access_profile, trace_id: str, agent_user_id: str
-    ):
-        return self._answer_segment_evidence(
-            metric_name="jira_new_peu",
-            region="APAC",
-            seat_tier="51-200",
-            scope=scope,
-            access_profile=access_profile,
-            trace_id=trace_id,
-            agent_user_id=agent_user_id,
-            evidence_query="Jira APAC 51-200 paid provisioning June 2026 decline",
-            scope_evidence_to_seat_tier=True,
-            supported_answer=(
-                "Hypothesis: the permitted Jira APAC paid-provisioning incident may explain "
-                "part of the observed APAC 51-200 Seat Tier Tenant decline. "
-                "The evidence supports this Hypothesis but does not establish causation."
-            ),
-            inconclusive_answer=(
-                "Inconclusive: the permitted evidence does not support a reliable explanation "
-                "for the observed APAC 51-200 Seat Tier Tenant decline."
-            ),
-        )
-
-    def _answer_confluence_campaign_evidence(
-        self, *, scope, access_profile, trace_id: str, agent_user_id: str
-    ):
-        return self._answer_segment_evidence(
-            metric_name="confluence_new_peu",
-            region="Americas",
-            seat_tier="11-50",
-            scope=scope,
-            access_profile=access_profile,
-            trace_id=trace_id,
-            agent_user_id=agent_user_id,
-            evidence_query=(
-                "Confluence Americas 11-50 acquisition campaign June 2026 New PEU movement"
-            ),
-            scope_evidence_to_seat_tier=True,
-            supported_answer=(
-                "Hypothesis: the permitted Confluence Americas acquisition campaign may help "
-                "explain the observed Americas 11-50 Seat Tier Tenant movement. "
-                "The evidence supports this Hypothesis but does not establish causation."
-            ),
-            inconclusive_answer=(
-                "Inconclusive: the permitted evidence does not support a reliable explanation "
-                "for the observed Americas 11-50 Seat Tier Tenant movement."
-            ),
-        )
-
-    def _answer_confluence_emea_regression_evidence(
-        self, *, scope, access_profile, trace_id: str, agent_user_id: str
-    ):
-        return self._answer_segment_evidence(
-            metric_name="confluence_new_mau",
-            region="EMEA",
-            seat_tier="51-200",
-            scope=scope,
-            access_profile=access_profile,
-            trace_id=trace_id,
-            agent_user_id=agent_user_id,
-            evidence_query=(
-                "Confluence EMEA 51-200 onboarding-email regression June 2026 New MAU decline"
-            ),
-            scope_evidence_to_seat_tier=True,
-            supported_answer=(
-                "Hypothesis: the permitted Confluence EMEA onboarding-email regression may help "
-                "explain the observed 51-200 Seat Tier Tenant New MAU decline. The evidence "
-                "supports this Hypothesis but does not establish causation."
-            ),
-            inconclusive_answer=(
-                "Inconclusive: the permitted evidence does not support a reliable explanation "
-                "for the observed Confluence EMEA 51-200 Seat Tier Tenant New MAU decline."
-            ),
-        )
-
-    def _answer_segment_evidence(
-        self,
-        *,
-        metric_name: str,
-        region: str,
-        seat_tier: str,
-        scope,
-        access_profile,
-        trace_id: str,
-        agent_user_id: str,
-        evidence_query: str,
-        supported_answer: str,
-        inconclusive_answer: str,
-        scope_evidence_to_seat_tier: bool = False,
-    ):
-        metric_product = self._metric_product(metric_name)
-        access_profile.authorize_product(metric_product)
-        access_profile.authorize_region(region)
-        definition, decomposition, query_evidence, freshness = self._semantic_driver_decomposition(
-            metric_name,
-            access_profile,
-            baseline_period="2026-05",
-            comparison_period="2026-06",
-        )
-        if definition is None or decomposition is None or query_evidence is None:
-            return GovernedAnalyticalResponse(
-                answer=(
-                    f"Evidence for the {metric_product} {region} {seat_tier} movement cannot "
-                    "be assessed because semantic validation is not current."
-                ),
-                result_classification=ResultClassification.LIMITATION,
-                source_freshness=freshness,
-                effective_access_scope=scope,
-                caveats=[
-                    "Run dbt validation and refresh the semantic artifact before retrieving "
-                    "evidence."
-                ],
-                trace_id=trace_id,
-            )
-
-        matching_contribution = next(
-            (
-                contribution
-                for contribution in decomposition.contributions
-                if contribution.region == region and contribution.seat_tier == seat_tier
-            ),
-            None,
-        )
-        if (
-            matching_contribution is None
-            or decomposition.reconciled_change != decomposition.net_change
-            or decomposition.residual != 0
-        ):
-            return GovernedAnalyticalResponse(
-                answer=(
-                    f"Inconclusive: the validated Driver Decomposition does not resolve the "
-                    f"{region} {seat_tier} Seat Tier scope, so no evidence was retrieved."
-                ),
-                result_classification=ResultClassification.INCONCLUSIVE,
-                canonical_definition=definition,
-                semantic_query_evidence=query_evidence,
-                driver_decomposition=decomposition,
-                evidence=build_evidence_answer([]),
-                source_freshness=freshness,
-                effective_access_scope=scope,
-                caveats=[
-                    "Evidence retrieval requires a reconciled Driver Decomposition with a "
-                    "matching Region and Seat Tier contribution."
-                ],
-                trace_id=trace_id,
-            )
-
-        segment_filter = seat_tier if scope_evidence_to_seat_tier else None
-        graph_filter = access_profile.graph_filter(
-            metric_product,
-            region,
-            seat_tier=segment_filter,
-        )
-        access_filter = access_profile.evidence_filter(
-            metric_product,
-            region,
-            seat_tier=seat_tier if scope_evidence_to_seat_tier else None,
-            metric_name=metric_name,
-            agent_user_id=agent_user_id,
-        )
-        investigation = self.evidence_tools.investigate(
-            query=evidence_query,
-            evidence_filter=access_filter,
-            graph_filter=graph_filter,
-            metric_name=metric_name,
-        )
-        evidence = build_evidence_answer(investigation.documents)
-        if evidence.support_status == EvidenceSupportStatus.SUPPORTS:
-            classification = ResultClassification.HYPOTHESIS
-            answer = supported_answer
-            evidence_chain = self._public_evidence_chain(investigation.lightrag_chain)
-            graph_paths = self._graph_path_citations(investigation.graph_paths)
-        else:
-            classification = ResultClassification.INCONCLUSIVE
-            answer = f"{inconclusive_answer} {evidence.support_explanation}"
-            evidence_chain = self._empty_public_evidence_chain()
-            graph_paths = []
-        return GovernedAnalyticalResponse(
-            answer=answer,
-            result_classification=classification,
-            canonical_definition=definition,
-            semantic_query_evidence=query_evidence,
-            driver_decomposition=decomposition,
-            evidence=evidence,
-            evidence_chain=evidence_chain,
-            graph_paths=graph_paths,
-            source_freshness=freshness,
-            effective_access_scope=scope,
-            caveats=[
-                (
-                    f"The {region} {seat_tier} Seat Tier result is an observed Driver "
-                    "Decomposition; the retrieved material is a Hypothesis, not a causal "
-                    "conclusion."
-                ),
-                "Only evidence permitted by product, Region, Tenant, classification, and "
-                "identifier entitlements was retrieved.",
             ],
             trace_id=trace_id,
         )
