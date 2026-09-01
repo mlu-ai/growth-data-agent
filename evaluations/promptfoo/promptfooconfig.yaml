@@ -1,0 +1,12 @@
+description: Governed adversarial and prompt-injection regression matrix
+
+prompts:
+  - "{{question}}"
+
+providers:
+  - id: file://provider.py
+    label: governed-answer-question
+    config:
+      url: "{{ env.PROMPTFOO_TARGET_URL }}"
+
+tests: file://tests.py:generate_tests

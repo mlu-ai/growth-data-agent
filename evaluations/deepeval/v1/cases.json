@@ -1,0 +1,85 @@
+{
+  "artifact_type": "deepeval_trajectory_dataset",
+  "dataset_version": "1.0.0",
+  "published_at": "2026-09-01",
+  "cases": [
+    {
+      "case_id": "deepeval-single-turn-definition",
+      "source_case_id": "definition-jira-new-peu-full",
+      "dimensions": ["single_turn_continuity"],
+      "split": "development",
+      "expected_turn_count": 1,
+      "expected_result_classifications": ["canonical_definition"],
+      "allowed_tools": [],
+      "expected_tool_selections": [[]],
+      "expected_tool_argument_keys": [{}],
+      "expected_freshnesses": ["current"]
+    },
+    {
+      "case_id": "deepeval-multi-turn-definition-follow-up",
+      "source_case_id": "definition-multiturn-follow-up",
+      "dimensions": ["multi_turn_continuity"],
+      "split": "held_out",
+      "expected_turn_count": 2,
+      "expected_result_classifications": ["canonical_definition", "canonical_definition"],
+      "allowed_tools": [],
+      "expected_tool_selections": [[], []],
+      "expected_tool_argument_keys": [{}, {}],
+      "expected_freshnesses": ["current", "current"],
+      "setup_note": "Replay the two turns through one conversation checkpoint."
+    },
+    {
+      "case_id": "deepeval-summary-boundary-clears-selection",
+      "source_case_id": "active-investigation-unrelated-question-no-inherit",
+      "dimensions": ["conversation_summary_boundary"],
+      "split": "validation",
+      "expected_turn_count": 3,
+      "expected_result_classifications": ["hypothesis", "hypothesis", "canonical_definition"],
+      "allowed_tools": ["metricflow", "cited_evidence", "lightrag"],
+      "expected_tool_selections": [["metricflow", "cited_evidence", "lightrag"], ["metricflow", "cited_evidence", "lightrag"], []],
+      "expected_tool_argument_keys": [{"semantic_driver_decomposition": ["metric_name"], "lightrag_retrieval": ["result_limit"], "evidence_retrieval": ["result_limit"]}, {"semantic_driver_decomposition": ["metric_name"], "lightrag_retrieval": ["result_limit"], "evidence_retrieval": ["result_limit"]}, {}],
+      "expected_freshnesses": ["current", "current", "current"],
+      "summary_boundary_turn": 3,
+      "setup_note": "Carry only the bounded summary and recent turns; do not inject raw evidence or a prior factor card."
+    },
+    {
+      "case_id": "deepeval-active-investigation-reauthorization",
+      "source_case_id": "active-investigation-select-then-reassert",
+      "dimensions": ["active_investigation_reauthorization", "multi_turn_continuity"],
+      "split": "development",
+      "expected_turn_count": 3,
+      "expected_result_classifications": ["hypothesis", "hypothesis", "hypothesis"],
+      "allowed_tools": ["metricflow", "cited_evidence", "lightrag"],
+      "expected_tool_selections": [["metricflow", "cited_evidence", "lightrag"], ["metricflow", "cited_evidence", "lightrag"], ["metricflow", "cited_evidence", "lightrag"]],
+      "expected_tool_argument_keys": [{"semantic_driver_decomposition": ["metric_name"], "lightrag_retrieval": ["result_limit"], "evidence_retrieval": ["result_limit"]}, {"semantic_driver_decomposition": ["metric_name"], "lightrag_retrieval": ["result_limit"], "evidence_retrieval": ["result_limit"]}, {"semantic_driver_decomposition": ["metric_name"], "lightrag_retrieval": ["result_limit"], "evidence_retrieval": ["result_limit"]}],
+      "expected_freshnesses": ["current", "current", "current"],
+      "reauthorization_turns": [2, 3],
+      "selected_factor_id": "jira:apac:apac-51-200-seat-tier-tenants:provisioning_or_entitlement:2026-06-12",
+      "setup_note": "Resolve the selected factor from turn 1, then reauthorize and rerank it on each later turn."
+    },
+    {
+      "case_id": "deepeval-evidence-revision-freshness",
+      "source_case_id": "stale-revision-conversation-refreshes-freshness",
+      "dimensions": ["evidence_revision_freshness", "multi_turn_continuity"],
+      "split": "held_out",
+      "expected_turn_count": 2,
+      "expected_result_classifications": ["canonical_definition", "limitation"],
+      "allowed_tools": [],
+      "expected_tool_selections": [[], []],
+      "expected_tool_argument_keys": [{}, {}],
+      "expected_freshnesses": ["current", "stale"],
+      "setup_note": "Make the semantic artifact stale between turns and verify that saved context is not reused."
+    },
+    {
+      "case_id": "deepeval-denied-selection",
+      "source_case_id": "active-investigation-unknown-factor-limitation",
+      "dimensions": ["active_investigation_reauthorization"],
+      "split": "validation",
+      "expected_turn_count": 1,
+      "expected_result_classifications": ["limitation"],
+      "allowed_tools": [],
+      "expected_tool_selections": [[]],
+      "expected_tool_argument_keys": [{}]
+    }
+  ]
+}
