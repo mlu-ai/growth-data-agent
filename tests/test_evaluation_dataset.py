@@ -95,14 +95,34 @@ def test_every_case_has_required_provenance_and_approval(
         assert len(case.turns) >= 1, case.case_id
 
 
+def _is_type_checking_guard(test: ast.expr) -> bool:
+    """True for `if TYPE_CHECKING:` / `if typing.TYPE_CHECKING:` — a block whose
+    imports never execute at runtime, only for static type checkers."""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+
+def _iter_runtime_nodes(node: ast.AST):
+    """Walk the tree like `ast.walk`, but never descend into an
+    `if TYPE_CHECKING:` block's body — those imports never execute."""
+    yield node
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.If) and _is_type_checking_guard(child.test):
+            continue
+        yield from _iter_runtime_nodes(child)
+
+
 def _local_module_imports(path: Path) -> set[str]:
-    """Names this file imports that could refer to another module in this package
-    (bare module names for `import x` / relative `from .x import y`) — third-party
-    absolute imports (`from fastapi import ...`) are filtered out by the caller,
-    which only follows names that resolve to an actual file in _SOURCE_DIR."""
+    """Names this file imports **at runtime** that could refer to another module
+    in this package (bare module names for `import x` / relative `from .x import
+    y`) — third-party absolute imports (`from fastapi import ...`) are filtered
+    out by the caller, which only follows names that resolve to an actual file in
+    _SOURCE_DIR. Imports inside an `if TYPE_CHECKING:` block are excluded: they
+    never run, so they can't make anything reachable at runtime."""
     tree = ast.parse(path.read_text(), filename=str(path))
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _iter_runtime_nodes(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level > 0:

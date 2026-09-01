@@ -194,13 +194,15 @@ def evaluate_candidate_causal_factor_status(
         return None
     problems: list[str] = []
     for factor in factors:
+        factor_id = factor.get("factor_id")
         status = factor.get("status")
         if status not in {"supported", "contradicted", "inconclusive"}:
-            problems.append(f"{factor.get('factor_id')}: invalid status {status!r}")
+            problems.append(f"{factor_id}: invalid status {status!r}")
             continue
+        if not isinstance(factor.get("sizing_eligible"), bool):
+            problems.append(f"{factor_id}: sizing_eligible is not a bool")
         signals = factor.get("ranking_signals") or {}
         source_count = signals.get("independent_source_count")
-        factor_id = factor.get("factor_id")
         if not isinstance(source_count, int) or not (0 <= source_count <= 3):
             problems.append(f"{factor_id}: independent_source_count out of range")
         if status == "contradicted" and signals.get("counterevidence") != "material":
@@ -213,8 +215,18 @@ def evaluate_candidate_causal_factor_status(
 
 def evaluate_opportunity_estimate_formula(response: Mapping[str, Any]) -> EvaluatorFinding | None:
     estimate = response.get("opportunity_estimate")
-    if estimate is None:
+    gap = response.get("opportunity_sizing_gap")
+    if estimate is None and gap is None:
         return None
+    if estimate is not None and gap is not None:
+        return EvaluatorFinding(
+            "opportunity_estimate_formula",
+            False,
+            "opportunity_estimate and opportunity_sizing_gap are both present — an "
+            "ungoverned mapping must never be substituted with an estimate",
+        )
+    if gap is not None:
+        return EvaluatorFinding("opportunity_estimate_formula", True, "")
     expected = round(
         estimate["eligible_population"] * estimate["scenario_percentage_point_change"] / 100
     )
@@ -314,16 +326,6 @@ def _run_case(
         if conversation_id is not None and "conversation_id" not in request:
             request["conversation_id"] = conversation_id
 
-        captured: dict[str, FixtureResponse] = {}
-
-        def _invoke(
-            req: Mapping[str, Any],
-            _captured: dict[str, FixtureResponse] = captured,
-        ) -> FixtureResponse:
-            response = _post(client, req)
-            _captured["response"] = response
-            return response
-
         fixture = {
             "id": f"{case.case_id}-turn{index}",
             "category": case.category.value,
@@ -331,9 +333,9 @@ def _run_case(
             "expected": turn.expected.model_dump(),
         }
         started = perf_counter()
-        [result] = evaluate_generation_fixtures([fixture], invoke=_invoke)
+        response = _post(client, request)
         run.turn_latencies_ms.append((perf_counter() - started) * 1000)
-        response = captured["response"]
+        [result] = evaluate_generation_fixtures([fixture], invoke=lambda _req, r=response: r)
         run.expected_behavior_findings.append(
             EvaluatorFinding(
                 "expected_behavior",

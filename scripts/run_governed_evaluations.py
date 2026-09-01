@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -58,7 +59,7 @@ def _source_versions() -> dict[str, str]:
     return {"semantic_version": str(artifact.get("semantic_version", "unknown"))}
 
 
-def main() -> None:
+def main() -> int:
     dataset = EvaluationDatasetStore(_DATASET_PATH).load()
     sink = MlflowTraceSink.from_environment()
     scorecard = run_dataset(
@@ -74,11 +75,8 @@ def main() -> None:
         f"{scorecard.not_yet_automated_cases} not yet automated "
         f"(of {scorecard.total_cases} total)."
     )
-    for category in (
-        scorecard.safety,
-        scorecard.semantic_correctness,
-        scorecard.trace_delivery,
-    ):
+    categories = (scorecard.safety, scorecard.semantic_correctness, scorecard.trace_delivery)
+    for category in categories:
         print(
             f"  {category.name}: {category.passed}/{category.total} passed "
             f"({category.pass_rate:.1%})"
@@ -91,6 +89,8 @@ def main() -> None:
     sink.record_scorecard(scorecard)
     print("Published the Evaluation Scorecard to MLflow.")
 
+    return 0 if all(category.failed == 0 for category in categories) else 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

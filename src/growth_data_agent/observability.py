@@ -12,10 +12,13 @@ from hashlib import sha256
 from statistics import fmean
 from threading import Lock
 from time import perf_counter
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .contracts import LeadAgentMetadata
 from .policy import policy_fingerprint
+
+if TYPE_CHECKING:
+    from .evaluation_runner import EvaluationScorecard
 
 __all__ = ("policy_fingerprint",)
 
@@ -360,7 +363,7 @@ class MlflowTraceSink:
             self._mlflow.log_param("model_name", model_name)
             self._mlflow.log_metrics({"fixture_passed": 1.0 if passed else 0.0, **(metrics or {})})
 
-    def record_scorecard(self, scorecard: Any) -> None:
+    def record_scorecard(self, scorecard: EvaluationScorecard) -> None:
         """Publish a separate, non-composite Evaluation Scorecard run.
 
         Distinct from `record_evaluation` (one run per fixture/turn, linked to

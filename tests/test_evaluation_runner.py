@@ -173,6 +173,7 @@ def test_evaluate_candidate_causal_factor_status_passes_and_fails() -> None:
                 {
                     "factor_id": "f1",
                     "status": "supported",
+                    "sizing_eligible": True,
                     "ranking_signals": {"independent_source_count": 2, "counterevidence": "none"},
                 }
             ]
@@ -185,12 +186,25 @@ def test_evaluate_candidate_causal_factor_status_passes_and_fails() -> None:
                 {
                     "factor_id": "f1",
                     "status": "contradicted",
+                    "sizing_eligible": False,
                     "ranking_signals": {"independent_source_count": 1, "counterevidence": "none"},
                 }
             ]
         }
     )
     assert bad is not None and not bad.passed
+    missing_eligibility = evaluate_candidate_causal_factor_status(
+        {
+            "candidate_causal_factors": [
+                {
+                    "factor_id": "f1",
+                    "status": "supported",
+                    "ranking_signals": {"independent_source_count": 2, "counterevidence": "none"},
+                }
+            ]
+        }
+    )
+    assert missing_eligibility is not None and not missing_eligibility.passed
     assert evaluate_candidate_causal_factor_status({"candidate_causal_factors": []}) is None
 
 
@@ -215,6 +229,21 @@ def test_evaluate_opportunity_estimate_formula_passes_and_fails() -> None:
         }
     )
     assert bad is not None and not bad.passed
+    gap_only = evaluate_opportunity_estimate_formula(
+        {"opportunity_sizing_gap": {"factor_id": "f1", "category": "incident"}}
+    )
+    assert gap_only is not None and gap_only.passed
+    both_present = evaluate_opportunity_estimate_formula(
+        {
+            "opportunity_estimate": {
+                "eligible_population": 40,
+                "scenario_percentage_point_change": 5.0,
+                "incremental_product_users": 2,
+            },
+            "opportunity_sizing_gap": {"factor_id": "f1", "category": "incident"},
+        }
+    )
+    assert both_present is not None and not both_present.passed
     assert evaluate_opportunity_estimate_formula({}) is None
 
 
