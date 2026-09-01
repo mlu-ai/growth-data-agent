@@ -131,6 +131,8 @@ def main() -> int:
         )
         for detail in category.details:
             print(f"    - {detail}")
+    print(f"  retrieval_metrics: {scorecard.retrieval_metrics}")
+    print(f"  generation_metrics: {scorecard.generation_metrics}")
     print(f"  configuration_versions: {scorecard.configuration_versions}")
     if judge is None:
         print("  No RAGAS judge configured (set RAGAS_JUDGE_MODEL_NAME to enable one).")

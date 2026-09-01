@@ -2,13 +2,14 @@
 
 Retrieval quality (Recall@K, Precision@K, MRR, nDCG@K) is scored against
 gold relevance keyed by Evidence Revision — `(source_document_id,
-source_revision)`, this codebase's existing revision identity (see
-`lightrag.py`'s `_revision_key`) — never by chunk_id alone. Generation
-quality (context relevance, faithfulness, answer relevance) is scored by
-RAGAS through an optional, injectable judge: `RagJudge.from_environment()`
-mirrors `OllamaLocalModel.from_environment()` exactly — returns `None` when
-unconfigured, and a configured judge that fails is reported `"unavailable"`,
-never a fabricated score. See
+source_revision)`, the same kind of revision identity `lightrag.py` already
+authorizes and de-duplicates by (there it also carries `chunk_id`; here it
+does not, since gold relevance is revision-level, not chunk-level) — never
+by chunk_id alone. Generation quality (context relevance, faithfulness,
+answer relevance) is scored by RAGAS through an optional, injectable judge:
+`RagJudge.from_environment()` mirrors `OllamaLocalModel.from_environment()`
+exactly — returns `None` when unconfigured, and a configured judge that
+fails is reported `"unavailable"`, never a fabricated score. See
 docs/adr/0014-rag-evaluation-separates-retrieval-from-generation.md.
 """
 
@@ -20,6 +21,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from statistics import fmean
 from typing import Any, Literal
 
 from .evaluation_runner import EvaluatorFinding, ScorecardCategory
@@ -49,7 +51,12 @@ class RagRetrievalResult:
     retrieved_revisions: tuple[tuple[str, str], ...]
 
 
-def _revision_key(document: EvidenceDocument) -> tuple[str, str]:
+def _gold_relevance_key(document: EvidenceDocument) -> tuple[str, str]:
+    """The Evidence Revision identity a retrieved document is matched against
+    gold relevance by. Deliberately named distinctly from `lightrag.py`'s
+    `_revision_key` — that one is a 3-tuple that also carries `chunk_id`; this
+    one is revision-level only, matching `RelevantEvidenceRevision`'s gold
+    label shape, not a drop-in equivalent."""
     return (document.source_document_id or document.document_id, document.source_revision)
 
 
@@ -66,7 +73,7 @@ def evaluate_rag_retrieval(
             for item in case.gold_relevant_revisions
         }
         top_k = list(retrieve(case))[: case.k]
-        retrieved_keys = [_revision_key(document) for document in top_k]
+        retrieved_keys = [_gold_relevance_key(document) for document in top_k]
         hits = [key for key in retrieved_keys if key in gold]
 
         recall = len(set(hits)) / len(gold) if gold else 1.0
@@ -173,9 +180,12 @@ class RagJudge:
             # RAGAS/openai/httpx can raise many transport- and provider-specific
             # exception types for an unreachable or misbehaving local judge; the
             # safety property that matters is "never let a broken judge crash the
-            # run or silently return a score" — caught broadly and re-raised as
-            # one typed boundary error, exactly like LocalModelUnavailable does
-            # for the local_model.py Ollama boundary.
+            # run or silently return a score" — caught broadly and re-raised as one
+            # typed boundary error, matching local_model.py's own broad catch
+            # around an arbitrary LocalModelTransport.generate() call in
+            # `_request_and_validate` (`except Exception as error: raise
+            # LocalModelUnavailable(...) from error`), not the narrower
+            # single-urllib-call catch in `_OllamaHttpClient._send`.
             raise RagJudgeUnavailable(
                 f"RAGAS judge {self.llm_model_name!r} is unavailable."
             ) from error
@@ -240,6 +250,14 @@ class RagEvaluationScorecard:
     generated_at: datetime
     retrieval: ScorecardCategory
     generation: ScorecardCategory
+    # AC3 requires Recall@K, Precision@K, MRR, and nDCG@K to be *reported*, not
+    # only used internally to decide pass/fail — these are the corpus-level
+    # means (MRR is the mean of per-case reciprocal rank, matching this
+    # codebase's existing evaluation.py convention).
+    retrieval_metrics: Mapping[str, float]
+    # Mean RAGAS scores over cases that were actually judge-scored; empty when
+    # no case reached status="scored" (e.g. no judge configured).
+    generation_metrics: Mapping[str, float]
 
 
 def _retrieval_category(results: Sequence[RagRetrievalResult]) -> ScorecardCategory:
@@ -265,6 +283,28 @@ def _retrieval_category(results: Sequence[RagRetrievalResult]) -> ScorecardCateg
         pass_rate=(passed / len(findings)) if findings else 1.0,
         details=tuple(finding.detail for finding in findings if not finding.passed),
     )
+
+
+def _retrieval_metrics(results: Sequence[RagRetrievalResult]) -> dict[str, float]:
+    if not results:
+        return {}
+    return {
+        "recall_at_k": fmean(result.recall_at_k for result in results),
+        "precision_at_k": fmean(result.precision_at_k for result in results),
+        "mrr": fmean(result.reciprocal_rank for result in results),
+        "ndcg_at_k": fmean(result.ndcg_at_k for result in results),
+    }
+
+
+def _generation_metrics(results: Sequence[RagGenerationResult]) -> dict[str, float]:
+    scored = [result for result in results if result.status == "scored"]
+    if not scored:
+        return {}
+    return {
+        "context_quality": fmean(result.context_quality for result in scored),
+        "faithfulness": fmean(result.faithfulness for result in scored),
+        "answer_relevance": fmean(result.answer_relevance for result in scored),
+    }
 
 
 def _generation_category(results: Sequence[RagGenerationResult]) -> ScorecardCategory:
@@ -299,4 +339,6 @@ def run_rag_dataset(
         generated_at=datetime.now(UTC),
         retrieval=_retrieval_category(retrieval_results),
         generation=_generation_category(generation_results),
+        retrieval_metrics=_retrieval_metrics(retrieval_results),
+        generation_metrics=_generation_metrics(generation_results),
     )

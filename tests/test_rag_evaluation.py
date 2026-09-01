@@ -214,6 +214,54 @@ def test_a_retrieval_only_regression_does_not_fail_generation() -> None:
     assert scorecard.generation.failed == 0
 
 
+def test_scorecard_reports_all_four_ir_metrics_and_ragas_measures() -> None:
+    """AC3/AC2: Recall@K, Precision@K, MRR, and nDCG@K must be *reported* on
+    the scorecard, not only consumed internally to decide pass/fail — same
+    for the three RAGAS measures once a judge actually scores a case."""
+    dataset = _real_dataset()
+    correct_documents = {
+        case.case_id: [
+            _document(revision.source_document_id, revision=revision.source_revision)
+            for revision in case.gold_relevant_revisions
+        ]
+        for case in dataset.cases
+    }
+
+    scorecard = run_rag_dataset(
+        dataset,
+        retrieve=lambda case: correct_documents[case.case_id],
+        answer=lambda _case: ("a governed answer", ["a supporting context"]),
+        judge=_FakeJudge(),
+    )
+
+    assert set(scorecard.retrieval_metrics) == {
+        "recall_at_k",
+        "precision_at_k",
+        "mrr",
+        "ndcg_at_k",
+    }
+    assert scorecard.retrieval_metrics["recall_at_k"] == 1.0
+    assert set(scorecard.generation_metrics) == {
+        "context_quality",
+        "faithfulness",
+        "answer_relevance",
+    }
+    assert scorecard.generation_metrics["faithfulness"] == 0.85
+
+
+def test_generation_metrics_are_empty_when_no_judge_is_configured() -> None:
+    dataset = _real_dataset()
+
+    scorecard = run_rag_dataset(
+        dataset,
+        retrieve=lambda _case: [],
+        answer=lambda _case: ("a governed answer", ["a supporting context"]),
+        judge=None,
+    )
+
+    assert scorecard.generation_metrics == {}
+
+
 def test_a_generation_only_regression_does_not_fail_retrieval() -> None:
     dataset = _real_dataset()
     correct_documents = {

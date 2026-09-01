@@ -18,6 +18,10 @@ generation quality (RAGAS's context relevance, faithfulness, and answer
 relevance) are two independent `ScorecardCategory` fields on
 `RagEvaluationScorecard`, never merged into one score — a retrieval
 regression and a generation regression are always distinguishable signals.
+Each axis's corpus-level metric values are also reported directly as
+`retrieval_metrics`/`generation_metrics` (means across cases), not only
+consumed internally to decide each category's pass/fail — AC3 asks that
+Recall@K/Precision@K/MRR/nDCG@K be *reported*, not merely used as a gate.
 Retrieval always goes through the same authorized
 `evidence_store.retrieve(...)` seam production and `scripts/run_evaluations.py`
 already use — never a bypassed or unauthenticated query — so entitlement and

@@ -421,6 +421,14 @@ class MlflowTraceSink:
                     f"{category.name}_pass_rate": category.pass_rate for category in categories
                 },
                 **{f"{category.name}_total": float(category.total) for category in categories},
+                **{
+                    f"retrieval_{key}": value
+                    for key, value in scorecard.retrieval_metrics.items()
+                },
+                **{
+                    f"generation_{key}": value
+                    for key, value in scorecard.generation_metrics.items()
+                },
             }
             self._mlflow.log_metrics(metrics)
 
