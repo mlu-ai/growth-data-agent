@@ -182,3 +182,34 @@ reauthorizes the Agent User and revalidates it against freshly ranked,
 currently authorized Candidate Causal Factors before it is ever presented
 again.
 _Avoid_: Saved factor, cached hypothesis, remembered selection
+
+## Evaluation Language
+
+**Governed Evaluation Dataset**:
+A versioned, reviewed collection of Evaluation Cases and a shared rubric used
+to measure every supported governed route; offline evaluation content, never
+runtime evidence the service reads to answer a request.
+_Avoid_: Test suite, training data
+
+**Evaluation Case**:
+One reviewable request/expected-behaviour pair (or multi-turn sequence) with
+required provenance, permitted scope, route-specific labels, a primary Error
+Taxonomy category, and owner-approved reviewer labels.
+_Avoid_: Test case, example, sample
+
+**Error Taxonomy**:
+The versioned, closed set of failure categories — governance, semantic,
+retrieval, generation, trajectory, or experience/cost — used to label the
+one primary category an Evaluation Case or observed failure belongs to.
+_Avoid_: Bug type, issue category
+
+**Rubric**:
+The shared safety/correctness/citation/uncertainty/relevance criteria plus
+route-specific criteria per Evaluation Case category, scored on a common
+scale by independent reviewers.
+_Avoid_: Scorecard, grading criteria
+
+**Overlap Sample**:
+A subset of Evaluation Cases independently labelled by two reviewers, used to
+measure inter-rater agreement before any automated judge is trusted.
+_Avoid_: Spot check, sanity sample

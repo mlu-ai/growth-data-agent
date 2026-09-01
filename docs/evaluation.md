@@ -62,3 +62,21 @@ attempt and failure counts, and the last exception class. If MLflow delivery
 fails, the governed response remains available but readiness becomes degraded
 (HTTP 503) so operators can alert on it. MLflow never receives raw prompts,
 answers, SQL, Evidence Revision bodies, or direct identifiers.
+
+## Governed Evaluation Dataset
+
+`evaluations/dataset/v1/cases.json` is the versioned Governed Evaluation
+Dataset: about 60 Evaluation Cases stratified across every supported route,
+a shared review rubric, an Error Taxonomy, development/validation/held-out
+splits, and a two-reviewer overlap sample. See
+`docs/adr/0012-governed-evaluation-dataset-is-versioned-and-never-runtime-evidence.md`
+for the versioning and provenance policy. Regenerate it with:
+
+```sh
+make evaluation-dataset
+```
+
+This is offline review content, not the local baseline runner above — it is
+never imported by request-serving code, and executing cases against a live
+harness to publish a scorecard is a later step in the evaluation epic (#61),
+not part of this dataset itself.
