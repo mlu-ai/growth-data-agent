@@ -1,4 +1,4 @@
-.PHONY: generate-data load-data dbt-build semantic-artifact publish-datahub materialize-age sync-confluence-evidence serve evaluate lint test
+.PHONY: generate-data load-data dbt-build semantic-artifact evaluation-dataset publish-datahub materialize-age sync-confluence-evidence serve evaluate lint test
 
 generate-data:
 	uv run python scripts/generate_synthetic_data.py
@@ -11,6 +11,9 @@ dbt-build:
 
 semantic-artifact:
 	uv run python scripts/build_semantic_artifact.py
+
+evaluation-dataset:
+	uv run python scripts/build_evaluation_dataset.py
 
 publish-datahub:
 	uv run python scripts/publish_datahub_metadata.py
