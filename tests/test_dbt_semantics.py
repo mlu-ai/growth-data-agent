@@ -67,4 +67,6 @@ def test_dbt_eligible_population_excludes_already_paid_enabled_users() -> None:
     assert "count_distinct" in confluence_semantic_yaml
     assert "seat_tier" in jira_semantic_yaml
     assert "seat_tier" in confluence_semantic_yaml
+    assert "name: jira_new_peu_eligible_population_product_user" in jira_semantic_yaml
+    assert "name: confluence_new_peu_eligible_population_product_user" in confluence_semantic_yaml
     assert "product_user_entitlements" in staging

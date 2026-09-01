@@ -27,7 +27,7 @@ semantic_models:
     defaults:
       agg_time_dimension: entitled_date
     entities:
-      - name: product_user
+      - name: jira_new_peu_eligible_population_product_user
         type: primary
         expr: product_user_id
       - name: tenant

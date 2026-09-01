@@ -155,9 +155,31 @@ def test_eligible_population_is_a_single_aggregate_scoped_to_region_and_seat_tie
     assert freshness.is_current is True
     assert eligible_population == 40
     assert planner.requests[0].where_constraints == (
-        "product_user__product = 'Jira'",
-        "product_user__region IN ('APAC')",
-        "product_user__seat_tier = '51-200'",
+        "jira_new_peu_eligible_population_product_user__product = 'Jira'",
+        "jira_new_peu_eligible_population_product_user__region IN ('APAC')",
+        "jira_new_peu_eligible_population_product_user__seat_tier = '51-200'",
+    )
+    assert planner.requests[0].group_by_names == ()
+
+
+def test_confluence_eligible_population_uses_its_unique_primary_entity(
+    tmp_path: Path,
+) -> None:
+    gateway, planner, _executor = _gateway(tmp_path)
+
+    eligible_population, freshness = gateway.eligible_population(
+        "confluence_new_peu_eligible_population",
+        resolve_access_profile("data_analyst"),
+        region="Americas",
+        seat_tier="11-50",
+    )
+
+    assert freshness.is_current is True
+    assert eligible_population == 25
+    assert planner.requests[0].where_constraints == (
+        "confluence_new_peu_eligible_population_product_user__product = 'Confluence'",
+        "confluence_new_peu_eligible_population_product_user__region IN ('Americas')",
+        "confluence_new_peu_eligible_population_product_user__seat_tier = '11-50'",
     )
     assert planner.requests[0].group_by_names == ()
 
