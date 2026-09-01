@@ -10,6 +10,10 @@ from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, writ
 from fastapi.testclient import TestClient
 
 from growth_data_agent import observability
+from growth_data_agent.adversarial_evaluation import (
+    AdversarialScorecard,
+    AdversarialScorecardCategory,
+)
 from growth_data_agent.graph import EvidenceGraphUnavailableError
 from growth_data_agent.lightrag import (
     InMemoryLightRAGStore,
@@ -30,6 +34,10 @@ from growth_data_agent.reranking import DeterministicCrossEncoderReranker
 from growth_data_agent.semantic import SemanticArtifactStore, ValidatedMetricFlowGateway
 from growth_data_agent.service import AnswerQuestionService
 from growth_data_agent.synthetic import evidence_corpus
+from growth_data_agent.trajectory_evaluation import (
+    TrajectoryScorecard,
+    TrajectoryScorecardCategory,
+)
 
 
 class RecordingMlflow:
@@ -72,6 +80,76 @@ class RecordingMlflow:
 
     def log_dict(self, value: dict, artifact_file: str) -> None:
         self.artifacts[artifact_file] = value
+
+
+def test_mlflow_scorecards_publish_only_aggregate_trajectory_and_adversarial_metrics() -> None:
+    mlflow = RecordingMlflow()
+    sink = MlflowTraceSink(mlflow_module=mlflow)
+    generated_at = datetime(2026, 9, 1, tzinfo=UTC)
+    trajectory = TrajectoryScorecard(
+        dataset_version="1.0.0",
+        evaluator_version="1.0.0",
+        generated_at=generated_at,
+        total_cases=6,
+        automated_cases=6,
+        not_yet_automated_cases=0,
+        trajectory=TrajectoryScorecardCategory(
+            name="trajectory", passed=34, failed=2, total=36, pass_rate=34 / 36
+        ),
+        multi_turn=TrajectoryScorecardCategory(
+            name="multi_turn", passed=6, failed=0, total=6, pass_rate=1.0
+        ),
+    )
+    adversarial = AdversarialScorecard(
+        dataset_version="1.0.0",
+        evaluator_version="1.0.0",
+        generated_at=generated_at,
+        category=AdversarialScorecardCategory(
+            name="adversarial", passed=8, failed=0, total=8, pass_rate=1.0
+        ),
+    )
+
+    sink.record_trajectory_scorecard(trajectory)
+    trajectory_metrics = dict(mlflow.metrics)
+    sink.record_adversarial_scorecard(adversarial)
+
+    assert mlflow.run_count == 2
+    assert mlflow.tags == {"dataset_version": "1.0.0", "evaluator_version": "1.0.0"}
+    assert trajectory_metrics == {
+        "total_cases": 6.0,
+        "automated_cases": 6.0,
+        "not_yet_automated_cases": 0.0,
+        "trajectory_pass_rate": 34 / 36,
+        "trajectory_failed": 2.0,
+        "multi_turn_pass_rate": 1.0,
+        "multi_turn_failed": 0.0,
+    }
+    assert mlflow.metrics == {
+        "total_cases": 8.0,
+        "automated_cases": 6.0,
+        "not_yet_automated_cases": 0.0,
+        "trajectory_pass_rate": 34 / 36,
+        "trajectory_failed": 2.0,
+        "multi_turn_pass_rate": 1.0,
+        "multi_turn_failed": 0.0,
+        "passed_cases": 8.0,
+        "failed_cases": 0.0,
+        "adversarial_pass_rate": 1.0,
+    }
+    assert mlflow.params == {}
+    assert mlflow.artifacts == {
+        "trajectory_scorecard.json": {
+            "dataset_version": "1.0.0",
+            "evaluator_version": "1.0.0",
+            "trajectory_details": [],
+            "multi_turn_details": [],
+        },
+        "adversarial_scorecard.json": {
+            "dataset_version": "1.0.0",
+            "evaluator_version": "1.0.0",
+            "details": [],
+        },
+    }
 
 
 def test_mlflow_trace_is_redacted_and_contains_governance_fields() -> None:

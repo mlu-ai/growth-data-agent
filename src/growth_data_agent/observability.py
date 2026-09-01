@@ -18,8 +18,10 @@ from .contracts import LeadAgentMetadata
 from .policy import policy_fingerprint
 
 if TYPE_CHECKING:
+    from .adversarial_evaluation import AdversarialScorecard
     from .evaluation_runner import EvaluationScorecard
     from .rag_evaluation import RagEvaluationScorecard
+    from .trajectory_evaluation import TrajectoryScorecard
 
 __all__ = ("policy_fingerprint",)
 
@@ -59,6 +61,7 @@ _SAFE_SPAN_NAMES = frozenset(
     }
 )
 _SAFE_FACTOR_STATUSES = frozenset({"supported", "contradicted", "inconclusive"})
+_SAFE_EVALUATION_REGIONS = frozenset({"APAC", "Americas", "EMEA"})
 _DEVELOPMENT_ENVIRONMENTS = frozenset({"development", "test"})
 
 
@@ -93,6 +96,7 @@ class TraceRecord:
     configuration_versions: Mapping[str, str] = field(default_factory=dict)
     lead_agent_metadata: LeadAgentMetadata | None = None
     conversation_id: str | None = None
+    has_active_investigation_selection: bool = False
     node_spans: Sequence[TraceSpan] = ()
     tool_spans: Sequence[TraceSpan] = ()
 
@@ -158,6 +162,7 @@ class TraceContext:
         self._node_spans: list[TraceSpan] = []
         self._tool_spans: list[TraceSpan] = []
         self.conversation_id: str | None = None
+        self.has_active_investigation_selection = False
         self.lead_agent_metadata: LeadAgentMetadata | None = None
 
     @property
@@ -403,6 +408,64 @@ class MlflowTraceSink:
             }
             self._mlflow.log_metrics(metrics)
 
+    def record_trajectory_scorecard(self, scorecard: TrajectoryScorecard) -> None:
+        """Publish trajectory and multi-turn results as independent measures."""
+        self._mlflow.set_experiment(self.experiment_name)
+        run_name = (
+            f"trajectory-scorecard-{scorecard.dataset_version}-"
+            f"{scorecard.generated_at.isoformat()}"
+        )
+        with self._mlflow.start_run(run_name=run_name):
+            self._mlflow.set_tag("dataset_version", scorecard.dataset_version)
+            self._mlflow.set_tag("evaluator_version", scorecard.evaluator_version)
+            self._mlflow.log_metrics(
+                {
+                    "total_cases": float(scorecard.total_cases),
+                    "automated_cases": float(scorecard.automated_cases),
+                    "not_yet_automated_cases": float(scorecard.not_yet_automated_cases),
+                    "trajectory_pass_rate": scorecard.trajectory.pass_rate,
+                    "trajectory_failed": float(scorecard.trajectory.failed),
+                    "multi_turn_pass_rate": scorecard.multi_turn.pass_rate,
+                    "multi_turn_failed": float(scorecard.multi_turn.failed),
+                }
+            )
+            self._mlflow.log_dict(
+                {
+                    "dataset_version": scorecard.dataset_version,
+                    "evaluator_version": scorecard.evaluator_version,
+                    "trajectory_details": list(scorecard.trajectory.details),
+                    "multi_turn_details": list(scorecard.multi_turn.details),
+                },
+                "trajectory_scorecard.json",
+            )
+
+    def record_adversarial_scorecard(self, scorecard: AdversarialScorecard) -> None:
+        """Publish Promptfoo boundary results in their own non-composite run."""
+        self._mlflow.set_experiment(self.experiment_name)
+        run_name = (
+            f"adversarial-scorecard-{scorecard.dataset_version}-"
+            f"{scorecard.generated_at.isoformat()}"
+        )
+        with self._mlflow.start_run(run_name=run_name):
+            self._mlflow.set_tag("dataset_version", scorecard.dataset_version)
+            self._mlflow.set_tag("evaluator_version", scorecard.evaluator_version)
+            self._mlflow.log_metrics(
+                {
+                    "total_cases": float(scorecard.total),
+                    "passed_cases": float(scorecard.passed),
+                    "failed_cases": float(scorecard.failed),
+                    "adversarial_pass_rate": scorecard.category.pass_rate,
+                }
+            )
+            self._mlflow.log_dict(
+                {
+                    "dataset_version": scorecard.dataset_version,
+                    "evaluator_version": scorecard.evaluator_version,
+                    "details": list(scorecard.category.details),
+                },
+                "adversarial_scorecard.json",
+            )
+
     def record_rag_scorecard(self, scorecard: RagEvaluationScorecard) -> None:
         """Publish a separate RAG Evaluation Scorecard run — retrieval and
         generation are logged as independent metrics so a regression in one
@@ -442,6 +505,81 @@ def redact_identifiers(value: Any) -> Any:
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
         return [redact_identifiers(item) for item in value]
     return value
+
+
+def safe_response_evaluation_projection(
+    response: Mapping[str, Any],
+    *,
+    trace_id: str | None = None,
+    result_classification: str | None = None,
+) -> dict[str, Any]:
+    """Project a response into the fixed, non-sensitive offline-evaluation contract."""
+    freshness = response.get("source_freshness")
+    scope = response.get("effective_access_scope")
+    evidence = response.get("evidence")
+    citations = evidence.get("citations") if isinstance(evidence, Mapping) else ()
+    observed_evidence_regions = tuple(
+        affected_scope.get("region")
+        for citation in citations or ()
+        if isinstance(citation, Mapping)
+        and isinstance((affected_scope := citation.get("affected_scope")), Mapping)
+    )
+    evidence_regions = tuple(
+        region for region in observed_evidence_regions if region in _SAFE_EVALUATION_REGIONS
+    )
+    observed_scope_regions = tuple(scope.get("regions") or ()) if isinstance(scope, Mapping) else ()
+    return {
+        "has_answer": isinstance(response.get("answer"), str) and bool(response["answer"].strip()),
+        "result_classification": result_classification or response.get("result_classification"),
+        "trace_id": trace_id or response.get("trace_id"),
+        "effective_access_scope": {
+            "regions": tuple(
+                region for region in observed_scope_regions if region in _SAFE_EVALUATION_REGIONS
+            )
+        }
+        if isinstance(scope, Mapping)
+        else {},
+        "source_freshness": {
+            "is_current": freshness.get("is_current")
+        }
+        if isinstance(freshness, Mapping)
+        else {},
+        "has_evidence": response.get("evidence") is not None,
+        "evidence_regions": evidence_regions,
+        "unknown_region_observed": any(
+            not isinstance(region, str) or region not in _SAFE_EVALUATION_REGIONS
+            for region in (*observed_scope_regions, *observed_evidence_regions)
+        ),
+        "has_candidate_causal_factors": response.get("candidate_causal_factors") is not None,
+        "has_direct_identifier_answer": response.get("direct_identifier_answer") is not None,
+    }
+
+
+def safe_trace_evaluation_projection(trace: TraceRecord) -> dict[str, Any]:
+    """Return only allowlisted response facts and trace identifiers safe for evaluators."""
+    projection = safe_response_evaluation_projection(
+        trace.response,
+        trace_id=trace.trace_id,
+        result_classification=trace.response_classification,
+    )
+    projection["has_active_investigation_selection"] = trace.has_active_investigation_selection
+    return projection
+
+
+def safe_evaluation_execution_projection(trace: TraceRecord) -> dict[str, Any]:
+    """Return the complete safe contract consumed by external evaluators.
+
+    The projection intentionally contains only a redacted response summary and
+    actual tool-span names/statuses. It is safe to return from the private
+    evaluation route without exposing a governed answer or evidence payload.
+    """
+    return {
+        "response": safe_trace_evaluation_projection(trace),
+        "executed_tools": [
+            {"name": _safe_span_name(span.name), "status": span.status}
+            for span in trace.tool_spans
+        ],
+    }
 
 
 def _redact_trace_payload(trace: TraceRecord) -> dict[str, Any]:

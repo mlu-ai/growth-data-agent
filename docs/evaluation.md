@@ -122,3 +122,42 @@ other. See
 `docs/adr/0014-rag-evaluation-separates-retrieval-from-generation.md` —
 including a required `langchain-community` version pin `ragas` currently
 needs to import cleanly.
+
+## Multi-turn trajectories and adversarial requests
+
+`evaluations/deepeval/v1/cases.json` is the versioned DeepEval
+trajectory manifest. It covers single-turn and multi-turn continuity,
+Conversation Summary boundaries, Active Investigation reauthorisation, and
+Evidence Revision freshness by linking each case to a governed Evaluation
+Case. It uses DeepEval's `LLMTestCase`/metric interface for the deterministic,
+exact governed-tool contract, so no evaluator prompt, raw answer, or external
+judge credential is required in CI. The harness executes the required
+conversation replay, factor selection, and temporary-artifact invalidation
+steps; it does not mark those cases as documentation-only coverage. Request
+interpretation, tool selection, safe argument metadata, tool execution, output
+handling, and final-goal outcome remain separate findings. Multi-turn
+continuity is a separate score category, not folded into trajectory, safety,
+retrieval, or generation.
+
+Run the local deterministic path with:
+
+```sh
+make trajectory-evaluate
+```
+
+`evaluations/promptfoo/promptfooconfig.yaml` and the generated tests from
+`tests.py` provide the Promptfoo adversarial matrix directly from
+`matrix.json`, so case additions cannot drift between the typed and Promptfoo
+paths. The custom provider reads development bearer
+tokens only from the environment and targets `PROMPTFOO_TARGET_URL`; it calls
+the private `/evaluation/answer_question` seam, which returns only the shared
+safe projection and actual tool-span names/statuses (never an HTTP response
+body), and never logs credentials. It requires both the Agent User development
+token and `GROWTH_DATA_AGENT_EVALUATION_TOKEN`; the endpoint otherwise fails
+closed. The matrix covers prompt injection plus permission,
+Evidence Revision scope, and tool expansion attempts. Its assertions require
+that governed responses cannot widen tools, effective Regions, evidence, or
+direct-identifier output. `make trajectory-evaluate` records the same matrix's
+actual trace-backed boundary scorecard in MLflow; run Promptfoo itself with
+`npx promptfoo eval -c
+evaluations/promptfoo/promptfooconfig.yaml` against a private target.

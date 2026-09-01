@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from hmac import compare_digest
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
@@ -217,11 +218,10 @@ def create_app(
             content=status,
         )
 
-    @app.post("/answer_question", response_model=GovernedAnalyticalResponse)
-    def answer_question(
+    def _authenticated_request(
         payload: AnswerQuestionPayload,
         authorization: str | None = Header(default=None),
-    ) -> GovernedAnalyticalResponse:
+    ) -> AnswerQuestionRequest:
         try:
             principal = app.state.principal_resolver.resolve(authorization)
         except PrincipalAuthenticationError as error:
@@ -235,7 +235,7 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             ) from error
 
-        request = AnswerQuestionRequest(
+        return AnswerQuestionRequest(
             agent_user_id=principal.principal_id,
             question=payload.question,
             requested_metric_name=payload.requested_metric_name,
@@ -247,7 +247,21 @@ def create_app(
             verification_request_confirmation=payload.verification_request_confirmation,
             verified_principal=principal,
         )
+
+    def _require_evaluator_capability(evaluation_token: str | None) -> None:
+        """Fail closed unless an explicitly configured evaluator token is supplied."""
+        configured_token = os.environ.get("GROWTH_DATA_AGENT_EVALUATION_TOKEN")
+        if (
+            not configured_token
+            or not evaluation_token
+            or not compare_digest(configured_token, evaluation_token)
+        ):
+            raise HTTPException(status_code=403, detail="Evaluator capability is required.")
+
+    def _execute_governed_request(request: AnswerQuestionRequest, *, evaluation: bool):
         try:
+            if evaluation:
+                return app.state.answer_service.answer_question_evaluation_projection(request)
             return app.state.answer_service.answer_question(request)
         except UnknownAgentUserError as error:
             trace_id = error.trace_id or "unavailable"
@@ -301,6 +315,25 @@ def create_app(
                     f"(trace_id={getattr(error, 'trace_id', 'unavailable')})"
                 ),
             ) from error
+
+    @app.post("/answer_question", response_model=GovernedAnalyticalResponse)
+    def answer_question(
+        payload: AnswerQuestionPayload,
+        authorization: str | None = Header(default=None),
+    ) -> GovernedAnalyticalResponse:
+        request = _authenticated_request(payload, authorization)
+        return _execute_governed_request(request, evaluation=False)
+
+    @app.post("/evaluation/answer_question")
+    def answer_question_evaluation_projection(
+        payload: AnswerQuestionPayload,
+        authorization: str | None = Header(default=None),
+        x_evaluation_token: str | None = Header(default=None),
+    ) -> dict:
+        """Private evaluator seam that never returns an answer or evidence body."""
+        _require_evaluator_capability(x_evaluation_token)
+        request = _authenticated_request(payload, authorization)
+        return _execute_governed_request(request, evaluation=True)
 
     return app
 

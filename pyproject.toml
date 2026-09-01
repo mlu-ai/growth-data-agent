@@ -32,7 +32,12 @@ build-backend = "hatchling.build"
 packages = ["src/growth_data_agent"]
 
 [dependency-groups]
-dev = ["httpx2>=2,<3", "pytest>=8.3,<9", "ruff>=0.8,<1"]
+dev = [
+    "deepeval>=3,<4",
+    "httpx2>=2,<3",
+    "pytest>=8.3,<9",
+    "ruff>=0.8,<1",
+]
 warehouse = ["dbt-postgres>=1.9,<2"]
 
 [tool.pytest.ini_options]

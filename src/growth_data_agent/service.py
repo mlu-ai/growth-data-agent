@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Collection, Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -110,6 +111,7 @@ from .observability import (
     TraceSink,
     capture_trace,
     policy_fingerprint,
+    safe_evaluation_execution_projection,
     trace_delivery_health_for,
     trace_span,
 )
@@ -134,6 +136,13 @@ from .synthetic import evidence_corpus, graph_corpus
 _DIRECT_IDENTIFIER_RESULT_LIMIT = 3
 _IDENTIFIER_PATTERN = re.compile(r"\b(?:tenant|person|product-user)-\d+\b", re.IGNORECASE)
 RevisionReader = Callable[[EvidenceAccessFilter], Iterable[EvidenceDocument]]
+
+_CURRENT_EVALUATION_TRACE: ContextVar[TraceRecord | None] = ContextVar(
+    "growth_data_agent_evaluation_trace", default=None
+)
+_EVALUATION_CAPTURE_ACTIVE: ContextVar[bool] = ContextVar(
+    "growth_data_agent_evaluation_capture_active", default=False
+)
 
 
 @dataclass
@@ -303,6 +312,9 @@ class AnswerQuestionService:
                     turn=self._conversation_turn(request, response),
                     summary=self._conversation_summary(request, response),
                 )
+                trace_context.has_active_investigation_selection = (
+                    updated_checkpoint.summary.active_investigation_factor_id is not None
+                )
                 if getattr(self.conversation_store, "checkpointer", None) is not None:
                     self.execution_graph.update_conversation_context(
                         checkpoint.conversation_id,
@@ -322,6 +334,22 @@ class AnswerQuestionService:
                 raise
             self._record_trace(request, response, trace_context)
             return response
+
+    def answer_question_evaluation_projection(
+        self, request: AnswerQuestionRequest
+    ) -> dict[str, Any]:
+        """Execute one governed turn and return only its evaluator-safe trace projection."""
+        token = _CURRENT_EVALUATION_TRACE.set(None)
+        capture_token = _EVALUATION_CAPTURE_ACTIVE.set(True)
+        try:
+            self.answer_question(request)
+            trace = _CURRENT_EVALUATION_TRACE.get()
+            if trace is None:
+                raise RuntimeError("The governed request did not produce an evaluation trace.")
+            return safe_evaluation_execution_projection(trace)
+        finally:
+            _EVALUATION_CAPTURE_ACTIVE.reset(capture_token)
+            _CURRENT_EVALUATION_TRACE.reset(token)
 
     def _conversation_checkpoint(self, request, principal):
         if request.conversation_id is None:
@@ -1569,6 +1597,7 @@ class AnswerQuestionService:
             configuration_versions=self._trace_configuration_versions(),
             lead_agent_metadata=response.lead_agent_metadata,
             conversation_id=response.conversation_id,
+            has_active_investigation_selection=trace_context.has_active_investigation_selection,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
         )
@@ -1660,6 +1689,8 @@ class AnswerQuestionService:
 
     def _deliver_trace(self, trace: TraceRecord) -> None:
         """Deliver a redacted trace without allowing observability to fail the turn."""
+        if _EVALUATION_CAPTURE_ACTIVE.get():
+            _CURRENT_EVALUATION_TRACE.set(trace)
         try:
             self.trace_sink.record(trace)
         except Exception as error:
