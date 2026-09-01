@@ -98,3 +98,27 @@ reported as `not_yet_automated_cases` on the scorecard, never silently
 skipped. The scorecard reports safety, semantic correctness, trace delivery,
 latency, and token/cost separately — never one composite score. See
 `docs/adr/0013-governed-evaluation-runner-reports-honest-coverage.md`.
+
+## RAG evaluation: retrieval and generation, scored separately
+
+`evaluations/rag_dataset/v1/cases.json` is the versioned RAG Evaluation
+Dataset — retrieval queries paired with gold-relevant Evidence Revisions
+(`(source_document_id, source_revision)`, never chunk-only). Regenerate it
+with `make rag-dataset`. Run it with:
+
+```sh
+make rag-evaluate
+```
+
+Retrieval quality (Recall@K, Precision@K, MRR, nDCG@K) always runs and needs
+no extra configuration. Generation quality (RAGAS's context relevance,
+faithfulness, and answer relevance) needs a local judge: set
+`RAGAS_JUDGE_MODEL_NAME` to an Ollama chat model name (and optionally
+`RAGAS_JUDGE_EMBEDDING_MODEL_NAME`, `RAGAS_JUDGE_BASE_URL`) — without it,
+generation is honestly reported `not_configured` for every case, never
+scored or silently skipped. The scorecard's `retrieval` and `generation`
+fields are always independent, so a regression in one is never masked by the
+other. See
+`docs/adr/0014-rag-evaluation-separates-retrieval-from-generation.md` —
+including a required `langchain-community` version pin `ragas` currently
+needs to import cleanly.

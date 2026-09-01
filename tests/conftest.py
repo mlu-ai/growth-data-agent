@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import secrets
@@ -269,6 +270,69 @@ class RecordingPostgresExecutor:
         if any("__region IN ('APAC')" in constraint for constraint in plan.where_constraints):
             return [row for row in self._driver_rows if row["product_user__region"] == "APAC"]
         return self._driver_rows
+
+
+_SOURCE_DIR = Path(__file__).resolve().parents[1] / "src/growth_data_agent"
+
+
+def _is_type_checking_guard(test: ast.expr) -> bool:
+    """True for `if TYPE_CHECKING:` / `if typing.TYPE_CHECKING:` — a block whose
+    imports never execute at runtime, only for static type checkers."""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+
+def _iter_runtime_nodes(node: ast.AST):
+    """Walk the tree like `ast.walk`, but never descend into an
+    `if TYPE_CHECKING:` block's body — those imports never execute."""
+    yield node
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.If) and _is_type_checking_guard(child.test):
+            continue
+        yield from _iter_runtime_nodes(child)
+
+
+def _local_module_imports(path: Path) -> set[str]:
+    """Names this file imports **at runtime** that could refer to another module
+    in this package (bare module names for `import x` / relative `from .x import
+    y`) — third-party absolute imports (`from fastapi import ...`) are filtered
+    out by the caller, which only follows names that resolve to an actual file in
+    _SOURCE_DIR. Imports inside an `if TYPE_CHECKING:` block are excluded: they
+    never run, so they can't make anything reachable at runtime."""
+    tree = ast.parse(path.read_text(), filename=str(path))
+    names: set[str] = set()
+    for node in _iter_runtime_nodes(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level > 0:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def modules_reachable_from_main() -> set[str]:
+    """All `src/growth_data_agent` module names transitively imported at
+    runtime starting from `main.py` — the ASGI app and every request-serving
+    path actually loads only these. Shared by tests proving some offline-only
+    module (an Evaluation Dataset, a RAG dataset, ...) is never runtime
+    evidence: a graph walk from the live entrypoint, not a hand-maintained
+    file blocklist, so a new offline-only consumer is naturally exempt and a
+    future accidental import from ANY request-serving module is still caught.
+    """
+    visited: set[str] = set()
+    to_visit = ["main"]
+    while to_visit:
+        module_name = to_visit.pop()
+        if module_name in visited:
+            continue
+        visited.add(module_name)
+        module_path = _SOURCE_DIR / f"{module_name}.py"
+        if not module_path.exists():
+            continue
+        for imported in _local_module_imports(module_path):
+            if (_SOURCE_DIR / f"{imported}.py").exists() and imported not in visited:
+                to_visit.append(imported)
+    return visited
 
 
 @pytest.fixture

@@ -213,3 +213,9 @@ _Avoid_: Scorecard, grading criteria
 A subset of Evaluation Cases independently labelled by two reviewers, used to
 measure inter-rater agreement before any automated judge is trusted.
 _Avoid_: Spot check, sanity sample
+
+**RAG Evaluation Case**:
+A retrieval query paired with gold-relevant Evidence Revisions, scored
+separately from any generated answer; gold relevance is keyed by Evidence
+Revision and citation, never by chunk alone.
+_Avoid_: Retrieval fixture, search test case

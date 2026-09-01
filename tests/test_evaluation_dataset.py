@@ -7,10 +7,10 @@ currently be executed against a live harness (that is issue #85's scope).
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
+from conftest import modules_reachable_from_main
 
 from growth_data_agent.evaluation_dataset import (
     EvaluationCaseCategory,
@@ -21,7 +21,6 @@ from growth_data_agent.evaluation_dataset import (
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _DATASET_PATH = _REPOSITORY_ROOT / "evaluations/dataset/v1/cases.json"
-_SOURCE_DIR = _REPOSITORY_ROOT / "src/growth_data_agent"
 
 
 @pytest.fixture(scope="module")
@@ -95,65 +94,11 @@ def test_every_case_has_required_provenance_and_approval(
         assert len(case.turns) >= 1, case.case_id
 
 
-def _is_type_checking_guard(test: ast.expr) -> bool:
-    """True for `if TYPE_CHECKING:` / `if typing.TYPE_CHECKING:` — a block whose
-    imports never execute at runtime, only for static type checkers."""
-    if isinstance(test, ast.Name):
-        return test.id == "TYPE_CHECKING"
-    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
-
-
-def _iter_runtime_nodes(node: ast.AST):
-    """Walk the tree like `ast.walk`, but never descend into an
-    `if TYPE_CHECKING:` block's body — those imports never execute."""
-    yield node
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.If) and _is_type_checking_guard(child.test):
-            continue
-        yield from _iter_runtime_nodes(child)
-
-
-def _local_module_imports(path: Path) -> set[str]:
-    """Names this file imports **at runtime** that could refer to another module
-    in this package (bare module names for `import x` / relative `from .x import
-    y`) — third-party absolute imports (`from fastapi import ...`) are filtered
-    out by the caller, which only follows names that resolve to an actual file in
-    _SOURCE_DIR. Imports inside an `if TYPE_CHECKING:` block are excluded: they
-    never run, so they can't make anything reachable at runtime."""
-    tree = ast.parse(path.read_text(), filename=str(path))
-    names: set[str] = set()
-    for node in _iter_runtime_nodes(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level > 0:
-            names.add(node.module.split(".")[0])
-    return names
-
-
 def test_dataset_is_never_reachable_from_the_request_serving_entrypoint() -> None:
     """AC5's 'never runtime evidence' claim: evaluation_dataset must never be
     reachable from main.py's real import graph — the module the ASGI app and
-    every request-serving path actually loads. This is deliberately a graph
-    walk from the live entrypoint, not a hand-maintained file blocklist: an
-    offline-only consumer (like evaluation_runner.py) is naturally exempt
-    without needing this test edited every time one is added, and a future
-    accidental import from ANY request-serving module — not just main.py or
-    service.py by name — is still caught.
-    """
-    visited: set[str] = set()
-    to_visit = ["main"]
-    while to_visit:
-        module_name = to_visit.pop()
-        if module_name in visited:
-            continue
-        visited.add(module_name)
-        module_path = _SOURCE_DIR / f"{module_name}.py"
-        if not module_path.exists():
-            continue
-        for imported in _local_module_imports(module_path):
-            if (_SOURCE_DIR / f"{imported}.py").exists() and imported not in visited:
-                to_visit.append(imported)
-
+    every request-serving path actually loads."""
+    visited = modules_reachable_from_main()
     assert "evaluation_dataset" not in visited, (
         "evaluation_dataset is reachable from main.py's import graph: "
         f"{sorted(visited)}"

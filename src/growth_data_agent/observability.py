@@ -19,6 +19,7 @@ from .policy import policy_fingerprint
 
 if TYPE_CHECKING:
     from .evaluation_runner import EvaluationScorecard
+    from .rag_evaluation import RagEvaluationScorecard
 
 __all__ = ("policy_fingerprint",)
 
@@ -399,6 +400,27 @@ class MlflowTraceSink:
                 "token_cost_total_tokens": float(
                     scorecard.token_cost.get("total_tokens", 0)
                 ),
+            }
+            self._mlflow.log_metrics(metrics)
+
+    def record_rag_scorecard(self, scorecard: RagEvaluationScorecard) -> None:
+        """Publish a separate RAG Evaluation Scorecard run — retrieval and
+        generation are logged as independent metrics so a regression in one
+        never masks or is masked by the other. Never raw query/answer text."""
+        self._mlflow.set_experiment(self.experiment_name)
+        run_name = f"rag-scorecard-{scorecard.dataset_version}-{scorecard.generated_at.isoformat()}"
+        with self._mlflow.start_run(run_name=run_name):
+            self._mlflow.set_tag("dataset_version", scorecard.dataset_version)
+            self._mlflow.set_tag("evaluator_version", scorecard.evaluator_version)
+            self._mlflow.log_params(
+                {str(key): str(value) for key, value in scorecard.configuration_versions.items()}
+            )
+            categories = (scorecard.retrieval, scorecard.generation)
+            metrics = {
+                **{
+                    f"{category.name}_pass_rate": category.pass_rate for category in categories
+                },
+                **{f"{category.name}_total": float(category.total) for category in categories},
             }
             self._mlflow.log_metrics(metrics)
 
