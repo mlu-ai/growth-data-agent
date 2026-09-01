@@ -444,6 +444,10 @@ def _metricflow_entity(metric_name: str) -> str:
         return "jira_new_mau_product_user"
     if metric_name == "confluence_new_mau":
         return "confluence_new_mau_product_user"
+    if metric_name == "jira_new_peu_eligible_population":
+        return "jira_new_peu_eligible_population_product_user"
+    if metric_name == "confluence_new_peu_eligible_population":
+        return "confluence_new_peu_eligible_population_product_user"
     if metric_name.startswith("confluence_"):
         return "confluence_product_user"
     return "product_user"

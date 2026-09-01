@@ -1,10 +1,10 @@
 {
   "artifact_type": "dbt_metricflow_semantic_artifact",
   "semantic_version": "1.0.0",
-  "semantic_manifest_sha256": "ae8e45854764fa1ba358b1afed72c1d01d7b8826297cbc25cc4aa9f13201f5ff",
+  "semantic_manifest_sha256": "9e095d9c4c4c1f2de75927536ff616c49042683dd363f480b179c988b4ee6161",
   "validation": {
     "status": "success",
-    "validated_at": "2026-08-25T11:00:42.881921+00:00",
+    "validated_at": "2026-08-31T23:48:25.803472+00:00",
     "maximum_age_seconds": 86400
   },
   "metrics": [
@@ -34,6 +34,24 @@
       "time_rule": "Attribute to first paid enablement only when a same-product Visit occurs in that calendar month.",
       "model_name": "fct_confluence_new_mau",
       "citation_path": "dbt/models/marts/confluence_new_mau.yml#confluence_new_mau"
+    },
+    {
+      "name": "confluence_new_peu_eligible_population",
+      "definition": "Confluence New PEU Eligible Population: entitled Product Users who have not previously qualified through Paid Enablement for Confluence.\n",
+      "formula": "count_distinct(product_user_id)",
+      "grain": "Product User in a Tenant and Confluence product",
+      "time_rule": "Entitled but with no first-ever Confluence Paid Enablement.",
+      "model_name": "fct_confluence_new_peu_eligible_population",
+      "citation_path": "dbt/models/marts/confluence_new_peu_eligible_population.yml#confluence_new_peu_eligible_population"
+    },
+    {
+      "name": "jira_new_peu_eligible_population",
+      "definition": "Jira New PEU Eligible Population: entitled Product Users who have not previously qualified through Paid Enablement for Jira.\n",
+      "formula": "count_distinct(product_user_id)",
+      "grain": "Product User in a Tenant and Jira product",
+      "time_rule": "Entitled but with no first-ever Jira Paid Enablement.",
+      "model_name": "fct_jira_new_peu_eligible_population",
+      "citation_path": "dbt/models/marts/jira_new_peu_eligible_population.yml#jira_new_peu_eligible_population"
     },
     {
       "name": "jira_new_mau",

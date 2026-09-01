@@ -29,6 +29,14 @@ _QUERY_COLUMN_NAMES = {
     "confluence_new_mau_product_user__region": "region",
     "confluence_new_mau_product_user__seat_tier": "seat_tier",
     "confluence_new_mau_product_user__tenant_id": "tenant_id",
+    "jira_new_peu_eligible_population_product_user__product": "product",
+    "jira_new_peu_eligible_population_product_user__region": "region",
+    "jira_new_peu_eligible_population_product_user__seat_tier": "seat_tier",
+    "jira_new_peu_eligible_population_product_user__tenant_id": "tenant_id",
+    "confluence_new_peu_eligible_population_product_user__product": "product",
+    "confluence_new_peu_eligible_population_product_user__region": "region",
+    "confluence_new_peu_eligible_population_product_user__seat_tier": "seat_tier",
+    "confluence_new_peu_eligible_population_product_user__tenant_id": "tenant_id",
     "metric_time__month": "metric_month",
 }
 
