@@ -1,4 +1,4 @@
-.PHONY: generate-data load-data dbt-build semantic-artifact evaluation-dataset governed-evaluate publish-datahub materialize-age sync-confluence-evidence serve evaluate lint test
+.PHONY: generate-data load-data dbt-build semantic-artifact evaluation-dataset governed-evaluate rag-dataset rag-evaluate publish-datahub materialize-age sync-confluence-evidence serve evaluate lint test
 
 generate-data:
 	uv run python scripts/generate_synthetic_data.py
@@ -32,6 +32,12 @@ evaluate:
 
 governed-evaluate:
 	uv run python scripts/run_governed_evaluations.py
+
+rag-dataset:
+	uv run python scripts/build_rag_evaluation_dataset.py
+
+rag-evaluate:
+	uv run python scripts/run_rag_evaluations.py
 
 lint:
 	uv run ruff check .
