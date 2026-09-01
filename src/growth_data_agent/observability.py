@@ -360,6 +360,45 @@ class MlflowTraceSink:
             self._mlflow.log_param("model_name", model_name)
             self._mlflow.log_metrics({"fixture_passed": 1.0 if passed else 0.0, **(metrics or {})})
 
+    def record_scorecard(self, scorecard: Any) -> None:
+        """Publish a separate, non-composite Evaluation Scorecard run.
+
+        Distinct from `record_evaluation` (one run per fixture/turn, linked to
+        its own trace_id): this is one aggregate run per dataset execution,
+        carrying dataset/evaluator versions and category-level pass rates
+        only — never raw case content or response text.
+        """
+        self._mlflow.set_experiment(self.experiment_name)
+        run_name = f"scorecard-{scorecard.dataset_version}-{scorecard.generated_at.isoformat()}"
+        with self._mlflow.start_run(run_name=run_name):
+            self._mlflow.set_tag("dataset_version", scorecard.dataset_version)
+            self._mlflow.set_tag("evaluator_version", scorecard.evaluator_version)
+            self._mlflow.log_params(
+                {str(key): str(value) for key, value in scorecard.source_versions.items()}
+            )
+            categories = (
+                scorecard.safety,
+                scorecard.semantic_correctness,
+                scorecard.trace_delivery,
+            )
+            metrics = {
+                "total_cases": float(scorecard.total_cases),
+                "automated_cases": float(scorecard.automated_cases),
+                "not_yet_automated_cases": float(scorecard.not_yet_automated_cases),
+                **{
+                    f"{category.name}_pass_rate": category.pass_rate for category in categories
+                },
+                **{f"{category.name}_total": float(category.total) for category in categories},
+                **{
+                    f"latency_ms_{key}": float(value)
+                    for key, value in scorecard.latency_ms.items()
+                },
+                "token_cost_total_tokens": float(
+                    scorecard.token_cost.get("total_tokens", 0)
+                ),
+            }
+            self._mlflow.log_metrics(metrics)
+
 
 def redact_identifiers(value: Any) -> Any:
     """Recursively redact direct-identifier-shaped values before MLflow logging."""

@@ -95,27 +95,48 @@ def test_every_case_has_required_provenance_and_approval(
         assert len(case.turns) >= 1, case.case_id
 
 
-def test_dataset_is_never_imported_by_runtime_source_files() -> None:
-    """AC5's 'never runtime evidence' claim: no file under src/growth_data_agent
-    other than evaluation_dataset.py itself may import it or the evaluations
-    directory — the dataset is offline, reviewed content, not request-serving
-    evidence."""
-    offending_files: list[str] = []
-    for path in sorted(_SOURCE_DIR.rglob("*.py")):
-        if path.name == "evaluation_dataset.py":
+def _local_module_imports(path: Path) -> set[str]:
+    """Names this file imports that could refer to another module in this package
+    (bare module names for `import x` / relative `from .x import y`) — third-party
+    absolute imports (`from fastapi import ...`) are filtered out by the caller,
+    which only follows names that resolve to an actual file in _SOURCE_DIR."""
+    tree = ast.parse(path.read_text(), filename=str(path))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level > 0:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def test_dataset_is_never_reachable_from_the_request_serving_entrypoint() -> None:
+    """AC5's 'never runtime evidence' claim: evaluation_dataset must never be
+    reachable from main.py's real import graph — the module the ASGI app and
+    every request-serving path actually loads. This is deliberately a graph
+    walk from the live entrypoint, not a hand-maintained file blocklist: an
+    offline-only consumer (like evaluation_runner.py) is naturally exempt
+    without needing this test edited every time one is added, and a future
+    accidental import from ANY request-serving module — not just main.py or
+    service.py by name — is still caught.
+    """
+    visited: set[str] = set()
+    to_visit = ["main"]
+    while to_visit:
+        module_name = to_visit.pop()
+        if module_name in visited:
             continue
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module] if node.module else []
-            else:
-                continue
-            if any(name and "evaluation_dataset" in name for name in names):
-                offending_files.append(str(path.relative_to(_SOURCE_DIR)))
-    assert not offending_files, (
-        f"These runtime source files must never import evaluation_dataset: {offending_files}"
+        visited.add(module_name)
+        module_path = _SOURCE_DIR / f"{module_name}.py"
+        if not module_path.exists():
+            continue
+        for imported in _local_module_imports(module_path):
+            if (_SOURCE_DIR / f"{imported}.py").exists() and imported not in visited:
+                to_visit.append(imported)
+
+    assert "evaluation_dataset" not in visited, (
+        "evaluation_dataset is reachable from main.py's import graph: "
+        f"{sorted(visited)}"
     )
 
 

@@ -77,6 +77,24 @@ make evaluation-dataset
 ```
 
 This is offline review content, not the local baseline runner above — it is
-never imported by request-serving code, and executing cases against a live
-harness to publish a scorecard is a later step in the evaluation epic (#61),
-not part of this dataset itself.
+never imported by request-serving code.
+
+## Governed evaluation runner and scorecard
+
+`scripts/run_governed_evaluations.py` replays the Governed Evaluation
+Dataset through the real `POST /answer_question` seam and publishes a
+separate Evaluation Scorecard to MLflow (`MlflowTraceSink.record_scorecard`).
+Run it with:
+
+```sh
+make governed-evaluate
+```
+
+It needs the same live Postgres + `make dbt-build` prerequisites as `make
+evaluate`. A Case is executed only when none of its turns declares a
+`setup_note` (bespoke harness state — a custom evidence store, a
+monkeypatched Access Profile, an injected local model); the rest are
+reported as `not_yet_automated_cases` on the scorecard, never silently
+skipped. The scorecard reports safety, semantic correctness, trace delivery,
+latency, and token/cost separately — never one composite score. See
+`docs/adr/0013-governed-evaluation-runner-reports-honest-coverage.md`.
