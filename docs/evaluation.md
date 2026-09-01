@@ -47,9 +47,18 @@ the variable is unset, empty, or names another model, the deterministic
 interpreter remains available; other configured model names remain available
 only to the existing evidence-drafting adapter.
 
-The service writes one redacted MLflow run per governed response. The default
-tracking URI is `file:./data/mlruns`; set `MLFLOW_TRACKING_URI` for a local
-MLflow server. Trace tags include the route, policy fingerprint, evaluation
-outcome, and trace identifier. Parameters and metrics include source versions,
-tool outcomes, and retrieval scores. The `governed_trace.json` artifact
-recursively redacts direct-identifier-shaped values before logging.
+The service writes one redacted MLflow run per governed response. Set the
+private hosted `MLFLOW_TRACKING_URI` (for example, `http://go/mlflow`) outside
+development; `file:./data/mlruns` is available only when
+`GROWTH_DATA_AGENT_ENVIRONMENT` is `development` or `test` (the default is
+`development`). Trace tags include the route, policy fingerprint, evaluation
+outcome, trace-delivery attempt, and trace identifier. Parameters and metrics
+include source/configuration versions, tool outcomes, retrieval scores, and
+turn latency. The `governed_trace.json` artifact recursively redacts
+direct-identifier-shaped values before logging.
+
+`GET /readiness` exposes only safe trace-delivery health: provider, delivery
+attempt and failure counts, and the last exception class. If MLflow delivery
+fails, the governed response remains available but readiness becomes degraded
+(HTTP 503) so operators can alert on it. MLflow never receives raw prompts,
+answers, SQL, Evidence Revision bodies, or direct identifiers.

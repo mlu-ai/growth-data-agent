@@ -755,6 +755,13 @@ def test_readiness_route_reports_deterministic_mode_when_ollama_is_disabled(clie
             "model": "deterministic-cross-encoder",
             "version": "1",
         },
+        "trace_delivery": {
+            "provider": "none",
+            "status": "disabled",
+            "attempt_count": 0,
+            "failure_count": 0,
+            "last_error_type": None,
+        },
         "evidence_sync": {
             "status": "unconfigured",
             "qdrant": {
@@ -819,6 +826,13 @@ def test_readiness_route_reports_the_available_ollama_model(monkeypatch) -> None
             "status": "ready",
             "model": "dengcao/Qwen3-Reranker-0.6B",
             "version": "1",
+        },
+        "trace_delivery": {
+            "provider": "mlflow",
+            "status": "not_observed",
+            "attempt_count": 0,
+            "failure_count": 0,
+            "last_error_type": None,
         },
         "evidence_sync": {
             "status": "unconfigured",

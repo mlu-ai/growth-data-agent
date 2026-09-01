@@ -7,9 +7,11 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from statistics import fmean
+from threading import Lock
+from time import perf_counter
 from typing import Any, Literal, Protocol
 
 from .contracts import LeadAgentMetadata
@@ -52,6 +54,8 @@ _SAFE_SPAN_NAMES = frozenset(
         "graph_traversal",
     }
 )
+_SAFE_FACTOR_STATUSES = frozenset({"supported", "contradicted", "inconclusive"})
+_DEVELOPMENT_ENVIRONMENTS = frozenset({"development", "test"})
 
 
 class TraceSink(Protocol):
@@ -81,20 +85,80 @@ class TraceRecord:
     retrieval_scores: Sequence[float]
     evaluation_outcome: str
     response: Mapping[str, Any]
+    latency_ms: float = 0.0
+    configuration_versions: Mapping[str, str] = field(default_factory=dict)
     lead_agent_metadata: LeadAgentMetadata | None = None
     conversation_id: str | None = None
     node_spans: Sequence[TraceSpan] = ()
     tool_spans: Sequence[TraceSpan] = ()
 
 
+class TraceDeliveryHealth:
+    """Safe process-local delivery state for the configured observability sink."""
+
+    def __init__(self, *, provider: str, enabled: bool) -> None:
+        self._provider = provider
+        self._enabled = enabled
+        self._lock = Lock()
+        self._attempt_count = 0
+        self._failure_count = 0
+        self._last_error_type: str | None = None
+        self._last_delivery_succeeded = False
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._attempt_count += 1
+            self._last_error_type = None
+            self._last_delivery_succeeded = True
+
+    def record_failure(self, error: Exception) -> None:
+        with self._lock:
+            self._attempt_count += 1
+            self._failure_count += 1
+            self._last_error_type = type(error).__name__
+            self._last_delivery_succeeded = False
+
+    def readiness(self) -> dict[str, str | int | None]:
+        with self._lock:
+            if not self._enabled:
+                status = "disabled"
+            elif self._attempt_count == 0:
+                status = "not_observed"
+            elif self._last_delivery_succeeded:
+                status = "ready"
+            else:
+                status = "unavailable"
+            return {
+                "provider": self._provider,
+                "status": status,
+                "attempt_count": self._attempt_count,
+                "failure_count": self._failure_count,
+                "last_error_type": self._last_error_type,
+            }
+
+
+def trace_delivery_health_for(sink: TraceSink) -> TraceDeliveryHealth:
+    """Create the safe health record associated with one configured trace sink."""
+    if isinstance(sink, NoOpTraceSink):
+        return TraceDeliveryHealth(provider="none", enabled=False)
+    if isinstance(sink, MlflowTraceSink):
+        return TraceDeliveryHealth(provider="mlflow", enabled=True)
+    return TraceDeliveryHealth(provider="custom", enabled=True)
+
+
 class TraceContext:
     """Collect spans for one request without coupling graph nodes to a sink."""
 
     def __init__(self) -> None:
+        self._started_at = perf_counter()
         self._node_spans: list[TraceSpan] = []
         self._tool_spans: list[TraceSpan] = []
         self.conversation_id: str | None = None
         self.lead_agent_metadata: LeadAgentMetadata | None = None
+
+    @property
+    def latency_ms(self) -> float:
+        return round((perf_counter() - self._started_at) * 1000, 3)
 
     @property
     def node_spans(self) -> tuple[TraceSpan, ...]:
@@ -197,8 +261,16 @@ class MlflowTraceSink:
 
     @classmethod
     def from_environment(cls) -> MlflowTraceSink:
+        tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+        if not tracking_uri:
+            environment = os.environ.get("GROWTH_DATA_AGENT_ENVIRONMENT", "development")
+            if environment.casefold() not in _DEVELOPMENT_ENVIRONMENTS:
+                raise ValueError(
+                    "MLFLOW_TRACKING_URI is required outside development and test environments."
+                )
+            tracking_uri = "file:./data/mlruns"
         return cls(
-            tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", "file:./data/mlruns"),
+            tracking_uri=tracking_uri,
             experiment_name=os.environ.get("MLFLOW_EXPERIMENT_NAME", "growth-data-agent"),
         )
 
@@ -213,16 +285,24 @@ class MlflowTraceSink:
                 self._mlflow.set_tag("response_classification", trace.response_classification)
                 self._mlflow.set_tag("policy_fingerprint", trace.policy_fingerprint)
                 self._mlflow.set_tag("evaluation_outcome", trace.evaluation_outcome)
+                self._mlflow.set_tag("trace_delivery_state", "attempted")
                 if trace.conversation_id is not None:
                     self._mlflow.set_tag("conversation_id", trace.conversation_id)
                 self._mlflow.log_params(
                     {
                         **{key: str(value) for key, value in trace.source_versions.items()},
+                        **{
+                            f"config_{key}": str(value)
+                            for key, value in trace.configuration_versions.items()
+                        },
                         **{f"{key}_outcome": value for key, value in trace.tool_outcomes.items()},
                     }
                 )
                 scores = [float(score) for score in trace.retrieval_scores]
-                metrics = {"retrieval_count": float(len(scores))}
+                metrics = {
+                    "retrieval_count": float(len(scores)),
+                    "turn_latency_ms": float(trace.latency_ms),
+                }
                 if scores:
                     metrics.update(
                         retrieval_top_score=max(scores),
@@ -311,6 +391,26 @@ def _safe_response_payload(response: Mapping[str, Any]) -> dict[str, Any]:
     evidence_citations = evidence.get("citations") if isinstance(evidence, Mapping) else ()
     graph_paths = response.get("graph_paths")
     caveats = response.get("caveats")
+    candidate_factors = response.get("candidate_causal_factors")
+    factors = (
+        [factor for factor in candidate_factors if isinstance(factor, Mapping)]
+        if isinstance(candidate_factors, Sequence) and not isinstance(candidate_factors, str)
+        else []
+    )
+    factor_statuses = sorted(
+        {
+            status
+            for factor in factors
+            if isinstance((status := factor.get("status")), str) and status in _SAFE_FACTOR_STATUSES
+        }
+    )
+    opportunity_result = (
+        "estimate"
+        if response.get("opportunity_estimate") is not None
+        else "sizing_gap"
+        if response.get("opportunity_sizing_gap") is not None
+        else "not_requested"
+    )
     return {
         "has_canonical_definition": response.get("canonical_definition") is not None,
         "has_data_team_verification_request": (
@@ -327,6 +427,12 @@ def _safe_response_payload(response: Mapping[str, Any]) -> dict[str, Any]:
         "caveat_count": _sequence_length(caveats),
         "has_conversation_id": response.get("conversation_id") is not None,
         "has_lead_agent_metadata": response.get("lead_agent_metadata") is not None,
+        "candidate_factor_count": len(factors),
+        "candidate_factor_statuses": factor_statuses,
+        "sizing_eligible_factor_count": sum(
+            factor.get("sizing_eligible") is True for factor in factors
+        ),
+        "opportunity_result": opportunity_result,
     }
 
 

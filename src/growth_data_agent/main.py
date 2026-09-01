@@ -213,7 +213,7 @@ def create_app(
                 "embedding": HashEmbeddingProvider().readiness(),
             }
         return JSONResponse(
-            status_code=503 if status["status"] == "unavailable" else 200,
+            status_code=503 if status["status"] in {"unavailable", "degraded"} else 200,
             content=status,
         )
 
