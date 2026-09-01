@@ -105,10 +105,12 @@ from .metric_definition_gaps import (
 from .observability import (
     NoOpTraceSink,
     TraceContext,
+    TraceDeliveryHealth,
     TraceRecord,
     TraceSink,
     capture_trace,
     policy_fingerprint,
+    trace_delivery_health_for,
     trace_span,
 )
 from .planning import (
@@ -223,6 +225,7 @@ class AnswerQuestionService:
             direct_identifier_audit_recorder or InMemoryDirectIdentifierAuditRecorder()
         )
         self.trace_sink = trace_sink or NoOpTraceSink()
+        self.trace_delivery_health: TraceDeliveryHealth = trace_delivery_health_for(self.trace_sink)
         self.conversation_store = conversation_store or InMemoryConversationCheckpointStore()
         self.local_model = local_model
         evidence_model = evidence_model if evidence_model is not None else local_model
@@ -1155,19 +1158,26 @@ class AnswerQuestionService:
         qdrant = {key: value for key, value in evidence.items() if key != "embedding"}
         embedding = evidence.get("embedding", embedding_readiness())
         reranker = reranker_readiness(self.evidence_reranker)
+        trace_delivery = self.trace_delivery_health.readiness()
+        dependency_unavailable = (
+            local_model["status"] == "unavailable"
+            or qdrant["status"] == "unavailable"
+            or embedding["status"] == "unavailable"
+            or reranker["status"] not in {"ready", "configured"}
+        )
         return {
             "status": (
                 "unavailable"
-                if local_model["status"] == "unavailable"
-                or qdrant["status"] == "unavailable"
-                or embedding["status"] == "unavailable"
-                or reranker["status"] not in {"ready", "configured"}
+                if dependency_unavailable
+                else "degraded"
+                if trace_delivery["status"] == "unavailable"
                 else "ready"
             ),
             "local_model": local_model,
             "qdrant": qdrant,
             "embedding": embedding,
             "reranker": reranker,
+            "trace_delivery": trace_delivery,
         }
 
     def _available_metric_names_for_request(
@@ -1555,16 +1565,14 @@ class AnswerQuestionService:
             retrieval_scores=retrieval_scores,
             evaluation_outcome="not_evaluated",
             response=response.model_dump(mode="json"),
+            latency_ms=trace_context.latency_ms,
+            configuration_versions=self._trace_configuration_versions(),
             lead_agent_metadata=response.lead_agent_metadata,
             conversation_id=response.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
         )
-        try:
-            self.trace_sink.record(trace)
-        except Exception:
-            # Observability must not turn a governed response into an outage.
-            return
+        self._deliver_trace(trace)
 
     def _record_authorization_denial(
         self, request: AnswerQuestionRequest, trace_context: TraceContext
@@ -1601,15 +1609,14 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "access_denied",
             },
+            latency_ms=trace_context.latency_ms,
+            configuration_versions=self._trace_configuration_versions(),
             lead_agent_metadata=trace_context.lead_agent_metadata,
             conversation_id=trace_context.conversation_id or request.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
         )
-        try:
-            self.trace_sink.record(trace)
-        except Exception:
-            pass
+        self._deliver_trace(trace)
         return trace.trace_id
 
     def _record_dependency_failure(
@@ -1641,16 +1648,41 @@ class AnswerQuestionService:
                 "result_classification": "safe_refusal",
                 "error_code": "dependency_unavailable",
             },
+            latency_ms=trace_context.latency_ms,
+            configuration_versions=self._trace_configuration_versions(),
             lead_agent_metadata=trace_context.lead_agent_metadata,
             conversation_id=trace_context.conversation_id or request.conversation_id,
             node_spans=trace_context.node_spans,
             tool_spans=trace_context.tool_spans,
         )
+        self._deliver_trace(trace)
+        return trace_id
+
+    def _deliver_trace(self, trace: TraceRecord) -> None:
+        """Deliver a redacted trace without allowing observability to fail the turn."""
         try:
             self.trace_sink.record(trace)
-        except Exception:
-            pass
-        return trace_id
+        except Exception as error:
+            self.trace_delivery_health.record_failure(error)
+        else:
+            self.trace_delivery_health.record_success()
+
+    def _trace_configuration_versions(self) -> dict[str, str]:
+        """Record safe component identities without exposing transport configuration."""
+        return {
+            "workflow": "governed-response-v1",
+            "intent_model": self._component_configuration_version(self.local_model),
+            "evidence_reranker": self._component_configuration_version(self.evidence_reranker),
+        }
+
+    @staticmethod
+    def _component_configuration_version(component: object | None) -> str:
+        if component is None:
+            return "none"
+        model_name = getattr(component, "model_name", None)
+        if isinstance(model_name, str) and model_name:
+            return model_name
+        return type(component).__name__
 
     def _policy_fingerprint_or_unknown(self, request: AnswerQuestionRequest) -> str:
         try:

@@ -9,6 +9,7 @@ import pytest
 from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, write_artifact
 from fastapi.testclient import TestClient
 
+from growth_data_agent import observability
 from growth_data_agent.graph import EvidenceGraphUnavailableError
 from growth_data_agent.lightrag import (
     InMemoryLightRAGStore,
@@ -38,12 +39,17 @@ class RecordingMlflow:
         self.metrics: dict[str, float] = {}
         self.artifacts: dict[str, dict] = {}
         self.spans: list[dict[str, str]] = []
+        self.run_count = 0
 
     def set_experiment(self, name: str) -> None:
         self.experiment_name = name
 
+    def set_tracking_uri(self, tracking_uri: str) -> None:
+        self.tracking_uri = tracking_uri
+
     @contextmanager
     def start_run(self, **kwargs):
+        self.run_count += 1
         self.run_kwargs = kwargs
         yield self
 
@@ -95,6 +101,7 @@ def test_mlflow_trace_is_redacted_and_contains_governance_fields() -> None:
         "response_classification": "direct_identifier_response",
         "policy_fingerprint": "policy-abc",
         "evaluation_outcome": "pass",
+        "trace_delivery_state": "attempted",
     }
     assert mlflow.params == {
         "semantic_version": "1.0.0",
@@ -103,6 +110,7 @@ def test_mlflow_trace_is_redacted_and_contains_governance_fields() -> None:
     }
     assert mlflow.metrics == {
         "retrieval_count": 2.0,
+        "turn_latency_ms": 0.0,
         "retrieval_top_score": 0.91,
         "retrieval_mean_score": 0.665,
     }
@@ -111,6 +119,80 @@ def test_mlflow_trace_is_redacted_and_contains_governance_fields() -> None:
     assert payload["response"]["has_direct_identifier_answer"] is True
     assert payload["trace_id"] == "trace-123"
     assert [span["name"] for span in mlflow.spans] == ["answer_question:trace-123"]
+
+
+def test_mlflow_trace_sink_uses_private_tracking_uri_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mlflow = RecordingMlflow()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://go/mlflow")
+    monkeypatch.setattr(observability, "_load_mlflow", lambda: mlflow)
+
+    sink = MlflowTraceSink.from_environment()
+
+    assert sink.experiment_name == "growth-data-agent"
+    assert mlflow.tracking_uri == "http://go/mlflow"
+
+
+@pytest.mark.parametrize("tracking_uri", (None, "", "   "))
+def test_mlflow_trace_sink_requires_private_uri_outside_development(
+    monkeypatch: pytest.MonkeyPatch, tracking_uri: str | None
+) -> None:
+    if tracking_uri is None:
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    else:
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    monkeypatch.setenv("GROWTH_DATA_AGENT_ENVIRONMENT", "production")
+
+    with pytest.raises(ValueError, match="MLFLOW_TRACKING_URI"):
+        MlflowTraceSink.from_environment()
+
+
+def test_mlflow_trace_records_safe_latency_investigation_and_sizing_metadata() -> None:
+    mlflow = RecordingMlflow()
+    sink = MlflowTraceSink(mlflow_module=mlflow)
+    record = TraceRecord(
+        trace_id="trace-456",
+        request_route="answer_question",
+        response_classification="opportunity_estimate",
+        policy_fingerprint="policy-abc",
+        source_versions={"semantic_version": "1.0.0"},
+        tool_outcomes={"retrieval": "success"},
+        retrieval_scores=(0.91,),
+        evaluation_outcome="not_evaluated",
+        latency_ms=12.5,
+        response={
+            "candidate_causal_factors": [
+                {"status": "supported", "sizing_eligible": True},
+                {"status": "inconclusive", "sizing_eligible": False},
+            ],
+            "opportunity_estimate": {"incremental_product_users": 2},
+        },
+    )
+
+    sink.record(record)
+
+    assert mlflow.tags["trace_delivery_state"] == "attempted"
+    assert mlflow.metrics["turn_latency_ms"] == 12.5
+    assert mlflow.artifacts["governed_trace.json"]["response"] == {
+        "has_canonical_definition": False,
+        "has_data_team_verification_request": False,
+        "has_direct_identifier_answer": False,
+        "has_direct_identifier_audit": False,
+        "has_driver_decomposition": False,
+        "has_evidence": False,
+        "has_metric_definition_gap": False,
+        "has_provisional_metric": False,
+        "evidence_citation_count": 0,
+        "graph_path_count": 0,
+        "caveat_count": 0,
+        "has_conversation_id": False,
+        "has_lead_agent_metadata": False,
+        "candidate_factor_count": 2,
+        "candidate_factor_statuses": ["inconclusive", "supported"],
+        "sizing_eligible_factor_count": 1,
+        "opportunity_result": "estimate",
+    }
 
 
 def test_mlflow_trace_redacts_span_payloads() -> None:
@@ -262,6 +344,110 @@ class RecordingTraceSink:
 
     def record(self, trace: TraceRecord) -> None:
         self.records.append(trace)
+
+
+class FailingTraceSink:
+    def record(self, trace: TraceRecord) -> None:
+        del trace
+        raise ConnectionError("MLflow delivery is unavailable")
+
+
+def test_trace_delivery_failure_preserves_response_and_marks_readiness(tmp_path: Path) -> None:
+    artifact_path = write_artifact(tmp_path / "semantic.json")
+    gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(artifact_path),
+        metricflow_planner=RecordingMetricFlowPlanner(tmp_path / "semantic_manifest.json"),
+        postgres_executor=RecordingPostgresExecutor(),
+        now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
+    )
+    service = AnswerQuestionService(
+        gateway,
+        trace_sink=FailingTraceSink(),
+        evidence_reranker=DeterministicCrossEncoderReranker(),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/answer_question",
+        json={"agent_user_id": "data_analyst", "question": "What is Jira New PEU?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["canonical_definition"]["name"] == "jira_new_peu"
+    assert service.readiness()["trace_delivery"] == {
+        "provider": "custom",
+        "status": "unavailable",
+        "attempt_count": 1,
+        "failure_count": 1,
+        "last_error_type": "ConnectionError",
+    }
+    readiness = client.get("/readiness")
+    assert readiness.status_code == 503
+    assert readiness.json()["status"] == "degraded"
+
+
+def test_hosted_mlflow_sink_records_hypothesis_and_opportunity_turns(tmp_path: Path) -> None:
+    artifact_path = write_artifact(tmp_path / "semantic.json")
+    gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(artifact_path),
+        metricflow_planner=RecordingMetricFlowPlanner(tmp_path / "semantic_manifest.json"),
+        postgres_executor=RecordingPostgresExecutor(),
+        now=lambda: datetime(2026, 8, 25, 1, tzinfo=UTC),
+    )
+    mlflow = RecordingMlflow()
+    service = AnswerQuestionService(
+        gateway,
+        trace_sink=MlflowTraceSink(
+            tracking_uri="http://go/mlflow",
+            mlflow_module=mlflow,
+        ),
+        evidence_reranker=DeterministicCrossEncoderReranker(),
+    )
+    client = TestClient(create_app(service))
+
+    hypothesis = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+        },
+    )
+
+    assert hypothesis.status_code == 200
+    factor_id = hypothesis.json()["candidate_causal_factors"][0]["factor_id"]
+    conversation_id = hypothesis.json()["conversation_id"]
+    assert mlflow.run_count == 1
+    assert mlflow.artifacts["governed_trace.json"]["response"]["candidate_factor_count"] == 1
+    assert mlflow.params["config_workflow"] == "governed-response-v1"
+
+    selection = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+            "conversation_id": conversation_id,
+            "selected_factor_id": factor_id,
+        },
+    )
+
+    assert selection.status_code == 200
+    assert selection.json()["candidate_causal_factors"][0]["factor_id"] == factor_id
+    assert mlflow.run_count == 2
+
+    opportunity = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "What evidence may explain the APAC 51–200-seat Tenant decline?",
+            "conversation_id": conversation_id,
+            "opportunity_scenario_percentage_points": 5.0,
+        },
+    )
+
+    assert opportunity.status_code == 200
+    assert opportunity.json()["result_classification"] == "opportunity_estimate"
+    assert mlflow.run_count == 3
+    assert mlflow.artifacts["governed_trace.json"]["response"]["opportunity_result"] == "estimate"
 
 
 class FailingGraphStore:
