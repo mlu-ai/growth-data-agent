@@ -101,7 +101,7 @@ def test_dataset_is_never_imported_by_runtime_source_files() -> None:
     directory — the dataset is offline, reviewed content, not request-serving
     evidence."""
     offending_files: list[str] = []
-    for path in sorted(_SOURCE_DIR.glob("*.py")):
+    for path in sorted(_SOURCE_DIR.rglob("*.py")):
         if path.name == "evaluation_dataset.py":
             continue
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -113,7 +113,7 @@ def test_dataset_is_never_imported_by_runtime_source_files() -> None:
             else:
                 continue
             if any(name and "evaluation_dataset" in name for name in names):
-                offending_files.append(path.name)
+                offending_files.append(str(path.relative_to(_SOURCE_DIR)))
     assert not offending_files, (
         f"These runtime source files must never import evaluation_dataset: {offending_files}"
     )
