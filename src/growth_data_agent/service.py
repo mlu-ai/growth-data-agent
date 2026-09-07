@@ -27,6 +27,8 @@ from .contracts import (
     EvidenceChainRelation,
     FactorSupportStatus,
     GovernedAnalyticalResponse,
+    MetricClarification,
+    MetricClarificationChoice,
     MetricDefinitionGap,
     OpportunityEstimate,
     OpportunitySizingGap,
@@ -102,6 +104,7 @@ from .metric_definition_gaps import (
     ProvisionalMetricInputGateway,
     ProvisionalMetricInputRequest,
 )
+from .metric_names import metric_identifier
 from .observability import (
     NoOpTraceSink,
     TraceContext,
@@ -241,11 +244,13 @@ class AnswerQuestionService:
                 local_model,
                 metric_names_provider=self._available_metric_names_for_request,
                 route_resolver=self._route_for_validated_intent,
+                fallback_metric_name_resolver=self._requested_metric_name,
             )
         else:
             configured_intent_interpreter = RuleBasedIntentInterpreter(
                 metric_name_resolver=self._requested_metric_name,
                 route_resolver=self._route_for_validated_intent,
+                clarification_candidates_provider=self._available_metric_names_for_request,
             )
         self.execution_graph = execution_graph or ExecutionGraph(
             intent_interpreter=configured_intent_interpreter,
@@ -1494,17 +1499,33 @@ class AnswerQuestionService:
         self, authorized_execution: AuthorizedExecution
     ) -> GovernedAnalyticalResponse:
         artifact = self.semantic_gateway.artifact_store.load()
+        freshness = self.semantic_gateway.freshness(artifact)
+        available_metric_names = set(self.semantic_gateway.available_metric_names())
+        choices: list[MetricClarificationChoice] = []
+        for metric_name in authorized_execution.candidate_metric_names:
+            if metric_name in available_metric_names and self._metric_product(metric_name) in (
+                authorized_execution.access_profile.products
+            ) and metric_name not in {choice.metric_name for choice in choices}:
+                choices.append(
+                    MetricClarificationChoice(
+                        metric_name=metric_name,
+                        label=self._metric_label(metric_name),
+                    )
+                )
+        choices = choices[:3]
         return GovernedAnalyticalResponse(
             answer=(
-                "I could not validate the requested metric or analysis type. Name a governed "
-                "metric to check its semantic status."
+                "The requested metric is ambiguous. Choose one of the governed metric options "
+                "or provide a different question."
             ),
-            result_classification=ResultClassification.LIMITATION,
-            source_freshness=self.semantic_gateway.freshness(artifact),
+            result_classification=ResultClassification.CLARIFICATION,
+            metric_clarification=MetricClarification(choices=choices),
+            source_freshness=freshness,
             effective_access_scope=authorized_execution.effective_scope,
             caveats=[
-                "The request was not sent to a semantic query, evidence retrieval, graph "
-                "traversal, or direct-identifier handler."
+                "No metric was selected on the Agent User's behalf.",
+                "Choices are returned only when the current validated semantic artifact and "
+                "Access Profile authorize them.",
             ],
             trace_id=authorized_execution.trace_id,
         )
@@ -2464,9 +2485,12 @@ class AnswerQuestionService:
     def _metric_label(metric_name: str) -> str:
         product = AnswerQuestionService._metric_product(metric_name)
         if product is None:
-            return metric_name
-        metric_type = "New MAU" if metric_name.endswith("_new_mau") else "New PEU"
-        return f"{product} {metric_type}"
+            return " ".join(part.capitalize() for part in metric_name.split("_"))
+        if metric_name.endswith("_new_mau"):
+            return f"{product} New MAU"
+        if metric_name.endswith("_new_peu"):
+            return f"{product} New PEU"
+        return " ".join(part.capitalize() for part in metric_name.split("_"))
 
     @staticmethod
     def _catalog_product(entity_name: str) -> str | None:
@@ -2483,13 +2507,29 @@ class AnswerQuestionService:
         return any(term in normalized for term in ("who owns", "owner of", "ownership"))
 
     @staticmethod
+    def _requests_metric_clarification(question: str) -> bool:
+        normalized = " ".join(question.casefold().split())
+        return any(
+            phrase in normalized
+            for phrase in (
+                "which metric",
+                "what metric",
+                "metric should i",
+                "relevant metric",
+                "the metric",
+                "this metric",
+                "that metric",
+            )
+        )
+
+    @staticmethod
     def _requested_catalog_entity(request: AnswerQuestionRequest) -> str | None:
         if not AnswerQuestionService._requests_catalog_ownership(request.question):
             return None
         normalized = " ".join(request.question.casefold().split())
         requested_metric = request.requested_metric_name
         if requested_metric is not None:
-            return _metric_identifier(requested_metric)
+            return metric_identifier(requested_metric)
         for entity_name in (
             "fct_jira_new_peu",
             "fct_confluence_new_peu",
@@ -2594,7 +2634,7 @@ class AnswerQuestionService:
     @staticmethod
     def _requested_metric_name(request: AnswerQuestionRequest) -> str | None:
         if request.requested_metric_name is not None:
-            normalized_requested_metric = _metric_identifier(request.requested_metric_name)
+            normalized_requested_metric = metric_identifier(request.requested_metric_name)
             return normalized_requested_metric or None
 
         normalized = " ".join(request.question.casefold().split())
@@ -2614,13 +2654,15 @@ class AnswerQuestionService:
             return "confluence_new_peu"
         if "confluence" in normalized and "new mau" in normalized:
             return "confluence_new_mau"
+        if AnswerQuestionService._requests_metric_clarification(request.question):
+            return None
         if AnswerQuestionService._requests_apac_decline_evidence(request.question):
             return "jira_new_peu"
         if any(term in normalized for term in ("metric", "rate", "count", "revenue")):
-            return _metric_identifier(request.question)
+            return metric_identifier(request.question)
         named_metric = _named_metric_question(request.question)
         if named_metric is not None:
-            return _metric_identifier(named_metric)
+            return metric_identifier(named_metric)
         return None
 
     @staticmethod
@@ -2666,6 +2708,8 @@ class AnswerQuestionService:
         if AnswerQuestionService._requests_causal_analysis(request):
             return AnalyticalRoute.CAUSAL_ANALYSIS
         if metric_name is None:
+            if AnswerQuestionService._requests_metric_clarification(request.question):
+                return AnalyticalRoute.CLARIFICATION
             return AnalyticalRoute.LIMITATION
         known_metric_names = (
             set(canonical_metric_names)
@@ -2722,10 +2766,6 @@ class AnswerQuestionService:
                 )
             )
         )
-
-
-def _metric_identifier(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
 
 
 def _requests_conversational_metric_follow_up(normalized_question: str) -> bool:

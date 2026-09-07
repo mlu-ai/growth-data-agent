@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from conftest import write_artifact
 from fastapi.testclient import TestClient
 
@@ -65,3 +66,107 @@ def test_available_metric_names_only_exposes_a_current_validated_artifact(tmp_pa
         "confluence_new_mau",
     )
     assert stale_gateway.available_metric_names() == ()
+
+
+@pytest.mark.parametrize("status,now", [
+    ("fail", datetime(2026, 8, 25, tzinfo=UTC)),
+    ("success", datetime(2026, 8, 27, tzinfo=UTC)),
+])
+def test_ambiguous_intent_returns_no_choices_without_current_artifact(
+    tmp_path, status: str, now: datetime
+) -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def generate(self, request):
+            self.requests.append(request)
+            return '{"metric_name":null,"ambiguity":"ambiguous","candidate_metric_names":[]}'
+
+    model = RecordingModel()
+    gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(write_artifact(tmp_path / f"{status}.json", status=status)),
+        now=lambda: now,
+    )
+    client = TestClient(create_app(AnswerQuestionService(gateway, local_model=model)))
+
+    response = client.post(
+        "/answer_question",
+        json={"agent_user_id": "data_analyst", "question": "Which metric is this?"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["result_classification"] == "clarification"
+    assert body["metric_clarification"] == {"choices": []}
+    assert body["source_freshness"]["is_current"] is False
+    assert model.requests == []
+
+
+def test_clear_metric_question_keeps_artifact_limitation_without_model_reinference(
+    tmp_path,
+) -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def generate(self, request):
+            self.requests.append(request)
+            return "not valid JSON"
+
+    model = RecordingModel()
+    now = datetime(2026, 8, 27, tzinfo=UTC)
+    gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(write_artifact(tmp_path / "stale.json")),
+        now=lambda: now,
+    )
+    client = TestClient(create_app(AnswerQuestionService(gateway, local_model=model)))
+
+    response = client.post(
+        "/answer_question",
+        json={"agent_user_id": "data_analyst", "question": "What is Jira New PEU?"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["result_classification"] == "limitation"
+    assert body["source_freshness"]["is_current"] is False
+    assert model.requests == []
+
+
+@pytest.mark.parametrize("status,now", [
+    ("fail", datetime(2026, 8, 25, tzinfo=UTC)),
+    ("success", datetime(2026, 8, 27, tzinfo=UTC)),
+])
+def test_explicit_metric_choice_keeps_artifact_gate_without_model_reinference(
+    tmp_path, status: str, now: datetime
+) -> None:
+    class RecordingModel:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def generate(self, request):
+            self.requests.append(request)
+            return "not valid JSON"
+
+    model = RecordingModel()
+    gateway = ValidatedMetricFlowGateway(
+        SemanticArtifactStore(write_artifact(tmp_path / f"{status}-choice.json", status=status)),
+        now=lambda: now,
+    )
+    client = TestClient(create_app(AnswerQuestionService(gateway, local_model=model)))
+
+    response = client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "Choose the requested metric.",
+            "requested_metric_name": "jira_new_peu",
+        },
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["result_classification"] == "limitation"
+    assert body["source_freshness"]["is_current"] is False
+    assert model.requests == []
