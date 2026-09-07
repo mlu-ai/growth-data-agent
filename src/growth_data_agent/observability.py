@@ -383,7 +383,14 @@ class MlflowTraceSink:
             self._mlflow.set_tag("dataset_version", scorecard.dataset_version)
             self._mlflow.set_tag("evaluator_version", scorecard.evaluator_version)
             self._mlflow.log_params(
-                {str(key): str(value) for key, value in scorecard.source_versions.items()}
+                {
+                    **{str(key): str(value) for key, value in scorecard.source_versions.items()},
+                    **{
+                        f"evaluator.{name}.{field}": str(value)
+                        for name, metadata in scorecard.evaluator_metadata.items()
+                        for field, value in metadata.items()
+                    },
+                }
             )
             categories = (
                 scorecard.safety,
@@ -476,7 +483,17 @@ class MlflowTraceSink:
             self._mlflow.set_tag("dataset_version", scorecard.dataset_version)
             self._mlflow.set_tag("evaluator_version", scorecard.evaluator_version)
             self._mlflow.log_params(
-                {str(key): str(value) for key, value in scorecard.configuration_versions.items()}
+                {
+                    **{
+                        str(key): str(value)
+                        for key, value in scorecard.configuration_versions.items()
+                    },
+                    **{
+                        f"evaluator.{name}.{field}": str(value)
+                        for name, metadata in scorecard.evaluator_metadata.items()
+                        for field, value in metadata.items()
+                    },
+                }
             )
             categories = (scorecard.retrieval, scorecard.generation)
             metrics = {

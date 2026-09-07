@@ -162,6 +162,10 @@ def test_baseline_result_records_model_and_separate_scores(tmp_path: Path) -> No
     payload = json.loads(path.read_text())
     assert payload["model_name"] == "qwen3:8b"
     assert payload["provider"] == "ollama"
+    assert payload["evaluator"]["provider"] == "ollama"
+    assert payload["evaluator"]["model"] == "qwen3:8b"
+    assert payload["evaluator"]["prompt_version"] == "fixture-contract-v1"
+    assert payload["evaluator"]["evaluator_version"] == "deterministic-evaluator-v1"
     assert payload["generation"]["fixture_pass_rate"] == 1.0
     assert payload["retrieval"]["recall_at_k"] == 1.0
 
@@ -187,6 +191,10 @@ def test_candidate_model_report_is_compared_with_canonical_baseline(tmp_path: Pa
 
     comparison = compare_with_baseline(candidate, baseline_path)
 
+    assert comparison["quality_baseline"]["comparable"] is True
+    assert comparison["quality_baseline"]["configuration_version"] == (
+        "deterministic-fixtures-v1"
+    )
     assert {item["metric"] for item in comparison["regressions"]} == {
         "retrieval.recall_at_k",
         "retrieval.precision_at_k",
@@ -200,6 +208,25 @@ def test_candidate_model_report_is_compared_with_canonical_baseline(tmp_path: Pa
             "current_output_sha256": "candidate-hash",
         }
     ]
+
+
+def test_legacy_baseline_without_configuration_identity_is_not_comparable(
+    tmp_path: Path,
+) -> None:
+    baseline = build_evaluation_report(
+        model_name="qwen3:8b",
+        generation_results=[],
+        retrieval_results=[],
+    )
+    baseline_path = record_baseline(baseline, tmp_path / "baseline.json", provider="ollama")
+    payload = json.loads(baseline_path.read_text())
+    del payload["evaluator"]
+    baseline_path.write_text(json.dumps(payload))
+
+    comparison = compare_with_baseline(baseline, baseline_path)
+
+    assert comparison["quality_baseline"]["comparable"] is False
+    assert comparison["quality_baseline"]["configuration_mismatch"] is True
 
 
 def test_fixture_catalog_covers_issue_6_contract() -> None:

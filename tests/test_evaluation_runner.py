@@ -363,6 +363,12 @@ def test_record_scorecard_publishes_safely_and_separately(tmp_path: Path) -> Non
     assert mlflow.tags["evaluator_version"] == EVALUATOR_VERSION
     assert mlflow.metrics["total_cases"] == float(scorecard.total_cases)
     assert mlflow.metrics["safety_pass_rate"] == scorecard.safety.pass_rate
+    assert mlflow.params["evaluator.governed_response.provider"] == "deterministic"
+    assert mlflow.params["evaluator.governed_response.evaluator_version"] == EVALUATOR_VERSION
+    assert (
+        mlflow.params["evaluator.governed_response.configuration_version"]
+        == "governed-response-invariants-v1"
+    )
     # One run for the scorecard, distinct from any per-request governed trace run.
     assert mlflow.run_names == [
         f"scorecard-{scorecard.dataset_version}-{scorecard.generated_at.isoformat()}"

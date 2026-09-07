@@ -165,3 +165,27 @@ direct-identifier output. `make trajectory-evaluate` records the same matrix's
 actual trace-backed boundary scorecard in MLflow; run Promptfoo itself with
 `npx promptfoo eval -c
 evaluations/promptfoo/promptfooconfig.yaml` against a private target.
+
+## Quality judge calibration and approved baselines
+
+`src/growth_data_agent/quality_evaluation.py` is the quality-evaluation
+boundary for reference-based, reference-free, and configurable LLM-as-a-judge
+evaluators. Every evaluator identity records its provider, model, prompt
+version, evaluator version, and configuration version. Calibration reads only
+the untouched `held_out` split and records agreement, a confidence interval and
+standard error, plus case/criterion-level disagreements. Use
+`record_calibration(...)` to persist the metadata-only audit record. Calibration
+requires a candidate output for every held-out case and passes that output to
+the evaluator separately from the reference case and human labels. The
+evaluator-facing case omits both reviewer labels and expected behavior; a
+reference-based evaluator must receive any reference it needs explicitly in
+its candidate-output payload, while a reference-free evaluator receives only
+the candidate output.
+
+Calibration results are report-only until a human approval is explicitly
+recorded with `approve_calibration(...)`. This does not alter deterministic
+safety or semantic checks. `compare_quality_baseline(...)` compares each
+scorecard metric only when the current and approved baseline configuration
+versions match; it never collapses quality into a composite score or invents a
+starting threshold. `quality_gate_decision(...)` remains report-only for an
+uncalibrated judge or a configuration mismatch.

@@ -13,6 +13,11 @@ from typing import Any
 
 from .local_model import LocalModelOutputInvalid, LocalModelUnavailable
 from .observability import redact_identifiers
+from .quality_evaluation import (
+    EvaluatorKind,
+    EvaluatorMetadata,
+    compare_quality_baseline,
+)
 
 _DEFAULT_FIXTURE_PATH = Path(__file__).resolve().parents[2] / "evaluations/fixtures.json"
 
@@ -60,6 +65,7 @@ class EvaluationReport:
     generation_results: tuple[FixtureResult, ...]
     retrieval_results: tuple[RetrievalResult, ...]
     model_results: tuple[LocalModelResult, ...] = ()
+    evaluator_metadata: EvaluatorMetadata | None = None
 
     @property
     def passed(self) -> bool:
@@ -73,6 +79,15 @@ class EvaluationReport:
         )
 
     def as_baseline(self, *, provider: str) -> dict[str, Any]:
+        evaluator_metadata = self.evaluator_metadata or EvaluatorMetadata(
+            name="deterministic_fixture_evaluator",
+            kind=EvaluatorKind.REFERENCE_BASED,
+            provider=provider,
+            model=self.model_name,
+            prompt_version="fixture-contract-v1",
+            evaluator_version="deterministic-evaluator-v1",
+            configuration_version="deterministic-fixtures-v1",
+        )
         generation_pass_rate = _pass_rate(self.generation_results)
         retrieval = {
             "recall_at_k": _average(
@@ -99,6 +114,7 @@ class EvaluationReport:
             "recorded_at": datetime.now(UTC).isoformat(),
             "model_name": self.model_name,
             "provider": provider,
+            "evaluator": evaluator_metadata.as_dict(),
             "evaluation_mode": "deterministic-governed-response-fixtures",
             "passed": self.passed,
             "generation": {
@@ -309,12 +325,14 @@ def build_evaluation_report(
     generation_results: Sequence[FixtureResult],
     retrieval_results: Sequence[RetrievalResult],
     model_results: Sequence[LocalModelResult] = (),
+    evaluator_metadata: EvaluatorMetadata | None = None,
 ) -> EvaluationReport:
     return EvaluationReport(
         model_name=model_name,
         generation_results=tuple(generation_results),
         retrieval_results=tuple(retrieval_results),
         model_results=tuple(model_results),
+        evaluator_metadata=evaluator_metadata,
     )
 
 
@@ -337,28 +355,35 @@ def compare_with_baseline(report: EvaluationReport, baseline_path: Path) -> dict
     """Compare a candidate report with the recorded baseline metrics."""
     baseline = json.loads(baseline_path.read_text())
     current = report.as_baseline(provider=str(baseline.get("provider", "ollama")))
-    metrics = {
-        "generation.fixture_pass_rate": (
-            current["generation"]["fixture_pass_rate"],
-            baseline["generation"]["fixture_pass_rate"],
-        ),
-        "retrieval.recall_at_k": (
-            current["retrieval"]["recall_at_k"],
-            baseline["retrieval"]["recall_at_k"],
-        ),
-        "retrieval.precision_at_k": (
-            current["retrieval"]["precision_at_k"],
-            baseline["retrieval"]["precision_at_k"],
-        ),
-        "retrieval.reciprocal_rank": (
-            current["retrieval"]["reciprocal_rank"],
-            baseline["retrieval"]["reciprocal_rank"],
-        ),
+    current_metrics = {
+        "generation.fixture_pass_rate": current["generation"]["fixture_pass_rate"],
+        "retrieval.recall_at_k": current["retrieval"]["recall_at_k"],
+        "retrieval.precision_at_k": current["retrieval"]["precision_at_k"],
+        "retrieval.reciprocal_rank": current["retrieval"]["reciprocal_rank"],
     }
+    baseline_metrics = {
+        "generation.fixture_pass_rate": baseline["generation"]["fixture_pass_rate"],
+        "retrieval.recall_at_k": baseline["retrieval"]["recall_at_k"],
+        "retrieval.precision_at_k": baseline["retrieval"]["precision_at_k"],
+        "retrieval.reciprocal_rank": baseline["retrieval"]["reciprocal_rank"],
+    }
+    current_configuration = current["evaluator"]["configuration_version"]
+    baseline_configuration = baseline.get("evaluator", {}).get(
+        "configuration_version", ""
+    )
+    quality_comparison = compare_quality_baseline(
+        current_metrics=current_metrics,
+        baseline_metrics=baseline_metrics,
+        configuration_version=current_configuration,
+        baseline_configuration_version=baseline_configuration,
+    )
     regressions = [
-        {"metric": name, "current": current_value, "baseline": baseline_value}
-        for name, (current_value, baseline_value) in metrics.items()
-        if current_value < baseline_value
+        {
+            "metric": metric,
+            "current": quality_comparison.metric_comparisons[metric].current,
+            "baseline": quality_comparison.metric_comparisons[metric].baseline,
+        }
+        for metric in quality_comparison.regressions
     ]
     baseline_model_results = {
         item["fixture_id"]: item
@@ -406,6 +431,7 @@ def compare_with_baseline(report: EvaluationReport, baseline_path: Path) -> dict
         "baseline_model_name": baseline.get("model_name"),
         "regressions": regressions + local_model_regressions,
         "local_model_changes": local_model_changes,
+        "quality_baseline": quality_comparison.as_dict(),
     }
 
 
