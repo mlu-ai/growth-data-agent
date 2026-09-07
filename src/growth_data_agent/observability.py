@@ -602,6 +602,12 @@ def _safe_response_payload(response: Mapping[str, Any]) -> dict[str, Any]:
     graph_paths = response.get("graph_paths")
     caveats = response.get("caveats")
     candidate_factors = response.get("candidate_causal_factors")
+    metric_clarification = response.get("metric_clarification")
+    clarification_choices = (
+        metric_clarification.get("choices")
+        if isinstance(metric_clarification, Mapping)
+        else ()
+    )
     factors = (
         [factor for factor in candidate_factors if isinstance(factor, Mapping)]
         if isinstance(candidate_factors, Sequence) and not isinstance(candidate_factors, str)
@@ -631,6 +637,8 @@ def _safe_response_payload(response: Mapping[str, Any]) -> dict[str, Any]:
         "has_driver_decomposition": response.get("driver_decomposition") is not None,
         "has_evidence": response.get("evidence") is not None,
         "has_metric_definition_gap": response.get("metric_definition_gap") is not None,
+        "has_metric_clarification": metric_clarification is not None,
+        "metric_clarification_choice_count": _sequence_length(clarification_choices),
         "has_provisional_metric": response.get("provisional_metric") is not None,
         "evidence_citation_count": _sequence_length(evidence_citations),
         "graph_path_count": _sequence_length(graph_paths),

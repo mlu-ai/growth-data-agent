@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -13,6 +13,7 @@ from .principal import VerifiedPrincipal
 
 class ResultClassification(StrEnum):
     CANONICAL_DEFINITION = "canonical_definition"
+    CLARIFICATION = "clarification"
     CATALOG_OWNERSHIP = "catalog_ownership"
     DRIVER_DECOMPOSITION = "driver_decomposition"
     HYPOTHESIS = "hypothesis"
@@ -88,6 +89,12 @@ class AnalyticalIntent(BaseModel):
 
     route: AnalyticalRoute
     metric_name: str | None = Field(default=None, min_length=1)
+    candidate_metric_names: list[
+        Annotated[
+            str,
+            Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_]+$"),
+        ]
+    ] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode="after")
     def require_metric_for_canonical_definition(self) -> AnalyticalIntent:
@@ -190,6 +197,19 @@ class MetricDefinitionGap(BaseModel):
     requested_metric_name: str
     semantic_authority: str = "dbt/MetricFlow"
     verification_request_offered: bool = True
+
+
+class MetricClarificationChoice(BaseModel):
+    """A governed metric identifier with a safe, deterministic display label."""
+
+    metric_name: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=128)
+
+
+class MetricClarification(BaseModel):
+    """Bounded metric choices returned when intent remains ambiguous."""
+
+    choices: list[MetricClarificationChoice] = Field(max_length=3)
 
 
 class ProvisionalMetricInput(BaseModel):
@@ -533,6 +553,7 @@ class GovernedAnalyticalResponse(BaseModel):
     direct_identifier_answer: DirectIdentifierAnswer | None = None
     direct_identifier_audit: DirectIdentifierAudit | None = None
     metric_definition_gap: MetricDefinitionGap | None = None
+    metric_clarification: MetricClarification | None = None
     provisional_metric: ProvisionalMetric | None = None
     opportunity_estimate: OpportunityEstimate | None = None
     opportunity_sizing_gap: OpportunitySizingGap | None = None

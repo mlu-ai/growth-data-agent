@@ -260,6 +260,8 @@ def test_mlflow_trace_records_safe_latency_investigation_and_sizing_metadata() -
         "has_driver_decomposition": False,
         "has_evidence": False,
         "has_metric_definition_gap": False,
+        "has_metric_clarification": False,
+        "metric_clarification_choice_count": 0,
         "has_provisional_metric": False,
         "evidence_citation_count": 0,
         "graph_path_count": 0,
@@ -271,6 +273,59 @@ def test_mlflow_trace_records_safe_latency_investigation_and_sizing_metadata() -
         "sizing_eligible_factor_count": 1,
         "opportunity_result": "estimate",
     }
+
+
+def test_mlflow_trace_records_clarification_metadata_without_choice_values() -> None:
+    mlflow = RecordingMlflow()
+    sink = MlflowTraceSink(mlflow_module=mlflow)
+    record = TraceRecord(
+        trace_id="trace-clarification",
+        request_route="answer_question",
+        response_classification="clarification",
+        policy_fingerprint="policy-abc",
+        source_versions={},
+        tool_outcomes={},
+        retrieval_scores=(),
+        evaluation_outcome="not_evaluated",
+        response={
+            "question": "What is the metric for tenant-0001?",
+            "metric_clarification": {
+                "choices": [
+                    {"metric_name": "jira_new_peu", "label": "Jira New PEU"},
+                    {"metric_name": "unapproved_metric", "label": "Unapproved"},
+                ]
+            },
+        },
+    )
+
+    sink.record(record)
+
+    payload = mlflow.artifacts["governed_trace.json"]
+    assert mlflow.tags["response_classification"] == "clarification"
+    assert payload["response"] == {
+        "has_canonical_definition": False,
+        "has_data_team_verification_request": False,
+        "has_direct_identifier_answer": False,
+        "has_direct_identifier_audit": False,
+        "has_driver_decomposition": False,
+        "has_evidence": False,
+        "has_metric_definition_gap": False,
+        "has_metric_clarification": True,
+        "metric_clarification_choice_count": 2,
+        "has_provisional_metric": False,
+        "evidence_citation_count": 0,
+        "graph_path_count": 0,
+        "caveat_count": 0,
+        "has_conversation_id": False,
+        "has_lead_agent_metadata": False,
+        "candidate_factor_count": 0,
+        "candidate_factor_statuses": [],
+        "sizing_eligible_factor_count": 0,
+        "opportunity_result": "not_requested",
+    }
+    assert "tenant-0001" not in str(payload)
+    assert "jira_new_peu" not in str(payload)
+    assert "unapproved_metric" not in str(payload)
 
 
 def test_mlflow_trace_redacts_span_payloads() -> None:

@@ -32,6 +32,26 @@ def test_data_analyst_receives_typed_canonical_definition(client: TestClient) ->
     assert body["trace_id"]
 
 
+def test_ambiguous_metric_question_returns_bounded_governed_choices(client: TestClient) -> None:
+    response = client.post(
+        "/answer_question",
+        json={"agent_user_id": "data_analyst", "question": "Which metric should I use?"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_classification"] == "clarification"
+    assert body["metric_clarification"] == {
+        "choices": [
+            {"metric_name": "jira_new_peu", "label": "Jira New PEU"},
+            {"metric_name": "jira_new_mau", "label": "Jira New MAU"},
+            {"metric_name": "confluence_new_peu", "label": "Confluence New PEU"},
+        ]
+    }
+    assert body["metric_definition_gap"] is None
+    assert client.app.state.answer_service.semantic_gateway.postgres_executor.plans == []
+
+
 def test_apac_manager_receives_only_apac_effective_scope(client: TestClient) -> None:
     response = client.post(
         "/answer_question",

@@ -109,10 +109,12 @@ successfully validated dbt/MetricFlow artifact. It emits a schema-validated
 metric proposal with an explicit ambiguity status; it cannot define metrics,
 choose permissions, routes, tools, or SQL. Canonical definitions and MetricFlow
 queries remain deterministic and are loaded from the validated semantic
-artifact after routing. Invalid, ambiguous, or unavailable model output fails
-closed to clarification. Other `OLLAMA_MODEL_NAME` values leave the intent
-provider disabled while remaining available to the existing evidence-drafting
-adapter.
+artifact after routing. Valid ambiguity returns up to three governed metric
+choices with safe labels; invalid or unavailable model output fails closed to a
+limitation. A client-selected canonical `requested_metric_name` bypasses model
+reinference and still passes the current artifact and authorization gates.
+Other `OLLAMA_MODEL_NAME` values leave the intent provider disabled while
+remaining available to the existing evidence-drafting adapter.
 
 Check the model dependency before sending analytical requests:
 

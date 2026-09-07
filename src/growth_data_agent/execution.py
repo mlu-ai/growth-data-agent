@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, replace
 from typing import Protocol, TypedDict, cast
 from uuid import uuid4
 
@@ -45,14 +45,24 @@ class RuleBasedIntentInterpreter:
         *,
         metric_name_resolver: Callable[[AnswerQuestionRequest], str | None],
         route_resolver: Callable[[AnswerQuestionRequest, str | None], AnalyticalRoute],
+        clarification_candidates_provider: Callable[[AnswerQuestionRequest], Collection[str]]
+        | None = None,
     ) -> None:
         self._metric_name_resolver = metric_name_resolver
         self._route_resolver = route_resolver
+        self._clarification_candidates_provider = clarification_candidates_provider
 
     def interpret(self, request: AnswerQuestionRequest) -> AnalyticalIntent:
         metric_name = self._metric_name_resolver(request)
         route = self._route_resolver(request, metric_name)
-        return AnalyticalIntent(route=route, metric_name=metric_name)
+        candidate_metric_names = []
+        if route is AnalyticalRoute.CLARIFICATION and self._clarification_candidates_provider:
+            candidate_metric_names = list(self._clarification_candidates_provider(request))[:3]
+        return AnalyticalIntent(
+            route=route,
+            metric_name=metric_name,
+            candidate_metric_names=candidate_metric_names,
+        )
 
 
 @dataclass(frozen=True)
@@ -63,6 +73,7 @@ class AuthorizedExecution:
     access_profile: AccessProfile
     effective_scope: EffectiveAccessScope
     trace_id: str
+    candidate_metric_names: tuple[str, ...] = ()
 
 
 CanonicalDefinitionHandler = Callable[
@@ -235,9 +246,15 @@ class ExecutionGraph:
                     proposed_intent = proposed_intent.model_dump(warnings=False)
             with trace_span("intent_validation", kind="node"):
                 intent = AnalyticalIntent.model_validate(proposed_intent)
-        except (LocalModelError, ValidationError):
+        except LocalModelError:
+            intent = AnalyticalIntent(route=AnalyticalRoute.LIMITATION)
+        except ValidationError:
             intent = AnalyticalIntent(route=AnalyticalRoute.CLARIFICATION)
         authorized_execution = state["authorized_execution"]
+        authorized_execution = replace(
+            authorized_execution,
+            candidate_metric_names=tuple(intent.candidate_metric_names),
+        )
         if self._planning_eligibility_provider(authorized_execution, intent):
             snapshot = self._planning_snapshot_provider(authorized_execution, None)
             metadata = self._lead_agent_planner.start(
@@ -249,7 +266,11 @@ class ExecutionGraph:
         else:
             metadata = None
         set_lead_agent_metadata(metadata)
-        return {"intent": intent, "lead_agent_metadata": metadata}
+        return {
+            "authorized_execution": authorized_execution,
+            "intent": intent,
+            "lead_agent_metadata": metadata,
+        }
 
     def _default_snapshot(
         self, authorized_execution: AuthorizedExecution, _payload: object | None

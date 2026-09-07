@@ -20,6 +20,7 @@ from .contracts import (
     GovernedAnalyticalResponse,
     ResultClassification,
 )
+from .metric_names import metric_identifier
 from .observability import redact_identifiers
 
 _MAX_INTENT_QUESTION_LENGTH = 2_000
@@ -77,11 +78,18 @@ class LocalModelIntentProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     metric_name: str | None = Field(
+        default=None,
         min_length=1,
         max_length=128,
         pattern=r"^[a-z0-9_]+$",
     )
     ambiguity: Literal["unambiguous", "ambiguous"]
+    candidate_metric_names: list[
+        Annotated[
+            str,
+            Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_]+$"),
+        ]
+    ] = Field(default_factory=list, max_length=3)
 
 
 class CitedEvidenceCitation(BaseModel):
@@ -324,9 +332,10 @@ class OllamaLocalModel(_OllamaHttpClient):
                 "Return only one JSON object matching the requested bounded schema. "
                 "Never decide permissions, routes, tools, SQL, or add citations not in the input.\n"
                 f"Task: {call.task}\n"
-                "For intent_proposal return only metric_name and ambiguity. Set ambiguity to "
-                "ambiguous and metric_name to null unless the question clearly selects exactly "
-                "one listed metric. For evidence_draft return only "
+                "For intent_proposal return metric_name, ambiguity, and at most three "
+                "candidate_metric_names. Set ambiguity to ambiguous and metric_name to null "
+                "unless the question clearly selects exactly one listed metric. For "
+                "evidence_draft return only "
                 "answer, citation_document_ids, support_status, and cited_claims. The answer "
                 "must copy the supplied support_explanation exactly, and every claim must be "
                 "copied exactly from supplied support text.\n"
@@ -421,16 +430,37 @@ class LocalModelIntentInterpreter:
         *,
         metric_names_provider: Callable[[AnswerQuestionRequest], Collection[str]],
         route_resolver: Callable[[AnswerQuestionRequest, str | None], AnalyticalRoute],
+        fallback_metric_name_resolver: Callable[[AnswerQuestionRequest], str | None]
+        | None = None,
     ) -> None:
         self._model = model
         self._metric_names_provider = metric_names_provider
         self._route_resolver = route_resolver
+        self._fallback_metric_name_resolver = fallback_metric_name_resolver
 
     def interpret(self, request: AnswerQuestionRequest) -> AnalyticalIntent:
+        if request.requested_metric_name is not None:
+            metric_name = metric_identifier(request.requested_metric_name)
+            return AnalyticalIntent(
+                route=self._route_resolver(request, metric_name or None),
+                metric_name=metric_name or None,
+            )
+
         available_metric_names = tuple(self._metric_names_provider(request))
         if not available_metric_names:
-            raise LocalModelUnavailable(
-                "No current validated semantic metrics are available for intent interpretation."
+            fallback_metric_name = (
+                self._fallback_metric_name_resolver(request)
+                if self._fallback_metric_name_resolver is not None
+                else None
+            )
+            if fallback_metric_name is not None:
+                return AnalyticalIntent(
+                    route=self._route_resolver(request, fallback_metric_name),
+                    metric_name=fallback_metric_name,
+                )
+            return AnalyticalIntent(
+                route=AnalyticalRoute.CLARIFICATION,
+                candidate_metric_names=[],
             )
         model_request = LocalModelIntentRequest(
             question=str(redact_identifiers(request.question)),
@@ -451,17 +481,30 @@ class LocalModelIntentInterpreter:
             model_input=model_input,
             response_model=LocalModelIntentProposal,
         )
-        if (
-            proposal.ambiguity != "unambiguous"
-            or proposal.metric_name is None
-            or proposal.metric_name not in available_metric_names
-        ):
+        if proposal.ambiguity == "ambiguous":
+            candidate_metric_names = _validated_candidate_metric_names(
+                proposal, available_metric_names
+            )
+            return AnalyticalIntent(
+                route=AnalyticalRoute.CLARIFICATION,
+                candidate_metric_names=candidate_metric_names,
+            )
+        if proposal.metric_name is None or proposal.metric_name not in available_metric_names:
             raise LocalModelOutputInvalid(
-                "Local-model intent was ambiguous or selected a metric outside the validated "
-                "semantic artifact."
+                "Local-model intent selected a metric outside the validated semantic artifact."
             )
         route = self._route_resolver(request, proposal.metric_name)
         return AnalyticalIntent(route=route, metric_name=proposal.metric_name)
+
+
+def _validated_candidate_metric_names(
+    proposal: LocalModelIntentProposal, available_metric_names: tuple[str, ...]
+) -> list[str]:
+    available = set(available_metric_names)
+    candidates = [*proposal.candidate_metric_names]
+    if proposal.metric_name is not None:
+        candidates.append(proposal.metric_name)
+    return list(dict.fromkeys(name for name in candidates if name in available))[:3]
 
 
 class LocalModelEvidenceDraftingAdapter:

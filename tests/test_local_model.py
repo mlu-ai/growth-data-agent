@@ -240,20 +240,51 @@ def test_local_model_intent_accepts_a_paraphrase_from_semantic_candidates() -> N
 
 
 def test_local_model_intent_rejects_an_ambiguous_candidate_proposal() -> None:
-    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"ambiguous"}')
+    model = RecordingModel(
+        '{"metric_name":null,"ambiguity":"ambiguous",'
+        '"candidate_metric_names":["jira_new_peu","made_up_metric",'
+        '"jira_new_peu"]}'
+    )
     interpreter = LocalModelIntentInterpreter(
         model,
         metric_names_provider=lambda request: ("jira_new_peu", "jira_new_mau"),
         route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
     )
 
-    with pytest.raises(LocalModelOutputInvalid):
-        interpreter.interpret(
-            AnswerQuestionRequest(
-                agent_user_id="data_analyst",
-                question="How did paid access change?",
-            )
+    intent = interpreter.interpret(
+        AnswerQuestionRequest(
+            agent_user_id="data_analyst",
+            question="How did paid access change?",
         )
+    )
+
+    assert intent == AnalyticalIntent(
+        route=AnalyticalRoute.CLARIFICATION,
+        candidate_metric_names=["jira_new_peu"],
+    )
+
+
+def test_local_model_intent_with_an_explicit_metric_skips_model_reinference() -> None:
+    model = RecordingModel("not valid JSON")
+    interpreter = LocalModelIntentInterpreter(
+        model,
+        metric_names_provider=lambda request: ("jira_new_peu",),
+        route_resolver=lambda request, metric_name: AnalyticalRoute.CANONICAL_DEFINITION,
+    )
+
+    intent = interpreter.interpret(
+        AnswerQuestionRequest(
+            agent_user_id="data_analyst",
+            question="How did paid access change?",
+            requested_metric_name="jira_new_peu",
+        )
+    )
+
+    assert intent == AnalyticalIntent(
+        route=AnalyticalRoute.CANONICAL_DEFINITION,
+        metric_name="jira_new_peu",
+    )
+    assert model.requests == []
 
 
 def test_local_model_intent_rejects_a_metric_not_in_the_validated_artifact() -> None:
@@ -530,7 +561,11 @@ def test_configured_local_model_routes_a_paraphrased_definition_to_canonical_han
 def test_configured_local_model_clarifies_an_ambiguous_definition_question(
     client: TestClient,
 ) -> None:
-    model = RecordingModel('{"metric_name":"jira_new_peu","ambiguity":"ambiguous"}')
+    model = RecordingModel(
+        '{"metric_name":null,"ambiguity":"ambiguous",'
+        '"candidate_metric_names":["jira_new_peu","jira_new_mau",'
+        '"confluence_new_peu"]}'
+    )
     base_service = client.app.state.answer_service
     service = AnswerQuestionService(
         base_service.semantic_gateway,
@@ -548,8 +583,94 @@ def test_configured_local_model_clarifies_an_ambiguous_definition_question(
     )
 
     assert response.status_code == 200
-    assert response.json()["result_classification"] == "limitation"
+    body = response.json()
+    assert body["result_classification"] == "clarification"
+    assert body["metric_clarification"] == {
+        "choices": [
+            {"metric_name": "jira_new_peu", "label": "Jira New PEU"},
+            {"metric_name": "jira_new_mau", "label": "Jira New MAU"},
+            {"metric_name": "confluence_new_peu", "label": "Confluence New PEU"},
+        ]
+    }
+    assert body["metric_definition_gap"] is None
     assert base_service.semantic_gateway.postgres_executor.plans == []
+
+
+def test_configured_local_model_explicit_metric_choice_routes_without_model_call(
+    client: TestClient,
+) -> None:
+    model = RecordingModel("not valid JSON")
+    base_service = client.app.state.answer_service
+    service = AnswerQuestionService(
+        base_service.semantic_gateway,
+        local_model=model,
+        evidence_reranker=base_service.evidence_reranker,
+    )
+    configured_client = TestClient(create_app(service))
+
+    response = configured_client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "How did paid access change?",
+            "requested_metric_name": "jira_new_peu",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result_classification"] == "canonical_definition"
+    assert response.json()["canonical_definition"]["name"] == "jira_new_peu"
+    assert model.requests == []
+
+
+def test_configured_local_model_empty_candidates_remains_machine_readable_clarification(
+    client: TestClient,
+) -> None:
+    model = RecordingModel(
+        '{"metric_name":null,"ambiguity":"ambiguous","candidate_metric_names":[]}'
+    )
+    base_service = client.app.state.answer_service
+    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    configured_client = TestClient(create_app(service))
+
+    response = configured_client.post(
+        "/answer_question",
+        json={
+            "agent_user_id": "data_analyst",
+            "question": "Which metric is this?",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result_classification"] == "clarification"
+    assert body["metric_clarification"] == {"choices": []}
+    assert body["canonical_definition"] is None
+    assert body["metric_definition_gap"] is None
+    assert model.requests
+
+
+def test_configured_local_model_filters_unapproved_clarification_candidates(
+    client: TestClient,
+) -> None:
+    model = RecordingModel(
+        '{"metric_name":null,"ambiguity":"ambiguous",'
+        '"candidate_metric_names":["jira_new_peu","unapproved_metric",'
+        '"jira_new_peu"]}'
+    )
+    base_service = client.app.state.answer_service
+    service = AnswerQuestionService(base_service.semantic_gateway, local_model=model)
+    configured_client = TestClient(create_app(service))
+
+    response = configured_client.post(
+        "/answer_question",
+        json={"agent_user_id": "data_analyst", "question": "Which metric should I use?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["metric_clarification"] == {
+        "choices": [{"metric_name": "jira_new_peu", "label": "Jira New PEU"}]
+    }
 
 
 def test_configured_local_model_receives_only_entitled_metric_candidates(
