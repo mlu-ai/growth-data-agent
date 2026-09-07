@@ -18,6 +18,7 @@ from deepeval.metrics import BaseMetric
 from deepeval.test_case import LLMTestCase, ToolCall
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .evaluation_ci import EvaluationTier, select_cases_for_tier
 from .evaluation_dataset import EvaluationSplit
 from .observability import safe_trace_evaluation_projection
 
@@ -431,13 +432,15 @@ def run_deepeval_dataset(
     observe_case: Callable[[DeepEvalCase], Sequence[TrajectoryObservation]],
     *,
     evaluator_version: str = EVALUATOR_VERSION,
+    tier: EvaluationTier | None = None,
 ) -> TrajectoryScorecard:
     """Run automatable DeepEval cases and report explicit coverage."""
     trajectory_findings: list[TrajectoryFinding] = []
     multi_turn_findings: list[TrajectoryFinding] = []
     automated_cases = 0
     not_yet_automated_cases = 0
-    for case in dataset.cases:
+    cases = select_cases_for_tier(dataset.cases, tier) if tier is not None else dataset.cases
+    for case in cases:
         automated_cases += 1
         observations = list(observe_case(case))
         if len(observations) != case.expected_turn_count:
@@ -504,7 +507,7 @@ def run_deepeval_dataset(
         dataset_version=dataset.dataset_version,
         evaluator_version=evaluator_version,
         generated_at=datetime.now(UTC),
-        total_cases=len(dataset.cases),
+        total_cases=len(cases),
         automated_cases=automated_cases,
         not_yet_automated_cases=not_yet_automated_cases,
         trajectory=_category("trajectory", trajectory_findings),

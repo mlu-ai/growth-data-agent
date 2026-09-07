@@ -15,6 +15,7 @@ from growth_data_agent.adversarial_evaluation import (
     evaluate_adversarial_case,
     run_promptfoo_matrix,
 )
+from growth_data_agent.evaluation_ci import EvaluationTier
 from growth_data_agent.evaluation_dataset import EvaluationSplit
 from growth_data_agent.principal import development_token_environment_variable
 
@@ -103,6 +104,18 @@ def test_promptfoo_evaluation_reports_adversarial_results_separately() -> None:
     assert scorecard.name == "adversarial"
     assert scorecard.total == len(matrix.cases)
     assert scorecard.failed == 0
+
+
+def test_promptfoo_matrix_can_limit_execution_to_the_held_out_tier() -> None:
+    matrix = PromptfooMatrixStore(_MATRIX_PATH).load()
+
+    scorecard = run_promptfoo_matrix(
+        matrix,
+        lambda case: _observation(classification=case.expected_result_classification),
+        tier=EvaluationTier.HELD_OUT,
+    )
+
+    assert scorecard.total == sum(case.split.value == "held_out" for case in matrix.cases)
 
 
 def test_promptfoo_matrix_rejects_missing_dimension(tmp_path: Path) -> None:

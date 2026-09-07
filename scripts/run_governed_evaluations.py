@@ -10,13 +10,18 @@ tests exercise against fakes; only the `client_factory` differs.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from growth_data_agent.evaluation_ci import (
+    build_configuration_versions,
+    evaluation_tier_from_environment,
+    write_suite_scorecard,
+)
 from growth_data_agent.evaluation_dataset import EvaluationDatasetStore
 from growth_data_agent.evaluation_runner import EVALUATOR_VERSION, run_dataset
 from growth_data_agent.main import create_app
@@ -52,21 +57,18 @@ def _client(sink: MlflowTraceSink) -> tuple[TestClient, AnswerQuestionService]:
     return TestClient(create_app(service)), service
 
 
-def _source_versions() -> dict[str, str]:
-    if not _ARTIFACT.exists():
-        return {}
-    artifact = json.loads(_ARTIFACT.read_text())
-    return {"semantic_version": str(artifact.get("semantic_version", "unknown"))}
-
-
 def main() -> int:
     dataset = EvaluationDatasetStore(_DATASET_PATH).load()
     sink = MlflowTraceSink.from_environment()
+    tier = evaluation_tier_from_environment()
     scorecard = run_dataset(
         dataset,
         lambda: _client(sink),
         evaluator_version=EVALUATOR_VERSION,
-        source_versions=_source_versions(),
+        source_versions=build_configuration_versions(
+            artifact_path=_ARTIFACT, git_sha=os.environ.get("GITHUB_SHA")
+        ),
+        tier=tier,
     )
 
     print(
@@ -87,6 +89,7 @@ def main() -> int:
     print(f"  token_cost: {scorecard.token_cost}")
 
     sink.record_scorecard(scorecard)
+    write_suite_scorecard("governed", asdict(scorecard))
     print("Published the Evaluation Scorecard to MLflow.")
 
     return 0 if all(category.failed == 0 for category in categories) else 1

@@ -165,3 +165,24 @@ direct-identifier output. `make trajectory-evaluate` records the same matrix's
 actual trace-backed boundary scorecard in MLflow; run Promptfoo itself with
 `npx promptfoo eval -c
 evaluations/promptfoo/promptfooconfig.yaml` against a private target.
+
+## CI tiers
+
+Every pull request runs `make evaluate-smoke` alongside Ruff and the full
+deterministic test suite. This tier is local and blocking: it covers governed
+policy/correctness contracts without requiring production content, hosted
+services, or an LLM judge.
+
+The scheduled/release workflow sets `EVALUATION_TIER=held_out` and runs the
+Governed Evaluation, RAGAS/IR, DeepEval, and Promptfoo-boundary suites against
+the versioned held-out split. Each runner writes only its redacted scorecard;
+`scripts/build_evaluation_scorecard.py` combines those outputs into the
+`ci_evaluation_scorecard` artifact and records model, prompt, embedding,
+chunking, reranker, Factor Vocabulary, semantic artifact, workflow, and commit
+identities. A checked-in `evaluations/approved-baseline.json` provides the
+comparison anchor.
+
+Quality comparisons are report-only until the baseline is approved after judge
+calibration. Setting `EVALUATION_QUALITY_GATE_ENABLED=1` with an approved
+baseline turns that policy on; deterministic safety, correctness, trace, and
+boundary failures remain blocking independently.

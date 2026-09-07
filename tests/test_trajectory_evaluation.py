@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from growth_data_agent.evaluation_ci import EvaluationTier
 from growth_data_agent.evaluation_dataset import EvaluationSplit
 from growth_data_agent.observability import TraceRecord, TraceSpan
 from growth_data_agent.trajectory_evaluation import (
@@ -414,3 +415,30 @@ def test_deepeval_runner_exercises_setup_note_cases_with_a_harness(tmp_path: Pat
             multi_turn=replace(scorecard.multi_turn, failed=1, total=1, pass_rate=0.0),
         )
     )
+
+
+def test_deepeval_runner_can_limit_execution_to_the_held_out_tier() -> None:
+    dataset = DeepEvalDatasetStore(_DATASET_PATH).load()
+
+    def observe(case):
+        return [
+            _observation(
+                trace_id=f"trace-{case.case_id}-{index}",
+                response={
+                    "result_classification": classification,
+                    "effective_access_scope": {"products": ["Jira"], "regions": ["APAC"]},
+                    "source_freshness": {"is_current": True},
+                    "has_active_investigation_selection": False,
+                },
+                selected_tools=(
+                    case.expected_tool_selections[index]
+                    if case.expected_tool_selections
+                    else ()
+                ),
+            )
+            for index, classification in enumerate(case.expected_result_classifications)
+        ]
+
+    scorecard = run_deepeval_dataset(dataset, observe, tier=EvaluationTier.HELD_OUT)
+
+    assert scorecard.total_cases == sum(case.split.value == "held_out" for case in dataset.cases)

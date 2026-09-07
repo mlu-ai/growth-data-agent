@@ -20,3 +20,20 @@ def test_pull_requests_to_main_run_the_required_validation_checks() -> None:
     assert "uv run python scripts/generate_synthetic_data.py" in workflow
     assert "uv run --group warehouse python scripts/load_postgres.py" in workflow
     assert "uv run --group warehouse dbt build --profiles-dir ." in workflow
+    assert "name: Deterministic evaluation smoke" in workflow
+    assert "make evaluate-smoke" in workflow
+
+
+def test_held_out_workflow_runs_scheduled_release_evaluations_and_uploads_scorecard() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    workflow = (repository / ".github/workflows/held-out-evaluation.yml").read_text()
+
+    assert 'cron: "17 3 * * *"' in workflow
+    assert "release:" in workflow
+    assert "EVALUATION_TIER: held_out" in workflow
+    assert "EVALUATION_REPORT_ONLY: \"1\"" in workflow
+    assert "scripts/run_governed_evaluations.py" in workflow
+    assert "scripts/run_rag_evaluations.py" in workflow
+    assert "scripts/run_trajectory_evaluations.py" in workflow
+    assert "scripts/build_evaluation_scorecard.py" in workflow
+    assert "actions/upload-artifact@v4" in workflow

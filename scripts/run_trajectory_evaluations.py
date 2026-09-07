@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -21,6 +22,10 @@ from growth_data_agent.adversarial_evaluation import (
     AdversarialObservation,
     PromptfooMatrixStore,
     run_promptfoo_matrix,
+)
+from growth_data_agent.evaluation_ci import (
+    evaluation_tier_from_environment,
+    write_suite_scorecard,
 )
 from growth_data_agent.evaluation_dataset import EvaluationDatasetStore
 from growth_data_agent.main import create_app
@@ -215,14 +220,25 @@ def main() -> int:
     deep_dataset = DeepEvalDatasetStore(_DEEPEVAL_DATASET).load()
     matrix = PromptfooMatrixStore(_PROMPTFOO_MATRIX).load()
     governed_cases = {case.case_id: case for case in governed.cases}
+    tier = evaluation_tier_from_environment()
     client, trace_sink = _client()
     trajectory = run_deepeval_dataset(
         deep_dataset,
         _deep_observer(client, trace_sink, governed_cases),
+        tier=tier,
     )
-    adversarial = run_promptfoo_matrix(matrix, _promptfoo_observer(client, trace_sink))
+    adversarial = run_promptfoo_matrix(
+        matrix, _promptfoo_observer(client, trace_sink), tier=tier
+    )
     trace_sink.record_trajectory_scorecard(trajectory)
     trace_sink.record_adversarial_scorecard(adversarial)
+    write_suite_scorecard(
+        "trajectory",
+        {
+            "trajectory": asdict(trajectory),
+            "adversarial": asdict(adversarial),
+        },
+    )
     print(
         json.dumps(
             {

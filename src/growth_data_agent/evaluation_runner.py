@@ -24,6 +24,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from .evaluation import FixtureResponse, evaluate_generation_fixtures
+from .evaluation_ci import EvaluationTier, select_cases_for_tier
 from .evaluation_dataset import EvaluationCase, GovernedEvaluationDataset
 from .principal import development_token_environment_variable
 
@@ -379,6 +380,7 @@ def run_dataset(
     *,
     evaluator_version: str = EVALUATOR_VERSION,
     source_versions: Mapping[str, str] | None = None,
+    tier: EvaluationTier | None = None,
 ) -> EvaluationScorecard:
     """Replay every automatable Evaluation Case through the governed seam.
 
@@ -394,7 +396,8 @@ def run_dataset(
     trace_total = 0
     all_latencies_ms: list[float] = []
 
-    for case in dataset.cases:
+    cases = select_cases_for_tier(dataset.cases, tier) if tier is not None else dataset.cases
+    for case in cases:
         if any(turn.setup_note is not None for turn in case.turns):
             not_yet_automated_cases += 1
             continue
@@ -433,7 +436,7 @@ def run_dataset(
         evaluator_version=evaluator_version,
         source_versions=dict(source_versions or {}),
         generated_at=datetime.now(UTC),
-        total_cases=len(dataset.cases),
+        total_cases=len(cases),
         automated_cases=automated_cases,
         not_yet_automated_cases=not_yet_automated_cases,
         safety=_category("safety", safety_findings),

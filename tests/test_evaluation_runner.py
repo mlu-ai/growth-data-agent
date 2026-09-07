@@ -17,6 +17,7 @@ from conftest import RecordingMetricFlowPlanner, RecordingPostgresExecutor, writ
 from fastapi.testclient import TestClient
 
 from growth_data_agent.contracts import ResultClassification
+from growth_data_agent.evaluation_ci import EvaluationTier
 from growth_data_agent.evaluation_dataset import EvaluationDatasetStore
 from growth_data_agent.evaluation_runner import (
     EVALUATOR_VERSION,
@@ -314,6 +315,14 @@ def test_run_dataset_detects_a_deliberate_expected_behavior_failure(tmp_path: Pa
     assert any(
         "expected_behavior" in detail for detail in scorecard.semantic_correctness.details
     )
+
+
+def test_run_dataset_can_limit_execution_to_the_held_out_tier(tmp_path: Path) -> None:
+    dataset = EvaluationDatasetStore(_DATASET_PATH).load()
+
+    scorecard = run_dataset(dataset, _client_factory(tmp_path), tier=EvaluationTier.HELD_OUT)
+
+    assert scorecard.total_cases == sum(case.split.value == "held_out" for case in dataset.cases)
 
 
 class _RecordingMlflow:

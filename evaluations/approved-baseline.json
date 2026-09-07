@@ -1,0 +1,19 @@
+{
+  "artifact_type": "approved_evaluation_baseline",
+  "baseline_id": "initial-held-out-v1",
+  "approved": false,
+  "approval_note": "Quality gates remain report-only until judge calibration approves this baseline.",
+  "configuration_versions": {
+    "model": "deterministic",
+    "prompt": "repo",
+    "embedding_model": "not_configured",
+    "embedding_version": "unknown",
+    "chunking_strategy": "fixed-chunk-v1",
+    "reranker_model": "deterministic-cross-encoder",
+    "reranker_version": "1",
+    "factor_vocabulary": "hardcoded-v1",
+    "workflow": "governed-response-v1",
+    "semantic_artifact": "1.0.0"
+  },
+  "metrics": {}
+}

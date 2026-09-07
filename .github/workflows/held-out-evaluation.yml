@@ -1,0 +1,78 @@
+name: Held-out Evaluation
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  held-out-evaluation:
+    name: Held-out evaluation suites
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: growth_data
+          POSTGRES_USER: growth_data
+          POSTGRES_PASSWORD: growth_data
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U growth_data -d growth_data"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: growth_data
+      POSTGRES_USER: growth_data
+      POSTGRES_PASSWORD: growth_data
+      DATABASE_URL: postgresql://growth_data:growth_data@127.0.0.1:5432/growth_data
+      METRICFLOW_TEST_DATABASE_URL: postgresql://growth_data:growth_data@127.0.0.1:5432/growth_data
+      GROWTH_DATA_AGENT_ENVIRONMENT: test
+      EVALUATION_TIER: held_out
+      EVALUATION_REPORT_ONLY: "1"
+      EVALUATION_SCORECARD_DIR: artifacts/evaluations
+      EVALUATION_SCORECARD_PATH: artifacts/evaluation-scorecard.json
+      APPROVED_BASELINE_PATH: evaluations/approved-baseline.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-groups --locked
+      - name: Configure ephemeral evaluation credentials
+        run: |
+          echo "GROWTH_DATA_AGENT_EVALUATION_TOKEN=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GROWTH_DATA_AGENT_DEV_TOKEN_DATA_ANALYST=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GROWTH_DATA_AGENT_DEV_TOKEN_APAC_REGIONAL_MANAGER=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GROWTH_DATA_AGENT_DEV_TOKEN_JIRA_PRODUCT_MANAGER=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GROWTH_DATA_AGENT_DEV_TOKEN_CONFLUENCE_PRODUCT_MANAGER=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GROWTH_DATA_AGENT_DEV_TOKEN_CUSTOMER_SUCCESS_MANAGER=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - run: uv run python scripts/generate_synthetic_data.py
+      - run: uv run --group warehouse python scripts/load_postgres.py
+      - name: Build validated semantic artifacts
+        working-directory: dbt
+        run: uv run --group warehouse dbt build --profiles-dir .
+      - run: uv run python scripts/build_semantic_artifact.py
+      - name: Run held-out governed deterministic suite
+        continue-on-error: true
+        run: uv run python scripts/run_governed_evaluations.py
+      - name: Run held-out RAGAS and IR suite
+        continue-on-error: true
+        run: uv run python scripts/run_rag_evaluations.py
+      - name: Run held-out DeepEval and Promptfoo suite
+        continue-on-error: true
+        run: uv run python scripts/run_trajectory_evaluations.py
+      - name: Build safe aggregate scorecard
+        if: always()
+        run: uv run python scripts/build_evaluation_scorecard.py
+      - name: Upload evaluation scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: held-out-evaluation-scorecard
+          path: artifacts/
+          if-no-files-found: error

@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .evaluation_ci import EvaluationTier, select_cases_for_tier
 from .evaluation_dataset import EvaluationSplit
 
 
@@ -224,10 +225,13 @@ def evaluate_adversarial_case(
 def run_promptfoo_matrix(
     matrix: PromptfooMatrix,
     observe_case: Callable[[PromptfooCase], AdversarialObservation],
+    *,
+    tier: EvaluationTier | None = None,
 ) -> AdversarialScorecard:
     """Run deterministic boundary assertions for every Promptfoo case."""
     results: list[AdversarialResult] = []
-    for case in matrix.cases:
+    cases = select_cases_for_tier(matrix.cases, tier) if tier is not None else matrix.cases
+    for case in cases:
         results.append(evaluate_adversarial_case(case, observe_case(case)))
     passed = sum(result.passed for result in results)
     failed = len(results) - passed

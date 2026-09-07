@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from growth_data_agent.evaluation_ci import EvaluationTier
 from growth_data_agent.evaluation_dataset import EvaluationCaseProvenance, EvaluationSplit
 from growth_data_agent.evidence import EvidenceDocument, EvidenceSupportStatus
 from growth_data_agent.rag_evaluation import (
@@ -260,6 +261,23 @@ def test_generation_metrics_are_empty_when_no_judge_is_configured() -> None:
     )
 
     assert scorecard.generation_metrics == {}
+
+
+def test_rag_scorecard_can_limit_execution_to_the_held_out_tier() -> None:
+    dataset = _real_dataset()
+
+    scorecard = run_rag_dataset(
+        dataset,
+        retrieve=lambda case: [
+            _document(revision.source_document_id, revision=revision.source_revision)
+            for revision in case.gold_relevant_revisions
+        ],
+        answer=lambda _case: ("a governed answer", ["a supporting context"]),
+        judge=None,
+        tier=EvaluationTier.HELD_OUT,
+    )
+
+    assert scorecard.retrieval.total == 1
 
 
 def test_a_generation_only_regression_does_not_fail_retrieval() -> None:

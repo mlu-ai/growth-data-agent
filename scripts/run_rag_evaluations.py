@@ -17,10 +17,16 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from growth_data_agent.evaluation_ci import (
+    build_configuration_versions,
+    evaluation_tier_from_environment,
+    write_suite_scorecard,
+)
 from growth_data_agent.evidence import EvidenceDocument
 from growth_data_agent.main import create_app
 from growth_data_agent.metricflow_query import MetricFlowPlanner, PostgresMetricFlowExecutor
@@ -93,7 +99,10 @@ def _answer(client: TestClient, case: RagEvaluationCase) -> tuple[str, list[str]
 def _configuration_versions(
     service: AnswerQuestionService, sample_document: EvidenceDocument | None
 ) -> dict[str, str]:
-    versions = {"chunking_strategy": CHUNKING_STRATEGY_VERSION}
+    versions = build_configuration_versions(
+        artifact_path=_ARTIFACT, git_sha=os.environ.get("GITHUB_SHA")
+    )
+    versions["chunking_strategy"] = CHUNKING_STRATEGY_VERSION
     reranker = service.evidence_reranker
     if reranker is not None:
         versions["reranker_model"] = reranker.model_name
@@ -107,6 +116,7 @@ def _configuration_versions(
 def main() -> int:
     dataset = RagEvaluationDatasetStore(_DATASET_PATH).load()
     sink = MlflowTraceSink.from_environment()
+    tier = evaluation_tier_from_environment()
     service = _service(sink)
     client = TestClient(create_app(service))
     judge = RagJudge.from_environment()
@@ -121,6 +131,7 @@ def main() -> int:
         judge=judge,
         evaluator_version=EVALUATOR_VERSION,
         configuration_versions=_configuration_versions(service, sample_document),
+        tier=tier,
     )
 
     print(f"RAG Evaluation Dataset v{scorecard.dataset_version}:")
@@ -138,9 +149,11 @@ def main() -> int:
         print("  No RAGAS judge configured (set RAGAS_JUDGE_MODEL_NAME to enable one).")
 
     sink.record_rag_scorecard(scorecard)
+    write_suite_scorecard("rag", asdict(scorecard))
     print("Published the RAG Evaluation Scorecard to MLflow.")
 
-    return 0 if scorecard.retrieval.failed == 0 and scorecard.generation.failed == 0 else 1
+    failed = scorecard.retrieval.failed > 0 or scorecard.generation.failed > 0
+    return 0 if not failed or os.environ.get("EVALUATION_REPORT_ONLY") == "1" else 1
 
 
 if __name__ == "__main__":

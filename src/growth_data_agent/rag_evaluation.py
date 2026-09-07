@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from statistics import fmean
 from typing import Any, Literal
 
+from .evaluation_ci import EvaluationTier, select_cases_for_tier
 from .evaluation_runner import EvaluatorFinding, ScorecardCategory
 from .evidence import EvidenceDocument
 from .rag_evaluation_dataset import RagEvaluationCase, RagEvaluationDataset
@@ -329,9 +330,11 @@ def run_rag_dataset(
     judge: RagJudge | None,
     evaluator_version: str = EVALUATOR_VERSION,
     configuration_versions: Mapping[str, str] | None = None,
+    tier: EvaluationTier | None = None,
 ) -> RagEvaluationScorecard:
-    retrieval_results = evaluate_rag_retrieval(dataset.cases, retrieve)
-    generation_results = evaluate_rag_generation(dataset.cases, answer, judge)
+    cases = select_cases_for_tier(dataset.cases, tier) if tier is not None else dataset.cases
+    retrieval_results = evaluate_rag_retrieval(cases, retrieve)
+    generation_results = evaluate_rag_generation(cases, answer, judge)
     return RagEvaluationScorecard(
         dataset_version=dataset.dataset_version,
         evaluator_version=evaluator_version,
