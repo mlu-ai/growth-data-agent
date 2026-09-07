@@ -130,7 +130,7 @@ def main() -> int:
     )
 
     print(json.dumps(report.as_baseline(provider=provider), indent=2))
-    return 0 if report.passed and not (comparison and comparison["regressions"]) else 1
+    return 0 if report.passed and not (comparison and comparison["gating_regressions"]) else 1
 
 
 def _client(artifact_path: Path) -> tuple[TestClient, AnswerQuestionService]:

@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from .evaluation import FixtureResponse, evaluate_generation_fixtures
 from .evaluation_dataset import EvaluationCase, GovernedEvaluationDataset
 from .principal import development_token_environment_variable
+from .quality_evaluation import EvaluatorKind, EvaluatorMetadata
 
 EVALUATOR_VERSION = "1.0.0"
 
@@ -70,6 +71,7 @@ class EvaluationScorecard:
     trace_delivery: ScorecardCategory
     latency_ms: Mapping[str, float]
     token_cost: Mapping[str, Any]
+    evaluator_metadata: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 # --- Evaluators (AC2) ---------------------------------------------------
@@ -443,5 +445,16 @@ def run_dataset(
         token_cost={
             "total_tokens": 0,
             "note": "The deterministic runner makes no model calls.",
+        },
+        evaluator_metadata={
+            "governed_response": EvaluatorMetadata(
+                name="governed_response_invariants",
+                kind=EvaluatorKind.REFERENCE_BASED,
+                provider="deterministic",
+                model="not_applicable",
+                prompt_version="not_applicable",
+                evaluator_version=evaluator_version,
+                configuration_version="governed-response-invariants-v1",
+            ).as_dict()
         },
     )

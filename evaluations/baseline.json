@@ -3,7 +3,20 @@
   "recorded_at": "2026-08-25T18:32:58+10:00",
   "model_name": "llama3.1:8b",
   "provider": "ollama",
+  "evaluator": {
+    "name": "deterministic_fixture_evaluator",
+    "kind": "reference_based",
+    "provider": "ollama",
+    "model": "llama3.1:8b",
+    "prompt_version": "fixture-contract-v1",
+    "evaluator_version": "deterministic-evaluator-v1",
+    "configuration_version": "deterministic-fixtures-v1"
+  },
   "evaluation_mode": "deterministic-governed-response-fixtures",
+  "quality_baseline": {
+    "status": "report_only",
+    "approval": null
+  },
   "passed": true,
   "generation": {
     "fixture_count": 8,

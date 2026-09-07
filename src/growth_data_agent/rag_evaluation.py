@@ -19,17 +19,20 @@ import asyncio
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
 from statistics import fmean
 from typing import Any, Literal
 
 from .evaluation_runner import EvaluatorFinding, ScorecardCategory
 from .evidence import EvidenceDocument
+from .quality_evaluation import EvaluatorKind, EvaluatorMetadata
 from .rag_evaluation_dataset import RagEvaluationCase, RagEvaluationDataset
 
 EVALUATOR_VERSION = "1.0.0"
 CHUNKING_STRATEGY_VERSION = "fixed-chunk-v1"
+RAGAS_PROMPT_VERSION = "ragas-default-v1"
 """There is no automated chunking pipeline in this codebase yet — every
 Evidence Revision is already split into explicit, hand-assigned chunks. This
 is an honest placeholder identifier for that fact, not a fabricated
@@ -123,6 +126,21 @@ class RagJudge:
         self.embedding_model_name = embedding_model_name
         self.base_url = base_url
         self._scorers: tuple[Any, Any, Any] | None = None
+
+    @property
+    def metadata(self) -> EvaluatorMetadata:
+        return EvaluatorMetadata(
+            name="ragas_generation_judge",
+            kind=EvaluatorKind.LLM_JUDGE,
+            provider="ollama",
+            model=self.llm_model_name,
+            prompt_version=RAGAS_PROMPT_VERSION,
+            evaluator_version=EVALUATOR_VERSION,
+            configuration_version=(
+                f"{self.llm_model_name}|{self.embedding_model_name}|"
+                f"endpoint-{sha256(self.base_url.encode()).hexdigest()[:12]}"
+            ),
+        )
 
     @classmethod
     def from_environment(cls) -> RagJudge | None:
@@ -258,6 +276,7 @@ class RagEvaluationScorecard:
     # Mean RAGAS scores over cases that were actually judge-scored; empty when
     # no case reached status="scored" (e.g. no judge configured).
     generation_metrics: Mapping[str, float]
+    evaluator_metadata: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
 def _retrieval_category(results: Sequence[RagRetrievalResult]) -> ScorecardCategory:
@@ -332,6 +351,7 @@ def run_rag_dataset(
 ) -> RagEvaluationScorecard:
     retrieval_results = evaluate_rag_retrieval(dataset.cases, retrieve)
     generation_results = evaluate_rag_generation(dataset.cases, answer, judge)
+    generation_metadata = _judge_metadata(judge, evaluator_version=evaluator_version)
     return RagEvaluationScorecard(
         dataset_version=dataset.dataset_version,
         evaluator_version=evaluator_version,
@@ -341,4 +361,42 @@ def run_rag_dataset(
         generation=_generation_category(generation_results),
         retrieval_metrics=_retrieval_metrics(retrieval_results),
         generation_metrics=_generation_metrics(generation_results),
+        evaluator_metadata={
+            "retrieval": EvaluatorMetadata(
+                name="revision_retrieval_metrics",
+                kind=EvaluatorKind.REFERENCE_BASED,
+                provider="deterministic",
+                model="not_applicable",
+                prompt_version="not_applicable",
+                evaluator_version=evaluator_version,
+                configuration_version=CHUNKING_STRATEGY_VERSION,
+            ).as_dict(),
+            "generation": generation_metadata.as_dict(),
+        },
+    )
+
+
+def _judge_metadata(judge: RagJudge | None, *, evaluator_version: str) -> EvaluatorMetadata:
+    if judge is None:
+        return EvaluatorMetadata(
+            name="ragas_generation_judge",
+            kind=EvaluatorKind.LLM_JUDGE,
+            provider="ollama",
+            model="not_configured",
+            prompt_version=RAGAS_PROMPT_VERSION,
+            evaluator_version=evaluator_version,
+            configuration_version="not-configured",
+        )
+    metadata = getattr(judge, "metadata", None)
+    if isinstance(metadata, EvaluatorMetadata):
+        return metadata
+    model = str(getattr(judge, "llm_model_name", "unknown"))
+    return EvaluatorMetadata(
+        name="ragas_generation_judge",
+        kind=EvaluatorKind.LLM_JUDGE,
+        provider="unknown",
+        model=model,
+        prompt_version=RAGAS_PROMPT_VERSION,
+        evaluator_version=evaluator_version,
+        configuration_version="legacy-injected-judge",
     )

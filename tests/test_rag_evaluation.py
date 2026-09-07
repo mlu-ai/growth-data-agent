@@ -70,6 +70,20 @@ def _case(**overrides) -> RagEvaluationCase:
     return RagEvaluationCase(**defaults)
 
 
+def test_rag_judge_metadata_excludes_secret_bearing_base_urls() -> None:
+    judge = RagJudge(
+        llm_model_name="judge:8b",
+        embedding_model_name="embed:latest",
+        base_url="https://user:secret@example.test/v1?token=hidden",
+    )
+
+    metadata = judge.metadata.as_dict()
+
+    assert "secret" not in str(metadata)
+    assert "hidden" not in str(metadata)
+    assert metadata["configuration_version"].startswith("judge:8b|embed:latest|endpoint-")
+
+
 # --- IR metrics -----------------------------------------------------------
 
 
@@ -247,6 +261,9 @@ def test_scorecard_reports_all_four_ir_metrics_and_ragas_measures() -> None:
         "answer_relevance",
     }
     assert scorecard.generation_metrics["faithfulness"] == 0.85
+    assert scorecard.evaluator_metadata["retrieval"]["kind"] == "reference_based"
+    assert scorecard.evaluator_metadata["generation"]["kind"] == "llm_judge"
+    assert scorecard.evaluator_metadata["generation"]["prompt_version"] == "ragas-default-v1"
 
 
 def test_generation_metrics_are_empty_when_no_judge_is_configured() -> None:
@@ -260,6 +277,7 @@ def test_generation_metrics_are_empty_when_no_judge_is_configured() -> None:
     )
 
     assert scorecard.generation_metrics == {}
+    assert scorecard.evaluator_metadata["generation"]["model"] == "not_configured"
 
 
 def test_a_generation_only_regression_does_not_fail_retrieval() -> None:
