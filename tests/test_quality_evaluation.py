@@ -141,6 +141,11 @@ def test_uncalibrated_judge_is_report_only_even_when_baseline_regresses() -> Non
         baseline_metrics={"faithfulness": 0.8},
         configuration_version="judge:8b|grounded-quality-v1",
         baseline_configuration_version="judge:8b|grounded-quality-v1",
+        baseline_status="approved",
+        baseline_approval={
+            "approver": "quality-owner",
+            "approval_reference": "baseline-88",
+        },
     )
 
     decision = quality_gate_decision(calibration, comparison)
@@ -174,6 +179,11 @@ def test_explicit_calibration_approval_is_required_for_a_blocking_quality_gate()
         baseline_metrics={"faithfulness": 0.8},
         configuration_version="judge:8b|grounded-quality-v1",
         baseline_configuration_version="judge:8b|grounded-quality-v1",
+        baseline_status="approved",
+        baseline_approval={
+            "approver": "quality-owner",
+            "approval_reference": "baseline-88",
+        },
     )
 
     decision = quality_gate_decision(approved, comparison)
@@ -188,6 +198,38 @@ def test_explicit_calibration_approval_is_required_for_a_blocking_quality_gate()
         baseline_configuration_version="judge:8b|other-prompt",
     )
     assert quality_gate_decision(approved, mismatched).status == "report_only"
+
+
+def test_quality_gate_requires_an_explicitly_approved_baseline() -> None:
+    dataset = _dataset()
+    evaluator = make_llm_judge_evaluator(
+        lambda case, _candidate: {criterion: "meets" for criterion in case.criteria},
+        provider="ollama",
+        model="judge:8b",
+        prompt_version="grounded-quality-v1",
+        evaluator_version="judge-evaluator-v1",
+        configuration_version="judge:8b|grounded-quality-v1",
+    )
+    calibration = calibrate_quality_evaluator(
+        dataset, evaluator, candidate_outputs=_candidate_outputs(dataset)
+    )
+    approved = approve_calibration(
+        calibration,
+        approver="quality-owner",
+        approval_reference="approval-88",
+    )
+    comparison = compare_quality_baseline(
+        current_metrics={"faithfulness": 0.7},
+        baseline_metrics={"faithfulness": 0.8},
+        configuration_version="judge:8b|grounded-quality-v1",
+        baseline_configuration_version="judge:8b|grounded-quality-v1",
+    )
+
+    decision = quality_gate_decision(approved, comparison)
+
+    assert decision.status == "report_only"
+    assert not decision.blocking
+    assert "not approved" in decision.reason
 
 
 def test_quality_baseline_compares_each_metric_and_rejects_configuration_drift() -> None:

@@ -13,6 +13,10 @@
     "configuration_version": "deterministic-fixtures-v1"
   },
   "evaluation_mode": "deterministic-governed-response-fixtures",
+  "quality_baseline": {
+    "status": "report_only",
+    "approval": null
+  },
   "passed": true,
   "generation": {
     "fixture_count": 8,

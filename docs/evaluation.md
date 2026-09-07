@@ -183,9 +183,15 @@ its candidate-output payload, while a reference-free evaluator receives only
 the candidate output.
 
 Calibration results are report-only until a human approval is explicitly
-recorded with `approve_calibration(...)`. This does not alter deterministic
-safety or semantic checks. `compare_quality_baseline(...)` compares each
-scorecard metric only when the current and approved baseline configuration
-versions match; it never collapses quality into a composite score or invents a
-starting threshold. `quality_gate_decision(...)` remains report-only for an
-uncalibrated judge or a configuration mismatch.
+recorded with `approve_calibration(...)`. A quality baseline is also
+report-only unless it is written with explicit `quality_baseline_approval`
+metadata containing an approver and approval reference. This does not alter
+deterministic safety or semantic checks. `compare_quality_baseline(...)`
+compares each scorecard metric only when the current and approved baseline
+configuration versions match; it never collapses quality into a composite
+score or invents a starting threshold. `quality_gate_decision(...)` remains
+report-only for an uncalibrated judge, an unapproved baseline, or a
+configuration mismatch. Baseline reports retain observed deltas for review;
+only `gating_regressions` from an approved, configuration-compatible baseline
+can fail the evaluation runner. Deterministic fixture failures still use the
+separate `report.passed` gate.

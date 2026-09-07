@@ -168,6 +168,26 @@ def test_baseline_result_records_model_and_separate_scores(tmp_path: Path) -> No
     assert payload["evaluator"]["evaluator_version"] == "deterministic-evaluator-v1"
     assert payload["generation"]["fixture_pass_rate"] == 1.0
     assert payload["retrieval"]["recall_at_k"] == 1.0
+    assert payload["quality_baseline"]["status"] == "report_only"
+
+
+def test_baseline_approval_requires_non_empty_string_metadata(tmp_path: Path) -> None:
+    report = build_evaluation_report(
+        model_name="qwen3:8b",
+        generation_results=[],
+        retrieval_results=[],
+    )
+
+    with pytest.raises(ValueError, match="quality_baseline_approval"):
+        record_baseline(
+            report,
+            tmp_path / "baseline.json",
+            provider="ollama",
+            quality_baseline_approval={
+                "approver": 1,
+                "approval_reference": "baseline-88",
+            },
+        )
 
 
 def test_candidate_model_report_is_compared_with_canonical_baseline(tmp_path: Path) -> None:
@@ -179,7 +199,15 @@ def test_candidate_model_report_is_compared_with_canonical_baseline(tmp_path: Pa
         ],
         model_results=[LocalModelResult("definition", "recorded", "baseline-hash", 10, "answer")],
     )
-    baseline_path = record_baseline(baseline, tmp_path / "baseline.json", provider="ollama")
+    baseline_path = record_baseline(
+        baseline,
+        tmp_path / "baseline.json",
+        provider="ollama",
+        quality_baseline_approval={
+            "approver": "quality-owner",
+            "approval_reference": "baseline-88",
+        },
+    )
     candidate = build_evaluation_report(
         model_name="candidate:8b",
         generation_results=[],
@@ -195,12 +223,14 @@ def test_candidate_model_report_is_compared_with_canonical_baseline(tmp_path: Pa
     assert comparison["quality_baseline"]["configuration_version"] == (
         "deterministic-fixtures-v1"
     )
+    assert comparison["quality_baseline"]["baseline_status"] == "approved"
     assert {item["metric"] for item in comparison["regressions"]} == {
         "retrieval.recall_at_k",
         "retrieval.precision_at_k",
         "retrieval.reciprocal_rank",
         "local_model.output_changed",
     }
+    assert comparison["gating_regressions"] == comparison["regressions"]
     assert comparison["local_model_changes"] == [
         {
             "fixture_id": "definition",
@@ -208,6 +238,80 @@ def test_candidate_model_report_is_compared_with_canonical_baseline(tmp_path: Pa
             "current_output_sha256": "candidate-hash",
         }
     ]
+
+
+def test_configuration_mismatched_baseline_keeps_model_changes_report_only(tmp_path: Path) -> None:
+    baseline = build_evaluation_report(
+        model_name="qwen3:8b",
+        generation_results=[],
+        retrieval_results=[],
+        model_results=[LocalModelResult("definition", "recorded", "baseline-hash", 10, "answer")],
+    )
+    baseline_path = record_baseline(
+        baseline,
+        tmp_path / "baseline.json",
+        provider="ollama",
+        quality_baseline_approval={
+            "approver": "quality-owner",
+            "approval_reference": "baseline-88",
+        },
+    )
+    payload = json.loads(baseline_path.read_text())
+    payload["evaluator"]["configuration_version"] = "deterministic-fixtures-v2"
+    baseline_path.write_text(json.dumps(payload))
+    candidate = build_evaluation_report(
+        model_name="candidate:8b",
+        generation_results=[],
+        retrieval_results=[],
+        model_results=[LocalModelResult("definition", "recorded", "candidate-hash", 10, "answer")],
+    )
+
+    comparison = compare_with_baseline(candidate, baseline_path)
+
+    assert comparison["quality_baseline"]["comparable"] is False
+    assert comparison["regressions"] == []
+    assert comparison["gating_regressions"] == []
+    assert comparison["local_model_changes"] == [
+        {
+            "fixture_id": "definition",
+            "baseline_output_sha256": "baseline-hash",
+            "current_output_sha256": "candidate-hash",
+        }
+    ]
+
+
+def test_report_only_baseline_cannot_be_approved_by_stale_metadata(tmp_path: Path) -> None:
+    baseline = build_evaluation_report(
+        model_name="qwen3:8b",
+        generation_results=[],
+        retrieval_results=[
+            RetrievalResult("retrieval", "hypothesis", True, 1.0, 1.0, 1.0, ("incident",))
+        ],
+    )
+    baseline_path = record_baseline(baseline, tmp_path / "baseline.json", provider="ollama")
+    payload = json.loads(baseline_path.read_text())
+    payload["quality_baseline"]["approval"] = {
+        "approver": "quality-owner",
+        "approval_reference": "stale-approval",
+    }
+    baseline_path.write_text(json.dumps(payload))
+    candidate = build_evaluation_report(
+        model_name="candidate:8b",
+        generation_results=[],
+        retrieval_results=[
+            RetrievalResult("retrieval", "hypothesis", True, 0.5, 0.5, 0.5, ("distractor",))
+        ],
+    )
+
+    comparison = compare_with_baseline(candidate, baseline_path)
+
+    assert comparison["quality_baseline"]["baseline_status"] == "report_only"
+    assert {item["metric"] for item in comparison["regressions"]} == {
+        "retrieval.recall_at_k",
+        "retrieval.precision_at_k",
+        "retrieval.reciprocal_rank",
+    }
+    assert comparison["gating_regressions"] == []
 
 
 def test_legacy_baseline_without_configuration_identity_is_not_comparable(

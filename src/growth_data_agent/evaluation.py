@@ -17,6 +17,7 @@ from .quality_evaluation import (
     EvaluatorKind,
     EvaluatorMetadata,
     compare_quality_baseline,
+    normalize_baseline_approval,
 )
 
 _DEFAULT_FIXTURE_PATH = Path(__file__).resolve().parents[2] / "evaluations/fixtures.json"
@@ -342,9 +343,17 @@ def record_baseline(
     *,
     provider: str,
     comparison: Mapping[str, Any] | None = None,
+    quality_baseline_approval: Mapping[str, str] | None = None,
 ) -> Path:
+    normalized_approval = normalize_baseline_approval(quality_baseline_approval)
+    if quality_baseline_approval is not None and normalized_approval is None:
+        raise ValueError("quality_baseline_approval requires approver and approval_reference.")
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = report.as_baseline(provider=provider)
+    payload["quality_baseline"] = {
+        "status": "approved" if normalized_approval is not None else "report_only",
+        "approval": normalized_approval,
+    }
     if comparison is not None:
         payload["comparison"] = comparison
     path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -371,11 +380,26 @@ def compare_with_baseline(report: EvaluationReport, baseline_path: Path) -> dict
     baseline_configuration = baseline.get("evaluator", {}).get(
         "configuration_version", ""
     )
+    baseline_quality = baseline.get("quality_baseline", {})
+    baseline_status = (
+        "approved"
+        if isinstance(baseline_quality, Mapping)
+        and baseline_quality.get("status") == "approved"
+        else "report_only"
+    )
+    baseline_approval = normalize_baseline_approval(
+        baseline_quality.get("approval")
+        if isinstance(baseline_quality, Mapping)
+        and baseline_status == "approved"
+        else None
+    )
     quality_comparison = compare_quality_baseline(
         current_metrics=current_metrics,
         baseline_metrics=baseline_metrics,
         configuration_version=current_configuration,
         baseline_configuration_version=baseline_configuration,
+        baseline_status=baseline_status,
+        baseline_approval=baseline_approval,
     )
     regressions = [
         {
@@ -427,9 +451,19 @@ def compare_with_baseline(report: EvaluationReport, baseline_path: Path) -> dict
                 "fixture_ids": unavailable_model_results,
             }
         )
+    if not quality_comparison.comparable:
+        # The underlying output differences remain in local_model_changes for
+        # diagnosis, but cannot be called baseline regressions across configs.
+        local_model_regressions = []
+    gating_regressions = (
+        regressions + local_model_regressions
+        if quality_comparison.baseline_status == "approved" and quality_comparison.comparable
+        else []
+    )
     return {
         "baseline_model_name": baseline.get("model_name"),
         "regressions": regressions + local_model_regressions,
+        "gating_regressions": gating_regressions,
         "local_model_changes": local_model_changes,
         "quality_baseline": quality_comparison.as_dict(),
     }

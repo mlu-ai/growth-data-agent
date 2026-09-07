@@ -306,6 +306,28 @@ def record_calibration(calibration: CalibrationResult, path: Path) -> Path:
     return path
 
 
+def normalize_baseline_approval(
+    approval: Mapping[str, Any] | None,
+) -> dict[str, str] | None:
+    """Return valid approval metadata, or ``None`` for malformed input.
+
+    Baseline JSON is an external artifact at evaluation time, so malformed
+    approval metadata must fail closed rather than quietly enable a gate.
+    """
+    if not isinstance(approval, Mapping):
+        return None
+    approver = approval.get("approver")
+    approval_reference = approval.get("approval_reference")
+    if not (
+        isinstance(approver, str)
+        and approver.strip()
+        and isinstance(approval_reference, str)
+        and approval_reference.strip()
+    ):
+        return None
+    return {"approver": approver, "approval_reference": approval_reference}
+
+
 @dataclass(frozen=True)
 class MetricComparison:
     metric: str
@@ -325,6 +347,8 @@ class QualityBaselineComparison:
     metric_set_mismatch: bool
     missing_current_metrics: tuple[str, ...]
     missing_baseline_metrics: tuple[str, ...]
+    baseline_status: Literal["report_only", "approved"] = "report_only"
+    baseline_approval: Mapping[str, str] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -344,6 +368,10 @@ class QualityBaselineComparison:
             "metric_set_mismatch": self.metric_set_mismatch,
             "missing_current_metrics": list(self.missing_current_metrics),
             "missing_baseline_metrics": list(self.missing_baseline_metrics),
+            "baseline_status": self.baseline_status,
+            "baseline_approval": (
+                dict(self.baseline_approval) if self.baseline_approval is not None else None
+            ),
         }
 
 
@@ -353,6 +381,8 @@ def compare_quality_baseline(
     baseline_metrics: Mapping[str, float],
     configuration_version: str,
     baseline_configuration_version: str,
+    baseline_status: Literal["report_only", "approved"] = "report_only",
+    baseline_approval: Mapping[str, Any] | None = None,
 ) -> QualityBaselineComparison:
     """Compare like-for-like scorecard metrics without a composite score."""
     if not configuration_version:
@@ -365,6 +395,8 @@ def compare_quality_baseline(
     missing_current_metrics = tuple(sorted(set(baseline_metrics) - set(current_metrics)))
     missing_baseline_metrics = tuple(sorted(set(current_metrics) - set(baseline_metrics)))
     metric_set_mismatch = bool(missing_current_metrics or missing_baseline_metrics)
+    normalized_approval = normalize_baseline_approval(baseline_approval)
+    baseline_is_approved = baseline_status == "approved" and normalized_approval is not None
     comparisons = {
         metric: MetricComparison(
             metric=metric,
@@ -385,6 +417,8 @@ def compare_quality_baseline(
         metric_set_mismatch=metric_set_mismatch,
         missing_current_metrics=missing_current_metrics,
         missing_baseline_metrics=missing_baseline_metrics,
+        baseline_status="approved" if baseline_is_approved else "report_only",
+        baseline_approval=normalized_approval,
     )
 
 
@@ -414,6 +448,12 @@ def quality_gate_decision(
             status="report_only",
             blocking=False,
             reason="Quality judge configuration differs from its approved calibration.",
+        )
+    if comparison.baseline_status != "approved":
+        return QualityGateDecision(
+            status="report_only",
+            blocking=False,
+            reason="Quality baseline is not approved; result is report-only.",
         )
     if not comparison.comparable:
         return QualityGateDecision(
